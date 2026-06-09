@@ -24,7 +24,8 @@ import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Properties;
 
-import org.apache.commons.logging.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
@@ -37,6 +38,7 @@ import org.apache.hadoop.streaming.io.TextInputWriter;
 import org.apache.hadoop.streaming.io.TextOutputReader;
 import org.apache.hadoop.util.LineReader;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 
 import org.apache.hadoop.io.Text;
 
@@ -44,7 +46,7 @@ import org.apache.hadoop.io.Text;
  */
 public abstract class PipeMapRed {
 
-  protected static final Log LOG = LogFactory.getLog(PipeMapRed.class.getName());
+  protected static final Logger LOG = LoggerFactory.getLogger(PipeMapRed.class.getName());
 
   /**
    * Returns the Configuration.
@@ -253,7 +255,7 @@ public abstract class PipeMapRed {
   }
 
   String safeEnvVarName(String var) {
-    StringBuffer safe = new StringBuffer();
+    StringBuilder safe = new StringBuilder();
     int len = var.length();
     for (int i = 0; i < len; i++) {
       char c = var.charAt(i);
@@ -365,7 +367,7 @@ public abstract class PipeMapRed {
   }
   
   
-  class MROutputThread extends Thread {
+  class MROutputThread extends SubjectInheritingThread {
 
     MROutputThread(OutputReader outReader, OutputCollector outCollector,
       Reporter reporter) {
@@ -375,7 +377,7 @@ public abstract class PipeMapRed {
       this.reporter = reporter;
     }
 
-    public void run() {
+    public void work() {
       try {
         // 3/4 Tool to Hadoop
         while (outReader.readKeyValue()) {
@@ -397,7 +399,7 @@ public abstract class PipeMapRed {
         }
       } catch (Throwable th) {
         outerrThreadsThrowable = th;
-        LOG.warn(th);
+        LOG.warn("{}", th);
       } finally {
         try {
           if (clientIn_ != null) {
@@ -405,7 +407,7 @@ public abstract class PipeMapRed {
             clientIn_ = null;
           }
         } catch (IOException io) {
-          LOG.info(io);
+          LOG.info("{}", io);
         }
       }
     }
@@ -417,7 +419,7 @@ public abstract class PipeMapRed {
     
   }
 
-  class MRErrorThread extends Thread {
+  class MRErrorThread extends SubjectInheritingThread {
 
     public MRErrorThread() {
       this.reporterPrefix = job_.get("stream.stderr.reporter.prefix", "reporter:");
@@ -430,7 +432,7 @@ public abstract class PipeMapRed {
       this.reporter = reporter;
     }
       
-    public void run() {
+    public void work() {
       Text line = new Text();
       LineReader lineReader = null;
       try {
@@ -466,7 +468,7 @@ public abstract class PipeMapRed {
         }
       } catch (Throwable th) {
         outerrThreadsThrowable = th;
-        LOG.warn(th);
+        LOG.warn("{}", th);
         try {
           if (lineReader != null) {
             lineReader.close();
@@ -476,7 +478,7 @@ public abstract class PipeMapRed {
             clientErr_ = null;
           }
         } catch (IOException io) {
-          LOG.info(io);
+          LOG.info("{}", io);
         }
       }
     }
@@ -531,13 +533,13 @@ public abstract class PipeMapRed {
           clientOut_.flush();
           clientOut_.close();
         } catch (IOException io) {
-          LOG.warn(io);
+          LOG.warn("{}", io);
         }
       }
       try {
         waitOutputThreads();
       } catch (IOException io) {
-        LOG.warn(io);
+        LOG.warn("{}", io);
       }
       if (sim != null) sim.destroy();
       LOG.info("mapRedFinished");

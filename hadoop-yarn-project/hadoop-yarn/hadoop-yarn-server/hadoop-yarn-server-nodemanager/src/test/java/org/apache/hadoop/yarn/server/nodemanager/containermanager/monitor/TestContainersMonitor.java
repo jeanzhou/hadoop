@@ -18,12 +18,16 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -32,12 +36,14 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
@@ -61,21 +67,30 @@ import org.apache.hadoop.yarn.api.records.Token;
 import org.apache.hadoop.yarn.api.records.URL;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
+import org.apache.hadoop.yarn.event.Event;
+import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
 import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor.Signal;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
+import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
+import org.apache.hadoop.yarn.server.nodemanager.NodeManager.NMContext;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.BaseContainerManagerTest;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerKillEvent;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerSignalContext;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.LinuxResourceCalculatorPlugin;
 import org.apache.hadoop.yarn.util.ProcfsBasedProcessTree;
 import org.apache.hadoop.yarn.util.ResourceCalculatorPlugin;
 import org.apache.hadoop.yarn.util.TestProcfsBasedProcessTree;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.yarn.util.resource.Resources;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
 
@@ -88,12 +103,14 @@ public class TestContainersMonitor extends BaseContainerManagerTest {
   static {
     LOG = LoggerFactory.getLogger(TestContainersMonitor.class);
   }
-  @Before
+
+  @BeforeEach
   public void setup() throws IOException {
     conf.setClass(
         YarnConfiguration.NM_MON_RESOURCE_CALCULATOR,
         LinuxResourceCalculatorPlugin.class, ResourceCalculatorPlugin.class);
     conf.setBoolean(YarnConfiguration.NM_VMEM_CHECK_ENABLED, true);
+    conf.setBoolean(YarnConfiguration.NM_MEMORY_RESOURCE_ENFORCED, false);
     super.setup();
   }
 
@@ -168,35 +185,34 @@ public class TestContainersMonitor extends BaseContainerManagerTest {
                                           "100",
                                           procfsRootDir.getAbsolutePath());
       pTree.updateProcessTree();
-      assertTrue("tree rooted at 100 should be over limit " +
-                    "after first iteration.",
-                  test.isProcessTreeOverLimit(pTree, "dummyId", limit));
+      assertTrue(test.isProcessTreeOverLimit(pTree, "dummyId", limit),
+          "tree rooted at 100 should be over limit " +
+          "after first iteration.");
 
       // the tree rooted at 200 is initially below limit.
       pTree = new ProcfsBasedProcessTree("200",
                                           procfsRootDir.getAbsolutePath());
       pTree.updateProcessTree();
-      assertFalse("tree rooted at 200 shouldn't be over limit " +
-                    "after one iteration.",
-                  test.isProcessTreeOverLimit(pTree, "dummyId", limit));
+      assertFalse(test.isProcessTreeOverLimit(pTree, "dummyId", limit),
+          "tree rooted at 200 shouldn't be over limit " +
+          "after one iteration.");
       // second iteration - now the tree has been over limit twice,
       // hence it should be declared over limit.
       pTree.updateProcessTree();
-      assertTrue(
-          "tree rooted at 200 should be over limit after 2 iterations",
-                  test.isProcessTreeOverLimit(pTree, "dummyId", limit));
+      assertTrue(test.isProcessTreeOverLimit(pTree, "dummyId", limit),
+          "tree rooted at 200 should be over limit after 2 iterations");
 
       // the tree rooted at 600 is never over limit.
       pTree = new ProcfsBasedProcessTree("600",
                                             procfsRootDir.getAbsolutePath());
       pTree.updateProcessTree();
-      assertFalse("tree rooted at 600 should never be over limit.",
-                    test.isProcessTreeOverLimit(pTree, "dummyId", limit));
+      assertFalse(test.isProcessTreeOverLimit(pTree, "dummyId", limit),
+          "tree rooted at 600 should never be over limit.");
 
       // another iteration does not make any difference.
       pTree.updateProcessTree();
-      assertFalse("tree rooted at 600 should never be over limit.",
-                    test.isProcessTreeOverLimit(pTree, "dummyId", limit));
+      assertFalse(test.isProcessTreeOverLimit(pTree, "dummyId", limit),
+          "tree rooted at 600 should never be over limit.");
     } finally {
       FileUtil.fullyDelete(procfsRootDir);
     }
@@ -285,7 +301,7 @@ public class TestContainersMonitor extends BaseContainerManagerTest {
     commands.add("/bin/bash");
     commands.add(scriptFile.getAbsolutePath());
     containerLaunchContext.setCommands(commands);
-    Resource r = BuilderUtils.newResource(0, 0);
+    Resource r = Resources.createResource(0);
     ContainerTokenIdentifier containerIdentifier =
         new ContainerTokenIdentifier(cId, context.getNodeId().toString(), user,
           r, System.currentTimeMillis() + 120000, 123, DUMMY_RM_IDENTIFIER,
@@ -308,17 +324,17 @@ public class TestContainersMonitor extends BaseContainerManagerTest {
       Thread.sleep(1000);
       LOG.info("Waiting for process start-file to be created");
     }
-    Assert.assertTrue("ProcessStartFile doesn't exist!",
-        processStartFile.exists());
+    assertTrue(processStartFile.exists(),
+        "ProcessStartFile doesn't exist!");
 
     // Now verify the contents of the file
     BufferedReader reader =
         new BufferedReader(new FileReader(processStartFile));
-    Assert.assertEquals("Hello World!", reader.readLine());
+    assertEquals("Hello World!", reader.readLine());
     // Get the pid of the process
     String pid = reader.readLine().trim();
     // No more lines
-    Assert.assertEquals(null, reader.readLine());
+    assertEquals(null, reader.readLine());
 
     BaseContainerManagerTest.waitForContainerState(containerManager, cId,
         ContainerState.COMPLETE, 60);
@@ -329,7 +345,7 @@ public class TestContainersMonitor extends BaseContainerManagerTest {
         GetContainerStatusesRequest.newInstance(containerIds);
     ContainerStatus containerStatus =
         containerManager.getContainerStatuses(gcsRequest).getContainerStatuses().get(0);
-    Assert.assertEquals(ContainerExitStatus.KILLED_EXCEEDED_VMEM,
+    assertEquals(ContainerExitStatus.KILLED_EXCEEDED_VMEM,
         containerStatus.getExitStatus());
     String expectedMsgPattern =
         "Container \\[pid=" + pid + ",containerID=" + cId + "\\] is running "
@@ -339,20 +355,177 @@ public class TestContainersMonitor extends BaseContainerManagerTest {
             + "Killing container.\nDump of the process-tree for "
             + cId + " :\n";
     Pattern pat = Pattern.compile(expectedMsgPattern);
-    Assert.assertEquals("Expected message pattern is: " + expectedMsgPattern
-        + "\n\nObserved message is: " + containerStatus.getDiagnostics(),
-        true, pat.matcher(containerStatus.getDiagnostics()).find());
+    assertEquals(true,
+        pat.matcher(containerStatus.getDiagnostics()).find(),
+        "Expected message pattern is: " + expectedMsgPattern
+        + "\n\nObserved message is: " + containerStatus.getDiagnostics());
 
     // Assert that the process is not alive anymore
-    Assert.assertFalse("Process is still alive!",
-        exec.signalContainer(new ContainerSignalContext.Builder()
+    assertFalse(exec.signalContainer(new ContainerSignalContext.Builder()
             .setUser(user)
             .setPid(pid)
             .setSignal(Signal.NULL)
-            .build()));
+            .build()), "Process is still alive!");
   }
 
-  @Test(timeout = 20000)
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testContainerKillOnExcessLogDirectory() throws Exception {
+    final String user = "someuser";
+    ApplicationId appId = ApplicationId.newInstance(1, 1);
+    ApplicationAttemptId attemptId = ApplicationAttemptId.newInstance(appId, 1);
+    ContainerId cid = ContainerId.newContainerId(attemptId, 1);
+    Application app = mock(Application.class);
+    doReturn(user).when(app).getUser();
+    doReturn(appId).when(app).getAppId();
+    Container container = mock(Container.class);
+    doReturn(cid).when(container).getContainerId();
+    doReturn(user).when(container).getUser();
+    File containerLogDir = new File(new File(localLogDir, appId.toString()),
+        cid.toString());
+    containerLogDir.mkdirs();
+    LocalDirsHandlerService mockDirsHandler =
+        mock(LocalDirsHandlerService.class);
+    doReturn(Collections.singletonList(localLogDir.getAbsolutePath()))
+        .when(mockDirsHandler).getLogDirsForRead();
+    Context ctx = new NMContext(context.getContainerTokenSecretManager(),
+        context.getNMTokenSecretManager(), mockDirsHandler,
+        context.getApplicationACLsManager(), context.getNMStateStore(),
+        false, conf);
+
+    Configuration monitorConf = new Configuration(conf);
+    monitorConf.setBoolean(YarnConfiguration.NM_PMEM_CHECK_ENABLED, false);
+    monitorConf.setBoolean(YarnConfiguration.NM_VMEM_CHECK_ENABLED, false);
+    monitorConf.setBoolean(YarnConfiguration.NM_CONTAINER_METRICS_ENABLE,
+        false);
+    monitorConf.setBoolean(YarnConfiguration.NM_CONTAINER_LOG_MONITOR_ENABLED,
+        true);
+    monitorConf.setLong(
+        YarnConfiguration.NM_CONTAINER_LOG_DIR_SIZE_LIMIT_BYTES, 10);
+    monitorConf.setLong(
+        YarnConfiguration.NM_CONTAINER_LOG_TOTAL_SIZE_LIMIT_BYTES, 10000000);
+    monitorConf.setLong(YarnConfiguration.NM_CONTAINER_LOG_MON_INTERVAL_MS,
+        10);
+
+    EventHandler mockHandler = mock(EventHandler.class);
+    AsyncDispatcher mockDispatcher = mock(AsyncDispatcher.class);
+    doReturn(mockHandler).when(mockDispatcher).getEventHandler();
+    ContainersMonitor monitor = new ContainersMonitorImpl(
+        mock(ContainerExecutor.class), mockDispatcher, ctx);
+    monitor.init(monitorConf);
+    monitor.start();
+    Event event;
+    try {
+      ctx.getApplications().put(appId, app);
+      ctx.getContainers().put(cid, container);
+      monitor.handle(new ContainerStartMonitoringEvent(cid, 1, 1, 1, 0, 0));
+
+      PrintWriter fileWriter = new PrintWriter(new File(containerLogDir,
+          "log"));
+      fileWriter.write("This container is logging too much.");
+      fileWriter.close();
+
+      ArgumentCaptor<Event> captor = ArgumentCaptor.forClass(Event.class);
+      verify(mockHandler, timeout(10000)).handle(captor.capture());
+      event = captor.getValue();
+    } finally {
+      monitor.stop();
+    }
+
+    assertTrue(event instanceof ContainerKillEvent, "Expected a kill event");
+    ContainerKillEvent cke = (ContainerKillEvent) event;
+    assertEquals(ContainerExitStatus.KILLED_FOR_EXCESS_LOGS,
+        cke.getContainerExitStatus(), "Unexpected container exit status");
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testContainerKillOnExcessTotalLogs() throws Exception {
+    final String user = "someuser";
+    ApplicationId appId = ApplicationId.newInstance(1, 1);
+    ApplicationAttemptId attemptId = ApplicationAttemptId.newInstance(appId, 1);
+    ContainerId cid = ContainerId.newContainerId(attemptId, 1);
+    Application app = mock(Application.class);
+    doReturn(user).when(app).getUser();
+    doReturn(appId).when(app).getAppId();
+    Container container = mock(Container.class);
+    doReturn(cid).when(container).getContainerId();
+    doReturn(user).when(container).getUser();
+    File logDir1 = new File(localLogDir, "dir1");
+    File logDir2 = new File(localLogDir, "dir2");
+    List<String> logDirs = new ArrayList<>();
+    logDirs.add(logDir1.getAbsolutePath());
+    logDirs.add(logDir2.getAbsolutePath());
+    LocalDirsHandlerService mockDirsHandler =
+        mock(LocalDirsHandlerService.class);
+    doReturn(logDirs).when(mockDirsHandler).getLogDirsForRead();
+    Context ctx = new NMContext(context.getContainerTokenSecretManager(),
+        context.getNMTokenSecretManager(), mockDirsHandler,
+        context.getApplicationACLsManager(), context.getNMStateStore(),
+        false, conf);
+
+    File clogDir1 = new File(new File(logDir1, appId.toString()),
+        cid.toString());
+    clogDir1.mkdirs();
+    File clogDir2 = new File(new File(logDir2, appId.toString()),
+        cid.toString());
+    clogDir2.mkdirs();
+
+    Configuration monitorConf = new Configuration(conf);
+    monitorConf.setBoolean(YarnConfiguration.NM_PMEM_CHECK_ENABLED, false);
+    monitorConf.setBoolean(YarnConfiguration.NM_VMEM_CHECK_ENABLED, false);
+    monitorConf.setBoolean(YarnConfiguration.NM_CONTAINER_METRICS_ENABLE,
+        false);
+    monitorConf.setBoolean(YarnConfiguration.NM_CONTAINER_LOG_MONITOR_ENABLED,
+        true);
+    monitorConf.setLong(
+        YarnConfiguration.NM_CONTAINER_LOG_DIR_SIZE_LIMIT_BYTES, 100000);
+    monitorConf.setLong(
+        YarnConfiguration.NM_CONTAINER_LOG_TOTAL_SIZE_LIMIT_BYTES, 15);
+    monitorConf.setLong(YarnConfiguration.NM_CONTAINER_LOG_MON_INTERVAL_MS,
+        10);
+    monitorConf.set(YarnConfiguration.NM_LOG_DIRS, logDir1.getAbsolutePath()
+        + "," + logDir2.getAbsolutePath());
+
+    EventHandler mockHandler = mock(EventHandler.class);
+    AsyncDispatcher mockDispatcher = mock(AsyncDispatcher.class);
+    doReturn(mockHandler).when(mockDispatcher).getEventHandler();
+    ContainersMonitor monitor = new ContainersMonitorImpl(
+        mock(ContainerExecutor.class), mockDispatcher, ctx);
+    monitor.init(monitorConf);
+    monitor.start();
+    Event event;
+    try {
+      ctx.getApplications().put(appId, app);
+      ctx.getContainers().put(cid, container);
+      monitor.handle(new ContainerStartMonitoringEvent(cid, 1, 1, 1, 0, 0));
+
+      PrintWriter fileWriter = new PrintWriter(new File(clogDir1, "log"));
+      fileWriter.write("0123456789");
+      fileWriter.close();
+
+      Thread.sleep(1000);
+      verify(mockHandler, never()).handle(any(Event.class));
+
+      fileWriter = new PrintWriter(new File(clogDir2, "log"));
+      fileWriter.write("0123456789");
+      fileWriter.close();
+
+      ArgumentCaptor<Event> captor = ArgumentCaptor.forClass(Event.class);
+      verify(mockHandler, timeout(10000)).handle(captor.capture());
+      event = captor.getValue();
+    } finally {
+      monitor.stop();
+    }
+
+    assertTrue(event instanceof ContainerKillEvent, "Expected a kill event");
+    ContainerKillEvent cke = (ContainerKillEvent) event;
+    assertEquals(ContainerExitStatus.KILLED_FOR_EXCESS_LOGS,
+        cke.getContainerExitStatus(), "Unexpected container exit status");
+  }
+
+  @Test
+  @Timeout(value = 20)
   public void testContainerMonitorMemFlags() {
     ContainersMonitor cm = null;
 

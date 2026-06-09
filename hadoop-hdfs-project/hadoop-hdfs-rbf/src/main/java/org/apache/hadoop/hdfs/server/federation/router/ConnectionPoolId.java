@@ -23,8 +23,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -42,24 +42,37 @@ public class ConnectionPoolId implements Comparable<ConnectionPoolId> {
   private final String nnId;
   /** Information about the user. */
   private final UserGroupInformation ugi;
+  /** Protocol for the connection. */
+  private final Class<?> protocol;
+  /**
+   * Caching ugi.toString() to save the redundant calculation effort,
+   * since it is a costly operation and is used as part of both hash calculation
+   * and equals method.
+   */
+  private final String ugiString;
 
   /**
    * New connection pool identifier.
    *
    * @param ugi Information of the user issuing the request.
    * @param nnId Namenode address with port.
+   * @param proto Protocol of the connection.
    */
-  public ConnectionPoolId(final UserGroupInformation ugi, final String nnId) {
+  public ConnectionPoolId(final UserGroupInformation ugi, final String nnId,
+      final Class<?> proto) {
     this.nnId = nnId;
     this.ugi = ugi;
+    this.protocol = proto;
+    this.ugiString = ugi.toString();
   }
 
   @Override
   public int hashCode() {
     int hash = new HashCodeBuilder(17, 31)
         .append(this.nnId)
-        .append(this.ugi.toString())
+        .append(this.ugiString)
         .append(this.getTokenIds())
+        .append(this.protocol)
         .toHashCode();
     return hash;
   }
@@ -71,19 +84,23 @@ public class ConnectionPoolId implements Comparable<ConnectionPoolId> {
       if (!this.nnId.equals(other.nnId)) {
         return false;
       }
-      if (!this.ugi.toString().equals(other.ugi.toString())) {
+      if (!this.ugiString.equals(other.ugiString)) {
         return false;
       }
       String thisTokens = this.getTokenIds().toString();
       String otherTokens = other.getTokenIds().toString();
-      return thisTokens.equals(otherTokens);
+      if (!thisTokens.equals(otherTokens)) {
+        return false;
+      }
+      return this.protocol.equals(other.protocol);
     }
     return false;
   }
 
   @Override
   public String toString() {
-    return this.ugi + " " + this.getTokenIds() + "->" + this.nnId;
+    return this.ugi + " " + this.getTokenIds() + "->" + this.nnId + " [" +
+        this.protocol.getSimpleName() + "]";
   }
 
   @Override
@@ -96,6 +113,9 @@ public class ConnectionPoolId implements Comparable<ConnectionPoolId> {
       String thisTokens = this.getTokenIds().toString();
       String otherTokens = other.getTokenIds().toString();
       ret = thisTokens.compareTo(otherTokens);
+    }
+    if (ret == 0) {
+      ret = this.protocol.toString().compareTo(other.protocol.toString());
     }
     return ret;
   }

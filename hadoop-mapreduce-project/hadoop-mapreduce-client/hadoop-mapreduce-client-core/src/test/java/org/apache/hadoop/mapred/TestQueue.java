@@ -31,12 +31,18 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * TestCounters checks the sanity and recoverability of Queue
@@ -45,12 +51,12 @@ public class TestQueue {
   private static File testDir = new File(System.getProperty("test.build.data",
       "/tmp"), TestJobConf.class.getSimpleName());
 
-  @Before
+  @BeforeEach
   public void setup() {
     testDir.mkdirs();
   }
 
-  @After
+  @AfterEach
   public void cleanup() {
     FileUtil.fullyDelete(testDir);
   }
@@ -61,7 +67,8 @@ public class TestQueue {
    * 
    * @throws IOException
    */
-  @Test (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testQueue() throws IOException {
     File f = null;
     try {
@@ -71,7 +78,7 @@ public class TestQueue {
       manager.setSchedulerInfo("first", "queueInfo");
       manager.setSchedulerInfo("second", "queueInfoqueueInfo");
       Queue root = manager.getRoot();
-      assertTrue(root.getChildren().size() == 2);
+      assertThat(root.getChildren().size()).isEqualTo(2);
       Iterator<Queue> iterator = root.getChildren().iterator();
       Queue firstSubQueue = iterator.next();
       assertEquals("first", firstSubQueue.getName());
@@ -81,11 +88,15 @@ public class TestQueue {
           "Users [user1, user2] and members of the groups [group1, group2] are allowed");
       Queue secondSubQueue = iterator.next();
       assertEquals("second", secondSubQueue.getName());
-      assertEquals(secondSubQueue.getProperties().getProperty("key"), "value");
-      assertEquals(secondSubQueue.getProperties().getProperty("key1"), "value1");
+      assertThat(secondSubQueue.getProperties().getProperty("key"))
+          .isEqualTo("value");
+      assertThat(secondSubQueue.getProperties().getProperty("key1"))
+          .isEqualTo("value1");
       // test status
-      assertEquals(firstSubQueue.getState().getStateName(), "running");
-      assertEquals(secondSubQueue.getState().getStateName(), "stopped");
+      assertThat(firstSubQueue.getState().getStateName())
+          .isEqualTo("running");
+      assertThat(secondSubQueue.getState().getStateName())
+          .isEqualTo("stopped");
 
       Set<String> template = new HashSet<String>();
       template.add("first");
@@ -105,7 +116,7 @@ public class TestQueue {
       assertTrue(manager.hasAccess("first", QueueACL.ADMINISTER_JOBS, mockUGI));
 
       QueueAclsInfo[] qai = manager.getQueueAcls(mockUGI);
-      assertEquals(qai.length, 1);
+      assertThat(qai.length).isEqualTo(1);
       // test refresh queue
       manager.refreshQueues(getConfiguration(), null);
 
@@ -113,21 +124,28 @@ public class TestQueue {
       Queue firstSubQueue1 = iterator.next();
       Queue secondSubQueue1 = iterator.next();
       // tets equal method
-      assertTrue(firstSubQueue.equals(firstSubQueue1));
-      assertEquals(firstSubQueue1.getState().getStateName(), "running");
-      assertEquals(secondSubQueue1.getState().getStateName(), "stopped");
+      assertThat(firstSubQueue).isEqualTo(firstSubQueue1);
+      assertThat(firstSubQueue1.getState().getStateName())
+          .isEqualTo("running");
+      assertThat(secondSubQueue1.getState().getStateName())
+          .isEqualTo("stopped");
 
-      assertEquals(firstSubQueue1.getSchedulingInfo(), "queueInfo");
-      assertEquals(secondSubQueue1.getSchedulingInfo(), "queueInfoqueueInfo");
+      assertThat(firstSubQueue1.getSchedulingInfo())
+          .isEqualTo("queueInfo");
+      assertThat(secondSubQueue1.getSchedulingInfo())
+          .isEqualTo("queueInfoqueueInfo");
 
       // test JobQueueInfo
-      assertEquals(firstSubQueue.getJobQueueInfo().getQueueName(), "first");
-      assertEquals(firstSubQueue.getJobQueueInfo().getQueueState(), "running");
-      assertEquals(firstSubQueue.getJobQueueInfo().getSchedulingInfo(),
-          "queueInfo");
-      assertEquals(secondSubQueue.getJobQueueInfo().getChildren().size(), 0);
+      assertThat(firstSubQueue.getJobQueueInfo().getQueueName())
+          .isEqualTo("first");
+      assertThat(firstSubQueue.getJobQueueInfo().getState().toString())
+          .isEqualTo("running");
+      assertThat(firstSubQueue.getJobQueueInfo().getSchedulingInfo())
+          .isEqualTo("queueInfo");
+      assertThat(secondSubQueue.getJobQueueInfo().getChildren().size())
+          .isEqualTo(0);
       // test
-      assertEquals(manager.getSchedulerInfo("first"), "queueInfo");
+      assertThat(manager.getSchedulerInfo("first")).isEqualTo("queueInfo");
       Set<String> queueJobQueueInfos = new HashSet<String>();
       for(JobQueueInfo jobInfo : manager.getJobQueueInfos()){
     	  queueJobQueueInfos.add(jobInfo.getQueueName());
@@ -138,8 +156,8 @@ public class TestQueue {
       }
       assertEquals(queueJobQueueInfos, rootJobQueueInfos);
       // test getJobQueueInfoMapping
-      assertEquals(
-          manager.getJobQueueInfoMapping().get("first").getQueueName(), "first");
+      assertThat(manager.getJobQueueInfoMapping().get("first").getQueueName())
+          .isEqualTo("first");
       // test dumpConfiguration
       Writer writer = new StringWriter();
 
@@ -182,10 +200,11 @@ public class TestQueue {
     return conf;
   }
 
-  @Test (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testDefaultConfig() {
     QueueManager manager = new QueueManager(true);
-    assertEquals(manager.getRoot().getChildren().size(), 2);
+    assertThat(manager.getRoot().getChildren().size()).isEqualTo(2);
   }
 
   /**
@@ -194,7 +213,8 @@ public class TestQueue {
    * @throws IOException
    */
 
-  @Test (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void test2Queue() throws IOException {
     Configuration conf = getConfiguration();
 
@@ -209,27 +229,27 @@ public class TestQueue {
     Iterator<Queue> iterator = root.getChildren().iterator();
     Queue firstSubQueue = iterator.next();
     assertEquals("first", firstSubQueue.getName());
-    assertEquals(
+    assertThat(
         firstSubQueue.getAcls().get("mapred.queue.first.acl-submit-job")
-            .toString(),
-        "Users [user1, user2] and members of the groups [group1, group2] are allowed");
+            .toString()).isEqualTo(
+                "Users [user1, user2] and members of " +
+                    "the groups [group1, group2] are allowed");
     Queue secondSubQueue = iterator.next();
     assertEquals("second", secondSubQueue.getName());
 
-    assertEquals(firstSubQueue.getState().getStateName(), "running");
-    assertEquals(secondSubQueue.getState().getStateName(), "stopped");
+    assertThat(firstSubQueue.getState().getStateName()).isEqualTo("running");
+    assertThat(secondSubQueue.getState().getStateName()).isEqualTo("stopped");
     assertTrue(manager.isRunning("first"));
     assertFalse(manager.isRunning("second"));
 
-    assertEquals(firstSubQueue.getSchedulingInfo(), "queueInfo");
-    assertEquals(secondSubQueue.getSchedulingInfo(), "queueInfoqueueInfo");
-// test leaf queue
+    assertThat(firstSubQueue.getSchedulingInfo()).isEqualTo("queueInfo");
+    assertThat(secondSubQueue.getSchedulingInfo())
+        .isEqualTo("queueInfoqueueInfo");
+    // test leaf queue
     Set<String> template = new HashSet<String>();
     template.add("first");
     template.add("second");
     assertEquals(manager.getLeafQueueNames(), template);
-
-    
   }
 /**
  * write cofiguration

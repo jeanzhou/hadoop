@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.Path;
@@ -32,7 +30,6 @@ import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Assert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
@@ -42,6 +39,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 /**
  * Utility class for testing online recovery of striped files.
  */
@@ -50,8 +50,7 @@ abstract public class ReadStripedFileWithDecodingHelper {
       LoggerFactory.getLogger(ReadStripedFileWithDecodingHelper.class);
 
   static {
-    ((Log4JLogger)LogFactory.getLog(BlockPlacementPolicy.class))
-        .getLogger().setLevel(org.apache.log4j.Level.ALL);
+    GenericTestUtils.setLogLevel(BlockPlacementPolicy.LOG, Level.DEBUG);
     GenericTestUtils.setLogLevel(BlockManager.LOG, Level.DEBUG);
     GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.DEBUG);
     GenericTestUtils.setLogLevel(NameNode.stateChangeLog, Level.DEBUG);
@@ -76,13 +75,11 @@ abstract public class ReadStripedFileWithDecodingHelper {
   public static MiniDFSCluster initializeCluster() throws IOException {
     Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_SIZE);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 0);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 2);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_STREAMS_HARD_LIMIT_KEY,
-        0);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
-        false);
+        2);
     MiniDFSCluster myCluster = new MiniDFSCluster.Builder(conf)
-        .numDataNodes(NUM_DATANODES)
+        .numDataNodes(NUM_DATANODES + 3)
         .build();
     myCluster.getFileSystem().enableErasureCodingPolicy(
         StripedFileTestUtil.getDefaultECPolicy().getName());
@@ -102,6 +99,22 @@ abstract public class ReadStripedFileWithDecodingHelper {
       DistributedFileSystem dfs, Path file, long length) throws IOException {
     BlockLocation[] locs = dfs.getFileBlockLocations(file, 0, length);
     String name = (locs[0].getNames())[0];
+    int dnIndex = 0;
+    for (DataNode dn : cluster.getDataNodes()) {
+      int port = dn.getXferPort();
+      if (name.contains(Integer.toString(port))) {
+        return dnIndex;
+      }
+      dnIndex++;
+    }
+    return -1;
+  }
+
+  // The index begins from 1.
+  public static int findDataNodeAtIndex(MiniDFSCluster cluster,
+      DistributedFileSystem dfs, Path file, long length, int index) throws IOException {
+    BlockLocation[] locs = dfs.getFileBlockLocations(file, 0, length);
+    String name = (locs[0].getNames())[index - 1];
     int dnIndex = 0;
     for (DataNode dn : cluster.getDataNodes()) {
       int port = dn.getXferPort();
@@ -205,11 +218,11 @@ abstract public class ReadStripedFileWithDecodingHelper {
         + ", parityBlkDelNum = " + parityBlkDelNum
         + ", deleteBlockFile? " + deleteBlockFile);
     int recoverBlkNum = dataBlkDelNum + parityBlkDelNum;
-    Assert.assertTrue("dataBlkDelNum and parityBlkDelNum should be positive",
-        dataBlkDelNum >= 0 && parityBlkDelNum >= 0);
-    Assert.assertTrue("The sum of dataBlkDelNum and parityBlkDelNum " +
-        "should be between 1 ~ " + NUM_PARITY_UNITS, recoverBlkNum <=
-        NUM_PARITY_UNITS);
+    assertTrue(dataBlkDelNum >= 0 && parityBlkDelNum >= 0,
+        "dataBlkDelNum and parityBlkDelNum should be positive");
+    assertTrue(recoverBlkNum <=
+        NUM_PARITY_UNITS, "The sum of dataBlkDelNum and parityBlkDelNum " +
+        "should be between 1 ~ " + NUM_PARITY_UNITS);
 
     // write a file with the length of writeLen
     Path srcPath = new Path(src);
@@ -237,10 +250,10 @@ abstract public class ReadStripedFileWithDecodingHelper {
 
     int[] delDataBlkIndices = StripedFileTestUtil.randomArray(0, NUM_DATA_UNITS,
         dataBlkDelNum);
-    Assert.assertNotNull(delDataBlkIndices);
+    assertNotNull(delDataBlkIndices);
     int[] delParityBlkIndices = StripedFileTestUtil.randomArray(NUM_DATA_UNITS,
         NUM_DATA_UNITS + NUM_PARITY_UNITS, parityBlkDelNum);
-    Assert.assertNotNull(delParityBlkIndices);
+    assertNotNull(delParityBlkIndices);
 
     int[] delBlkIndices = new int[recoverBlkNum];
     System.arraycopy(delDataBlkIndices, 0,

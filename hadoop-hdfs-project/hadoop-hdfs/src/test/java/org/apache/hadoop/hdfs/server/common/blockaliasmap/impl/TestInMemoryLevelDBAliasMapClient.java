@@ -16,8 +16,6 @@
  */
 package org.apache.hadoop.hdfs.server.common.blockaliasmap.impl;
 
-import com.google.common.collect.Lists;
-import com.google.common.io.Files;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -28,16 +26,23 @@ import org.apache.hadoop.hdfs.server.aliasmap.InMemoryAliasMap;
 import org.apache.hadoop.hdfs.server.aliasmap.InMemoryLevelDBAliasMapServer;
 import org.apache.hadoop.hdfs.server.common.blockaliasmap.BlockAliasMap;
 import org.apache.hadoop.hdfs.server.common.FileRegion;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_BIND_HOST_KEY;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
@@ -58,14 +63,16 @@ public class TestInMemoryLevelDBAliasMapClient {
   private Configuration conf;
   private final static String BPID = "BPID-0";
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     conf = new Configuration();
     int port = 9876;
 
     conf.set(DFSConfigKeys.DFS_PROVIDED_ALIASMAP_INMEMORY_RPC_ADDRESS,
         "localhost:" + port);
-    tempDir = Files.createTempDir();
+    File testDir = GenericTestUtils.getTestDir();
+    tempDir = Files
+        .createTempDirectory(testDir.toPath(), "test").toFile();
     File levelDBDir = new File(tempDir, BPID);
     levelDBDir.mkdirs();
     conf.set(DFSConfigKeys.DFS_PROVIDED_ALIASMAP_INMEMORY_LEVELDB_DIR,
@@ -75,7 +82,7 @@ public class TestInMemoryLevelDBAliasMapClient {
     inMemoryLevelDBAliasMapClient = new InMemoryLevelDBAliasMapClient();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     levelDBAliasMapServer.close();
     inMemoryLevelDBAliasMapClient.close();
@@ -134,7 +141,7 @@ public class TestInMemoryLevelDBAliasMapClient {
     }
 
     assertArrayEquals(
-        new FileRegion[] {new FileRegion(block1, providedStorageLocation1),
+        new FileRegion[]{new FileRegion(block1, providedStorageLocation1),
             new FileRegion(block2, providedStorageLocation2)},
         actualFileRegions.toArray());
   }
@@ -340,5 +347,33 @@ public class TestInMemoryLevelDBAliasMapClient {
 
     assertThat(actualFileRegions).containsExactlyInAnyOrder(
         expectedFileRegions.toArray(new FileRegion[0]));
+  }
+
+  @Test
+  public void testServerBindHost() throws Exception {
+    conf.set(DFS_NAMENODE_SERVICE_RPC_BIND_HOST_KEY, "0.0.0.0");
+    writeRead();
+  }
+
+  @Test
+  public void testNonExistentBlock() throws Exception {
+    inMemoryLevelDBAliasMapClient.setConf(conf);
+    levelDBAliasMapServer.setConf(conf);
+    levelDBAliasMapServer.start();
+    Block block1 = new Block(100, 43, 44);
+    ProvidedStorageLocation providedStorageLocation1 = null;
+    BlockAliasMap.Writer<FileRegion> writer1 =
+        inMemoryLevelDBAliasMapClient.getWriter(null, BPID);
+    try {
+      writer1.store(new FileRegion(block1, providedStorageLocation1));
+      fail("Should fail on writing a region with null ProvidedLocation");
+    } catch (IOException | IllegalArgumentException e) {
+      assertTrue(e.getMessage().contains("not be null"));
+    }
+
+    BlockAliasMap.Reader<FileRegion> reader =
+        inMemoryLevelDBAliasMapClient.getReader(null, BPID);
+    LambdaTestUtils.assertOptionalUnset("Expected empty BlockAlias",
+        reader.resolve(block1));
   }
 }

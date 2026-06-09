@@ -17,15 +17,15 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.List;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
@@ -35,13 +35,13 @@ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.Replica;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 public class TestPipelines {
-  public static final Log LOG = LogFactory.getLog(TestPipelines.class);
+  public static final Logger LOG = LoggerFactory.getLogger(TestPipelines.class);
 
   private static final short REPL_FACTOR = 3;
   private static final int RAND_LIMIT = 2000;
@@ -57,13 +57,13 @@ public class TestPipelines {
     setConfiguration();
   }
 
-  @Before
+  @BeforeEach
   public void startUpCluster() throws IOException {
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(REPL_FACTOR).build();
     fs = cluster.getFileSystem();
   }
 
-  @After
+  @AfterEach
   public void shutDownCluster() throws IOException {
     if (fs != null) {
       fs.close();
@@ -108,10 +108,9 @@ public class TestPipelines {
       Replica r =
           cluster.getFsDatasetTestUtils(dn).fetchReplica(lb.get(0).getBlock());
 
-      assertTrue("Replica on DN " + dn + " shouldn't be null", r != null);
-      assertEquals("Should be RBW replica on " + dn
-          + " after sequence of calls append()/write()/hflush()",
-          HdfsServerConstants.ReplicaState.RBW, r.getState());
+      assertTrue(r != null, "Replica on DN " + dn + " shouldn't be null");
+      assertEquals(HdfsServerConstants.ReplicaState.RBW, r.getState(),
+          "Should be RBW replica on " + dn + " after sequence of calls append()/write()/hflush()");
     }
     ofs.close();
   }
@@ -158,8 +157,8 @@ public class TestPipelines {
   }
 
   private static void initLoggers() {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
-    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.TRACE);
   }
 }

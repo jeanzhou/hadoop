@@ -17,9 +17,6 @@
  */
 package org.apache.hadoop.hdfs.qjournal;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import static org.junit.Assert.*;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeys.IPC_CLIENT_CONNECT_MAX_RETRIES_ON_SASL_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATA_TRANSFER_PROTECTION_KEY;
@@ -40,6 +37,7 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYSTORE_RESOURCE_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_WEB_AUTHENTICATION_KERBEROS_PRINCIPAL_KEY;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.IOException;
@@ -51,25 +49,28 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.http.HttpConfig;
+import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.minikdc.MiniKdc;
+import org.apache.hadoop.security.AuthenticationFilterInitializer;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+@Timeout(180)
 public class TestSecureNNWithQJM {
 
   private static final Path TEST_PATH = new Path("/test-dir");
   private static final Path TEST_PATH_2 = new Path("/test-dir-2");
+  private static final String PREFIX = "hadoop.http.authentication.";
 
   private static HdfsConfiguration baseConf;
   private static File baseDir;
@@ -82,10 +83,7 @@ public class TestSecureNNWithQJM {
   private FileSystem fs;
   private MiniJournalCluster mjc;
 
-  @Rule
-  public Timeout timeout = new Timeout(180000);
-
-  @BeforeClass
+  @BeforeAll
   public static void init() throws Exception {
     baseDir =
         GenericTestUtils.getTestDir(TestSecureNNWithQJM.class.getSimpleName());
@@ -100,8 +98,8 @@ public class TestSecureNNWithQJM {
     SecurityUtil.setAuthenticationMethod(AuthenticationMethod.KERBEROS,
       baseConf);
     UserGroupInformation.setConfiguration(baseConf);
-    assertTrue("Expected configuration to enable security",
-      UserGroupInformation.isSecurityEnabled());
+    assertTrue(UserGroupInformation.isSecurityEnabled(),
+        "Expected configuration to enable security");
 
     String userName = UserGroupInformation.getLoginUser().getShortUserName();
     File keytabFile = new File(baseDir, userName + ".keytab");
@@ -114,6 +112,11 @@ public class TestSecureNNWithQJM {
     String hdfsPrincipal = userName + "/" + krbInstance + "@" + kdc.getRealm();
     String spnegoPrincipal = "HTTP/" + krbInstance + "@" + kdc.getRealm();
 
+    baseConf.set(HttpServer2.FILTER_INITIALIZER_PROPERTY,
+        AuthenticationFilterInitializer.class.getName());
+    baseConf.set(PREFIX + "type", "kerberos");
+    baseConf.set(PREFIX + "kerberos.keytab", keytab);
+    baseConf.set(PREFIX + "kerberos.principal", spnegoPrincipal);
     baseConf.set(DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, hdfsPrincipal);
     baseConf.set(DFS_NAMENODE_KEYTAB_FILE_KEY, keytab);
     baseConf.set(DFS_DATANODE_KERBEROS_PRINCIPAL_KEY, hdfsPrincipal);
@@ -141,23 +144,24 @@ public class TestSecureNNWithQJM {
         KeyStoreTestUtil.getServerSSLConfigFileName());
   }
 
-  @AfterClass
+  @AfterAll
   public static void destroy() throws Exception {
     if (kdc != null) {
       kdc.stop();
     }
     FileUtil.fullyDelete(baseDir);
     KeyStoreTestUtil.cleanupSSLConfig(keystoresDir, sslConfDir);
+    UserGroupInformation.reset();
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     conf = new HdfsConfiguration(baseConf);
   }
 
-  @After
+  @AfterEach
   public void shutdown() throws IOException {
-    IOUtils.cleanup(null, fs);
+    IOUtils.cleanupWithLogger(null, fs);
     if (cluster != null) {
       cluster.shutdown();
       cluster = null;
@@ -207,7 +211,7 @@ public class TestSecureNNWithQJM {
    * @throws IOException if there is an I/O error
    */
   private void restartNameNode() throws IOException {
-    IOUtils.cleanup(null, fs);
+    IOUtils.cleanupWithLogger(null, fs);
     cluster.restartNameNode();
     fs = cluster.getFileSystem();
   }

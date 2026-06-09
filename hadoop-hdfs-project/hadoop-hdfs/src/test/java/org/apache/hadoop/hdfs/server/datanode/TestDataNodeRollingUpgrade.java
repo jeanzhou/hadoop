@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.hdfs.server.datanode;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
@@ -27,10 +27,12 @@ import java.util.Random;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.DFSOutputStream;
 import org.apache.hadoop.hdfs.DFSTestUtil;
@@ -43,25 +45,33 @@ import org.apache.hadoop.hdfs.MiniDFSCluster.DataNodeProperties;
 import org.apache.hadoop.hdfs.TestRollingUpgrade;
 import org.apache.hadoop.hdfs.protocol.BlockLocalPathInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.LayoutVersion;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.tools.DFSAdmin;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
 
 /**
  * Ensure that the DataNode correctly handles rolling upgrade
  * finalize and rollback.
  */
+@Tag("slow")
 public class TestDataNodeRollingUpgrade {
-  private static final Log LOG = LogFactory.getLog(TestDataNodeRollingUpgrade.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDataNodeRollingUpgrade.class);
 
   private static final short REPL_FACTOR = 1;
   private static final int BLOCK_SIZE = 1024 * 1024;
   private static final long FILE_SIZE = BLOCK_SIZE;
   private static final long SEED = 0x1BADF00DL;
+
+  @SuppressWarnings("checkstyle:VisibilityModifier")
+  @TempDir
+  public java.nio.file.Path baseDir;
 
   Configuration conf;
   MiniDFSCluster cluster = null;
@@ -73,7 +83,7 @@ public class TestDataNodeRollingUpgrade {
   private void startCluster() throws IOException {
     conf = new HdfsConfiguration();
     conf.setInt("dfs.blocksize", 1024*1024);
-    cluster = new Builder(conf).numDataNodes(REPL_FACTOR).build();
+    cluster = new Builder(conf, baseDir.toFile()).numDataNodes(REPL_FACTOR).build();
     cluster.waitActive();
     fs = cluster.getFileSystem();
     nn = cluster.getNameNode(0);
@@ -105,8 +115,8 @@ public class TestDataNodeRollingUpgrade {
   private File getBlockForFile(Path path, boolean exists) throws IOException {
     LocatedBlocks blocks = nn.getRpcServer().getBlockLocations(path.toString(),
         0, Long.MAX_VALUE);
-    assertEquals("The test helper functions assume that each file has a single block",
-                 1, blocks.getLocatedBlocks().size());
+    assertEquals(1, blocks.getLocatedBlocks().size(),
+        "The test helper functions assume that each file has a single block");
     ExtendedBlock block = blocks.getLocatedBlocks().get(0).getBlock();
     BlockLocalPathInfo bInfo = dn0.getFSDataset().getBlockLocalPathInfo(block);
     File blockFile = new File(bInfo.getBlockPath());
@@ -168,7 +178,7 @@ public class TestDataNodeRollingUpgrade {
 
   private void startRollingUpgrade() throws Exception {
     LOG.info("Starting rolling upgrade");
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     final DFSAdmin dfsadmin = new DFSAdmin(conf);
     TestRollingUpgrade.runCmd(dfsadmin, true, "-rollingUpgrade", "prepare");
     triggerHeartBeats();
@@ -205,7 +215,8 @@ public class TestDataNodeRollingUpgrade {
     LOG.info("The cluster is active after rollback");
   }
 
-  @Test (timeout=600000)
+  @Test
+  @Timeout(value = 600)
   public void testDatanodeRollingUpgradeWithFinalize() throws Exception {
     try {
       startCluster();
@@ -217,7 +228,8 @@ public class TestDataNodeRollingUpgrade {
     }
   }
 
-  @Test(timeout = 600000)
+  @Test
+  @Timeout(value = 600)
   public void testDatanodeRUwithRegularUpgrade() throws Exception {
     try {
       startCluster();
@@ -256,7 +268,8 @@ public class TestDataNodeRollingUpgrade {
     assert(fs.exists(testFile1));
   }
 
-  @Test (timeout=600000)
+  @Test
+  @Timeout(value = 600)
   public void testDatanodeRollingUpgradeWithRollback() throws Exception {
     try {
       startCluster();
@@ -281,13 +294,14 @@ public class TestDataNodeRollingUpgrade {
       // Ensure that files exist and restored file contents are the same.
       assert(fs.exists(testFile1));
       String fileContents2 = DFSTestUtil.readFile(fs, testFile1);
-      assertThat(fileContents1, is(fileContents2));
+      assertThat(fileContents1).isEqualTo(fileContents2);
     } finally {
       shutdownCluster();
     }
   }
   
-  @Test (timeout=600000)
+  @Test
+  @Timeout(value = 600)
   // Test DatanodeXceiver has correct peer-dataxceiver pairs for sending OOB message
   public void testDatanodePeersXceiver() throws Exception {
     try {
@@ -335,7 +349,8 @@ public class TestDataNodeRollingUpgrade {
    * Support for layout version change with rolling upgrade was
    * added by HDFS-6800 and HDFS-6981.
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testWithLayoutChangeAndFinalize() throws Exception {
     final long seed = 0x600DF00D;
     try {
@@ -360,9 +375,8 @@ public class TestDataNodeRollingUpgrade {
       // Restart the DN with a new layout version to trigger layout upgrade.
       LOG.info("Shutting down the Datanode");
       MiniDFSCluster.DataNodeProperties dnprop = cluster.stopDataNode(0);
-      DFSTestUtil.addDataNodeLayoutVersion(
-          DataNodeLayoutVersion.CURRENT_LAYOUT_VERSION - 1,
-          "Test Layout for TestDataNodeRollingUpgrade");
+      addDataNodeLayoutVersion(
+          DataNodeLayoutVersion.getCurrentLayoutVersion() - 1);
       LOG.info("Restarting the DataNode");
       cluster.restartDataNode(dnprop, true);
       cluster.waitActive();
@@ -396,7 +410,8 @@ public class TestDataNodeRollingUpgrade {
    * Support for layout version change with rolling upgrade was
    * added by HDFS-6800 and HDFS-6981.
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testWithLayoutChangeAndRollback() throws Exception {
     final long seed = 0x600DF00D;
     try {
@@ -421,9 +436,8 @@ public class TestDataNodeRollingUpgrade {
       // Restart the DN with a new layout version to trigger layout upgrade.
       LOG.info("Shutting down the Datanode");
       MiniDFSCluster.DataNodeProperties dnprop = cluster.stopDataNode(0);
-      DFSTestUtil.addDataNodeLayoutVersion(
-          DataNodeLayoutVersion.CURRENT_LAYOUT_VERSION - 1,
-          "Test Layout for TestDataNodeRollingUpgrade");
+      addDataNodeLayoutVersion(
+          DataNodeLayoutVersion.getCurrentLayoutVersion() - 1);
       LOG.info("Restarting the DataNode");
       cluster.restartDataNode(dnprop, true);
       cluster.waitActive();
@@ -468,5 +482,19 @@ public class TestDataNodeRollingUpgrade {
     } finally {
       shutdownCluster();
     }
+  }
+
+  static void addDataNodeLayoutVersion(final int lv) {
+    assertTrue(lv < DataNodeLayoutVersion.getCurrentLayoutVersion());
+    DataNodeLayoutVersion.setCurrentLayoutVersionForTesting(lv);
+
+    // Inject the feature into the FEATURES map.
+    final LayoutVersion.FeatureInfo featureInfo =
+        new LayoutVersion.FeatureInfo(lv, lv + 1,
+            "Test Layout for TestDataNodeRollingUpgrade", false);
+
+    // Update the FEATURES map with the new layout version.
+    LayoutVersion.updateMap(DataNodeLayoutVersion.FEATURES,
+        new LayoutVersion.LayoutFeature[]{() -> featureInfo});
   }
 }

@@ -19,12 +19,11 @@
 package org.apache.hadoop.fs;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeWindows;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.not;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -35,9 +34,9 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,7 +48,7 @@ public class TestFsShellCopy {
   static LocalFileSystem lfs;
   static Path testRootDir, srcPath, dstPath;
   
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     conf = new Configuration();
     shell = new FsShell(conf);
@@ -63,7 +62,7 @@ public class TestFsShellCopy {
     dstPath = new Path(testRootDir, "dstFile");
   }
   
-  @Before
+  @BeforeEach
   public void prepFiles() throws Exception {
     lfs.setVerifyChecksum(true);
     lfs.setWriteChecksum(true);
@@ -189,7 +188,7 @@ public class TestFsShellCopy {
     // copy to new file, then again
     prepPut(dstPath, false, false);
     checkPut(0, srcPath, dstPath, useWindowsPath);
-    if (lfs.isFile(srcPath)) {
+    if (lfs.getFileStatus(srcPath).isFile()) {
       checkPut(1, srcPath, dstPath, useWindowsPath);
     } else { // directory works because it copies into the dir
       // clear contents so the check won't think there are extra paths
@@ -228,11 +227,11 @@ public class TestFsShellCopy {
     if (create) {
       if (isDir) {
         lfs.mkdirs(dst);
-        assertTrue(lfs.isDirectory(dst));
+        assertTrue(lfs.getFileStatus(dst).isDirectory());
       } else {
         lfs.mkdirs(new Path(dst.getName()));
         lfs.create(dst).close();
-        assertTrue(lfs.isFile(dst));
+        assertTrue(lfs.getFileStatus(dst).isFile());
       }
     }
   }
@@ -253,7 +252,7 @@ public class TestFsShellCopy {
     
     Path target;
     if (lfs.exists(dest)) {
-      if (lfs.isDirectory(dest)) {
+      if (lfs.getFileStatus(dest).isDirectory()) {
         target = new Path(pathAsString(dest), src.getName());
       } else {
         target = dest;
@@ -276,7 +275,8 @@ public class TestFsShellCopy {
     
     if (exitCode == 0) {
       assertTrue(lfs.exists(target));
-      assertTrue(lfs.isFile(src) == lfs.isFile(target));
+      assertTrue(lfs.getFileStatus(src).isFile() ==
+          lfs.getFileStatus(target).isFile());
       assertEquals(1, lfs.listStatus(lfs.makeQualified(target).getParent()).length);      
     } else {
       assertEquals(targetExists, lfs.exists(target));
@@ -293,7 +293,7 @@ public class TestFsShellCopy {
 
     argv = new String[]{ "-put", srcPath.toString(), dstPath.toString() };
     assertEquals(0, shell.run(argv));
-    assertTrue(lfs.exists(dstPath) && lfs.isFile(dstPath));
+    assertTrue(lfs.exists(dstPath) && lfs.getFileStatus(dstPath).isFile());
 
     lfs.delete(dstPath, true);
     assertFalse(lfs.exists(dstPath));
@@ -319,7 +319,7 @@ public class TestFsShellCopy {
           "-put", srcPath.toString(), dstPath.toString()+suffix };
       assertEquals(0, shell.run(argv));
       assertTrue(lfs.exists(subdirDstPath));
-      assertTrue(lfs.isFile(subdirDstPath));
+      assertTrue(lfs.getFileStatus(subdirDstPath).isFile());
     }
 
     // ensure .. is interpreted as a dir
@@ -329,7 +329,7 @@ public class TestFsShellCopy {
     argv = new String[]{ "-put", srcPath.toString(), dotdotDst };
     assertEquals(0, shell.run(argv));
     assertTrue(lfs.exists(subdirDstPath));
-    assertTrue(lfs.isFile(subdirDstPath));
+    assertTrue(lfs.getFileStatus(subdirDstPath).isFile());
   }
   
   @Test
@@ -442,9 +442,33 @@ public class TestFsShellCopy {
     assertEquals(0, exit);
     assertFalse(lfs.exists(srcFile));
     assertTrue(lfs.exists(target));
-    assertTrue(lfs.isFile(target));
+    assertTrue(lfs.getFileStatus(target).isFile());
   }
-  
+
+  @Test
+  public void testMoveFileFromLocalDestExists() throws Exception{
+    Path testRoot = new Path(testRootDir, "testPutFile");
+    lfs.delete(testRoot, true);
+    lfs.mkdirs(testRoot);
+
+    Path target = new Path(testRoot, "target");
+    Path srcFile = new Path(testRoot, new Path("srcFile"));
+    lfs.createNewFile(srcFile);
+
+    int exit = shell.run(new String[]{
+        "-moveFromLocal", srcFile.toString(), target.toString()});
+    assertEquals(0, exit);
+    assertFalse(lfs.exists(srcFile));
+    assertTrue(lfs.exists(target));
+    assertTrue(lfs.getFileStatus(target).isFile());
+
+    lfs.createNewFile(srcFile);
+    exit = shell.run(new String[]{
+        "-moveFromLocal", srcFile.toString(), target.toString()});
+    assertEquals(1, exit);
+    assertTrue(lfs.exists(srcFile));
+  }
+
   @Test
   public void testMoveDirFromLocal() throws Exception {    
     Path testRoot = new Path(testRootDir, "testPutDir");
@@ -502,7 +526,7 @@ public class TestFsShellCopy {
     shellRun(0, "-moveFromLocal", winSrcFile, target.toString());
     assertFalse(lfs.exists(srcFile));
     assertTrue(lfs.exists(target));
-    assertTrue(lfs.isFile(target));
+    assertTrue(lfs.getFileStatus(target).isFile());
   }
 
   @Test
@@ -600,15 +624,16 @@ public class TestFsShellCopy {
     final String noDirName = "noDir";
     final Path noDir = new Path(noDirName);
     lfs.delete(noDir, true);
-    assertThat(lfs.exists(noDir), is(false));
+    assertThat(lfs.exists(noDir)).isFalse();
 
-    assertThat("Expected failed put to a path without parent directory",
-        shellRun("-put", srcPath.toString(), noDirName + "/foo"), is(not(0)));
+    assertThat(shellRun("-put", srcPath.toString(), noDirName + "/foo"))
+        .as("Expected failed put to a path without parent directory")
+        .isNotEqualTo(0);
 
     // Note the trailing '/' in the target path.
-    assertThat("Expected failed copyFromLocal to a non-existent directory",
-        shellRun("-copyFromLocal", srcPath.toString(), noDirName + "/"),
-        is(not(0)));
+    assertThat(shellRun("-copyFromLocal", srcPath.toString(), noDirName + "/"))
+        .as("Expected failed copyFromLocal to a non-existent directory")
+        .isNotEqualTo(0);
   }
 
   @Test
@@ -656,6 +681,29 @@ public class TestFsShellCopy {
     } finally {
       // make sure the test file can be deleted
       lfs.setPermission(src, new FsPermission((short)0755));
+    }
+  }
+
+  @Test
+  public void testLazyPersistDirectOverwrite() throws Exception {
+    Path testRoot = new Path(testRootDir, "testLazyPersistDirectOverwrite");
+    try {
+      lfs.delete(testRoot, true);
+      lfs.mkdirs(testRoot);
+      Path filePath = new Path(testRoot, new Path("srcFile"));
+      lfs.create(filePath).close();
+      // Put with overwrite in direct mode.
+      String[] argv =
+          new String[] {"-put", "-f", "-l", "-d", filePath.toString(),
+              filePath.toString()};
+      assertEquals(0, shell.run(argv));
+
+      // Put without overwrite in direct mode shouldn't be success.
+      argv = new String[] {"-put", "-l", "-d", filePath.toString(),
+          filePath.toString()};
+      assertNotEquals(0, shell.run(argv));
+    } finally {
+      lfs.delete(testRoot, true);
     }
   }
 }

@@ -16,7 +16,7 @@
 # limitations under the License.
 #
 
-cmake_minimum_required(VERSION 3.1 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 
 add_definitions(-DLIBHDFS_DLL_EXPORT)
 
@@ -29,15 +29,28 @@ include_directories(
     main/native
     main/native/libhdfs
     ${OS_DIR}
+    ../libhdfspp/lib
 )
 
-hadoop_add_dual_library(hdfs
+set(HDFS_SOURCES
     exception.c
     jni_helper.c
     hdfs.c
-    common/htable.c
+    jclasses.c
     ${OS_DIR}/mutexes.c
     ${OS_DIR}/thread_local_storage.c
+)
+# We want to create an object library for hdfs
+# so that we can reuse it for the targets
+# (like get_jni_test), where we don't wish to
+# link to hdfs's publicly linked libraries
+# (like jvm)
+add_library(hdfs_obj OBJECT ${HDFS_SOURCES})
+set_target_properties(hdfs_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+hadoop_add_dual_library(hdfs
+    $<TARGET_OBJECTS:hdfs_obj>
+    $<TARGET_OBJECTS:x_platform_obj>
+    $<TARGET_OBJECTS:x_platform_obj_c_api>
 )
 if(NEED_LINK_DL)
    set(LIB_DL dl)
@@ -55,16 +68,14 @@ set_target_properties(hdfs PROPERTIES
     SOVERSION ${LIBHDFS_VERSION})
 
 build_libhdfs_test(test_libhdfs_ops hdfs_static test_libhdfs_ops.c)
-link_libhdfs_test(test_libhdfs_ops hdfs_static ${JAVA_JVM_LIBRARY})
-build_libhdfs_test(test_libhdfs_reads hdfs_static test_libhdfs_read.c)
-link_libhdfs_test(test_libhdfs_reads hdfs_static ${JAVA_JVM_LIBRARY})
-build_libhdfs_test(test_libhdfs_write hdfs_static test_libhdfs_write.c)
-link_libhdfs_test(test_libhdfs_write hdfs_static ${JAVA_JVM_LIBRARY})
+link_libhdfs_test(test_libhdfs_ops hdfs_static native_mini_dfs ${JAVA_JVM_LIBRARY})
+add_libhdfs_test(test_libhdfs_ops hdfs_static)
+
 build_libhdfs_test(test_libhdfs_threaded hdfs_static expect.c test_libhdfs_threaded.c ${OS_DIR}/thread.c)
 link_libhdfs_test(test_libhdfs_threaded hdfs_static native_mini_dfs)
 add_libhdfs_test(test_libhdfs_threaded hdfs_static)
 
-if (NOT WIN32)
+if (NOT WIN32 AND NOT APPLE)
 build_libhdfs_test(test_libhdfs_zerocopy hdfs_static expect.c test_libhdfs_zerocopy.c)
 link_libhdfs_test(test_libhdfs_zerocopy hdfs_static native_mini_dfs ${OS_LINK_LIBRARIES})
 add_libhdfs_test(test_libhdfs_zerocopy hdfs_static)
@@ -74,9 +85,11 @@ endif()
 # introducing an abstraction layer over the sys/mman.h functions.
 if(NOT WIN32)
     build_libhdfs_test(test_libhdfs_vecsum hdfs vecsum.c)
+    set(THREADS_PREFER_PTHREAD_FLAG ON)
+    find_package(Threads REQUIRED)
     if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
-        link_libhdfs_test(test_libhdfs_vecsum hdfs pthread)
+        link_libhdfs_test(test_libhdfs_vecsum hdfs ${CMAKE_THREAD_LIBS_INIT})
     else()
-        link_libhdfs_test(test_libhdfs_vecsum hdfs pthread rt)
+        link_libhdfs_test(test_libhdfs_vecsum hdfs ${CMAKE_THREAD_LIBS_INIT} rt)
     endif()
 endif()

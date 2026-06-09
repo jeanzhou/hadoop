@@ -21,26 +21,36 @@ package org.apache.hadoop.fs.s3a;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.Optional;
+import java.util.concurrent.Future;
 import javax.annotation.Nullable;
 
-import com.amazonaws.AmazonClientException;
-import com.amazonaws.SdkBaseException;
-import com.google.common.base.Preconditions;
+import software.amazon.awssdk.core.exception.SdkException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.fs.statistics.DurationTracker;
 import org.apache.hadoop.io.retry.RetryPolicy;
+import org.apache.hadoop.util.DurationInfo;
+import org.apache.hadoop.util.functional.CallableRaisingIOE;
+import org.apache.hadoop.util.functional.FutureIO;
+import org.apache.hadoop.util.functional.InvocationRaisingIOE;
+import org.apache.hadoop.util.Preconditions;
+
+
+import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.invokeTrackingDuration;
 
 /**
  * Class to provide lambda expression invocation of AWS operations.
  *
  * The core retry logic is in
- * {@link #retryUntranslated(String, boolean, Retried, Operation)};
+ * {@link #retryUntranslated(String, boolean, Retried, CallableRaisingIOE)};
  * the other {@code retry() and retryUntranslated()} calls are wrappers.
  *
- * The static {@link #once(String, String, Operation)} and
- * {@link #once(String, String, VoidOperation)} calls take an operation and
+ * The static {@link #once(String, String, CallableRaisingIOE)} and
+ * {@link #once(String, String, InvocationRaisingIOE)} calls take an
+ * operation and
  * return it with AWS exceptions translated to IOEs of some form.
  *
  * The retry logic on a failure is defined by the retry policy passed in
@@ -54,12 +64,14 @@ import org.apache.hadoop.io.retry.RetryPolicy;
  * but before the sleep.
  * These callbacks can be used for reporting and incrementing statistics.
  *
- * The static {@link #quietly(String, String, VoidOperation)} and
- * {@link #quietlyEval(String, String, Operation)} calls exist to take any
- * operation and quietly catch and log at debug. The return value of
- * {@link #quietlyEval(String, String, Operation)} is a java 8 optional,
+ * The static {@link #quietly(String, String, InvocationRaisingIOE)} and
+ * {@link #quietlyEval(String, String, CallableRaisingIOE)} calls exist to
+ * take any operation and quietly catch and log at debug.
+ * The return value of {@link #quietlyEval(String, String, CallableRaisingIOE)}
+ * is a java 8 optional,
  * which can then be used in java8-expressions.
  */
+@InterfaceAudience.Private
 public class Invoker {
   private static final Logger LOG = LoggerFactory.getLogger(Invoker.class);
 
@@ -103,11 +115,37 @@ public class Invoker {
    * @throws IOException any IOE raised, or translated exception
    */
   @Retries.OnceTranslated
-  public static <T> T once(String action, String path, Operation<T> operation)
+  public static <T> T once(String action, String path,
+      CallableRaisingIOE<T> operation)
+      throws IOException {
+    try (DurationInfo ignored = new DurationInfo(LOG, false, "%s", action)) {
+      return operation.apply();
+    } catch (SdkException e) {
+      throw S3AUtils.translateException(action, path, e);
+    }
+  }
+
+  /**
+   * Execute a function, translating any exception into an IOException.
+   * The supplied duration tracker instance is updated with success/failure.
+   * @param action action to execute (used in error messages)
+   * @param path path of work (used in error messages)
+   * @param tracker tracker to update
+   * @param operation operation to execute
+   * @param <T> type of return value
+   * @return the result of the function call
+   * @throws IOException any IOE raised, or translated exception
+   */
+  @Retries.OnceTranslated
+  public static <T> T onceTrackingDuration(
+      final String action,
+      final String path,
+      final DurationTracker tracker,
+      final CallableRaisingIOE<T> operation)
       throws IOException {
     try {
-      return operation.execute();
-    } catch (AmazonClientException e) {
+      return invokeTrackingDuration(tracker, operation);
+    } catch (SdkException e) {
       throw S3AUtils.translateException(action, path, e);
     }
   }
@@ -120,18 +158,43 @@ public class Invoker {
    * @throws IOException any IOE raised, or translated exception
    */
   @Retries.OnceTranslated
-  public static void once(String action, String path, VoidOperation operation)
-      throws IOException {
+  public static void once(String action, String path,
+      InvocationRaisingIOE operation) throws IOException {
     once(action, path,
         () -> {
-          operation.execute();
+          operation.apply();
           return null;
         });
   }
 
+
   /**
-   * Execute an operation and ignore all raised IOExceptions; log at INFO.
-   * @param log log to log at info.
+   *
+   * Wait for a future, translating SdkException into an IOException.
+   * @param action action to execute (used in error messages)
+   * @param path path of work (used in error messages)
+   * @param future future to await for
+   * @param <T> type of return value
+   * @return the result of the function call
+   * @throws IOException any IOE raised, or translated exception
+   * @throws RuntimeException any other runtime exception
+   */
+  @Retries.OnceTranslated
+  public static <T> T onceInTheFuture(String action,
+      String path,
+      final Future<T> future)
+      throws IOException {
+    try (DurationInfo ignored = new DurationInfo(LOG, false, "%s", action)) {
+      return FutureIO.awaitFuture(future);
+    } catch (SdkException e) {
+      throw S3AUtils.translateException(action, path, e);
+    }
+  }
+
+  /**
+   * Execute an operation and ignore all raised IOExceptions; log at INFO;
+   * full stack only at DEBUG.
+   * @param log log to use.
    * @param action action to include in log
    * @param path optional path to include in log
    * @param operation operation to execute
@@ -141,17 +204,21 @@ public class Invoker {
       Logger log,
       String action,
       String path,
-      Operation<T> operation) {
+      CallableRaisingIOE<T> operation) {
     try {
       once(action, path, operation);
     } catch (IOException e) {
-      log.info("{}: {}", toDescription(action, path), e.toString(), e);
+      String description = toDescription(action, path);
+      String error = e.toString();
+      log.info("{}: {}", description, error);
+      log.debug("{}", description, e);
     }
   }
 
   /**
-   * Execute an operation and ignore all raised IOExceptions; log at INFO.
-   * @param log log to log at info.
+   * Execute an operation and ignore all raised IOExceptions; log at INFO;
+   * full stack only at DEBUG.
+   * @param log log to use.
    * @param action action to include in log
    * @param path optional path to include in log
    * @param operation operation to execute
@@ -160,10 +227,10 @@ public class Invoker {
       Logger log,
       String action,
       String path,
-      VoidOperation operation) {
+      InvocationRaisingIOE operation) {
     ignoreIOExceptions(log, action, path,
         () -> {
-          operation.execute();
+          operation.apply();
           return null;
         });
   }
@@ -183,11 +250,38 @@ public class Invoker {
       String path,
       boolean idempotent,
       Retried retrying,
-      VoidOperation operation)
+      InvocationRaisingIOE operation)
       throws IOException {
     retry(action, path, idempotent, retrying,
         () -> {
-          operation.execute();
+          operation.apply();
+          return null;
+        });
+  }
+
+  /**
+   * Execute a void operation with retry processing when doRetry=true, else
+   * just once.
+   * @param doRetry true if retries should be performed
+   * @param action action to execute (used in error messages)
+   * @param path path of work (used in error messages)
+   * @param idempotent does the operation have semantics
+   * which mean that it can be retried even if was already executed?
+   * @param retrying callback on retries
+   * @param operation operation to execute
+   * @throws IOException any IOE raised, or translated exception
+   */
+  @Retries.RetryTranslated
+  public void maybeRetry(boolean doRetry,
+      String action,
+      String path,
+      boolean idempotent,
+      Retried retrying,
+      InvocationRaisingIOE operation)
+      throws IOException {
+    maybeRetry(doRetry, action, path, idempotent, retrying,
+        () -> {
+          operation.apply();
           return null;
         });
   }
@@ -205,9 +299,31 @@ public class Invoker {
   public void retry(String action,
       String path,
       boolean idempotent,
-      VoidOperation operation)
+      InvocationRaisingIOE operation)
       throws IOException {
     retry(action, path, idempotent, retryCallback, operation);
+  }
+
+  /**
+   * Execute a void operation with the default retry callback invoked when
+   * doRetry=true, else just once.
+   * @param doRetry true if retries should be performed
+   * @param action action to execute (used in error messages)
+   * @param path path of work (used in error messages)
+   * @param idempotent does the operation have semantics
+   * which mean that it can be retried even if was already executed?
+   * @param operation operation to execute
+   * @throws IOException any IOE raised, or translated exception
+   */
+  @Retries.RetryTranslated
+  public void maybeRetry(
+      boolean doRetry,
+      String action,
+      String path,
+      boolean idempotent,
+      InvocationRaisingIOE operation)
+      throws IOException {
+    maybeRetry(doRetry, action, path, idempotent, retryCallback, operation);
   }
 
   /**
@@ -225,7 +341,7 @@ public class Invoker {
   public <T> T retry(String action,
       @Nullable String path,
       boolean idempotent,
-      Operation<T> operation)
+      CallableRaisingIOE<T> operation)
       throws IOException {
 
     return retry(action, path, idempotent, retryCallback, operation);
@@ -233,7 +349,7 @@ public class Invoker {
 
   /**
    * Execute a function with retry processing.
-   * Uses {@link #once(String, String, Operation)} as the inner
+   * Uses {@link #once(String, String, CallableRaisingIOE)} as the inner
    * invocation mechanism before retry logic is performed.
    * @param <T> type of return value
    * @param action action to execute (used in error messages)
@@ -251,13 +367,48 @@ public class Invoker {
       @Nullable String path,
       boolean idempotent,
       Retried retrying,
-      Operation<T> operation)
+      CallableRaisingIOE<T> operation)
       throws IOException {
     return retryUntranslated(
         toDescription(action, path),
         idempotent,
         retrying,
         () -> once(action, path, operation));
+  }
+
+  /**
+   * Execute a function with retry processing when doRetry=true, else just once.
+   * Uses {@link #once(String, String, CallableRaisingIOE)} as the inner
+   * invocation mechanism before retry logic is performed.
+   * @param <T> type of return value
+   * @param doRetry true if retries should be performed
+   * @param action action to execute (used in error messages)
+   * @param path path of work (used in error messages)
+   * @param idempotent does the operation have semantics
+   * which mean that it can be retried even if was already executed?
+   * @param retrying callback on retries
+   * @param operation operation to execute
+   * @return the result of the call
+   * @throws IOException any IOE raised, or translated exception
+   */
+  @Retries.RetryTranslated
+  public <T> T maybeRetry(
+      boolean doRetry,
+      String action,
+      @Nullable String path,
+      boolean idempotent,
+      Retried retrying,
+      CallableRaisingIOE<T> operation)
+      throws IOException {
+    if (doRetry) {
+      return retryUntranslated(
+          toDescription(action, path),
+          idempotent,
+          retrying,
+          () -> once(action, path, operation));
+    } else {
+      return once(action, path, operation);
+    }
   }
 
   /**
@@ -276,7 +427,7 @@ public class Invoker {
   public <T> T retryUntranslated(
       String text,
       boolean idempotent,
-      Operation<T> operation) throws IOException {
+      CallableRaisingIOE<T> operation) throws IOException {
     return retryUntranslated(text, idempotent,
         retryCallback, operation);
   }
@@ -293,7 +444,7 @@ public class Invoker {
    * @param operation operation to execute
    * @return the result of the call
    * @throws IOException any IOE raised
-   * @throws SdkBaseException any AWS exception raised
+   * @throws SdkException any AWS exception raised
    * @throws RuntimeException : these are never caught and retries.
    */
   @Retries.RetryRaw
@@ -301,7 +452,7 @@ public class Invoker {
       String text,
       boolean idempotent,
       Retried retrying,
-      Operation<T> operation) throws IOException {
+      CallableRaisingIOE<T> operation) throws IOException {
 
     Preconditions.checkArgument(retrying != null, "null retrying argument");
     int retryCount = 0;
@@ -311,23 +462,24 @@ public class Invoker {
     do {
       try {
         if (retryCount > 0) {
-          LOG.debug("retry #{}", retryCount);
+          LOG.debug("{} retry #{}", text, retryCount);
         }
         // execute the operation, returning if successful
-        return operation.execute();
-      } catch (IOException | SdkBaseException e) {
+        return operation.apply();
+      } catch (IOException | SdkException e) {
         caught = e;
       }
       // you only get here if the operation didn't complete
       // normally, hence caught != null
-
+      LOG.debug("{} ; {}, ", text, caught.toString());
+      LOG.trace("", caught);
       // translate the exception into an IOE for the retry logic
       IOException translated;
       if (caught instanceof IOException) {
         translated = (IOException) caught;
       } else {
-        translated = S3AUtils.translateException(text, "",
-            (SdkBaseException)caught);
+        translated = S3AUtils.translateException(text, "/",
+            (SdkException) caught);
       }
 
       try {
@@ -366,10 +518,9 @@ public class Invoker {
     if (caught instanceof IOException) {
       throw (IOException) caught;
     } else {
-      throw (SdkBaseException) caught;
+      throw (SdkException) caught;
     }
   }
-
 
   /**
    * Execute an operation; any exception raised is simply caught and
@@ -380,7 +531,7 @@ public class Invoker {
    */
   public static void quietly(String action,
       String path,
-      VoidOperation operation) {
+      InvocationRaisingIOE operation) {
     try {
       once(action, path, operation);
     } catch (Exception e) {
@@ -400,7 +551,7 @@ public class Invoker {
    */
   public static <T> Optional<T> quietlyEval(String action,
       String path,
-      Operation<T> operation) {
+      CallableRaisingIOE<T> operation) {
     try {
       return Optional.of(once(action, path, operation));
     } catch (Exception e) {
@@ -418,23 +569,6 @@ public class Invoker {
   private static String toDescription(String action, @Nullable String path) {
     return action +
         (StringUtils.isNotEmpty(path) ? (" on " + path) : "");
-  }
-
-  /**
-   * Arbitrary operation throwing an IOException.
-   * @param <T> return type
-   */
-  @FunctionalInterface
-  public interface Operation<T> {
-    T execute() throws IOException;
-  }
-
-  /**
-   * Void operation which may raise an IOException.
-   */
-  @FunctionalInterface
-  public interface VoidOperation {
-    void execute() throws IOException;
   }
 
   /**
@@ -471,7 +605,7 @@ public class Invoker {
   };
 
   /**
-   * Log summary at info, full stack at debug.
+   * Log retries at debug.
    */
   public static final Retried LOG_EVENT = new Retried() {
     @Override

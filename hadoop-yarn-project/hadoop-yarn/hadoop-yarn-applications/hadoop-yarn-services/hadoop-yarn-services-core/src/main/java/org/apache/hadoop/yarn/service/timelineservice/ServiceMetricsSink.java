@@ -31,7 +31,7 @@ import org.slf4j.LoggerFactory;
  * adding the following to by This would actually be set as: <code>
  * [prefix].sink.[some instance name].class
  * =org.apache.hadoop.yarn.service.timelineservice.ServiceMetricsSink
- * </code>, where <tt>prefix</tt> is "atsv2": and <tt>some instance name</tt> is
+ * </code>, where <code>prefix</code> is "atsv2": and <code>some instance name</code> is
  * just any unique name, so properties can be differentiated if there are
  * multiple sinks of the same type created
  */
@@ -77,16 +77,12 @@ public class ServiceMetricsSink implements MetricsSink {
     }
 
     if (isServiceMetrics && appId != null) {
-      if (log.isDebugEnabled()) {
-        log.debug("Publishing service metrics. " + record);
-      }
+      log.debug("Publishing service metrics. {}", record);
       serviceTimelinePublisher.publishMetrics(record.metrics(), appId,
           ServiceTimelineEntityType.SERVICE_ATTEMPT.toString(),
           record.timestamp());
     } else if (isComponentMetrics) {
-      if (log.isDebugEnabled()) {
-        log.debug("Publishing Component metrics. " + record);
-      }
+      log.debug("Publishing Component metrics. {}", record);
       serviceTimelinePublisher.publishMetrics(record.metrics(), record.name(),
           ServiceTimelineEntityType.COMPONENT.toString(), record.timestamp());
     }

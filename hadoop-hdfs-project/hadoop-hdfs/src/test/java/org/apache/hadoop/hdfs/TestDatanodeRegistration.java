@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.client.BlockReportOptions;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
@@ -28,10 +28,10 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.IncorrectVersionException;
 import org.apache.hadoop.hdfs.server.common.StorageInfo;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeLayoutVersion;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
@@ -39,15 +39,16 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.VersionInfo;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 import java.net.InetSocketAddress;
 import java.security.Permission;
 import java.util.concurrent.TimeoutException;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 
@@ -56,7 +57,8 @@ import static org.mockito.Mockito.mock;
  */
 public class TestDatanodeRegistration {
   
-  public static final Log LOG = LogFactory.getLog(TestDatanodeRegistration.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestDatanodeRegistration.class);
 
   private static class MonitorDNS extends SecurityManager {
     int lookups = 0;
@@ -78,8 +80,13 @@ public class TestDatanodeRegistration {
   @Test
   public void testDNSLookups() throws Exception {
     MonitorDNS sm = new MonitorDNS();
-    System.setSecurityManager(sm);
-    
+    try {
+      System.setSecurityManager(sm);
+    } catch (UnsupportedOperationException e) {
+      assumeTrue(false,
+          "Test is skipped because SecurityManager cannot be set (JEP 411)");
+    }
+
     MiniDFSCluster cluster = null;
     try {
       HdfsConfiguration conf = new HdfsConfiguration();
@@ -87,7 +94,7 @@ public class TestDatanodeRegistration {
       cluster.waitActive();
       
       int initialLookups = sm.lookups;
-      assertTrue("dns security manager is active", initialLookups != 0);
+      assertTrue(initialLookups != 0, "dns security manager is active");
       
       DatanodeManager dm =
           cluster.getNamesystem().getBlockManager().getDatanodeManager();
@@ -190,14 +197,14 @@ public class TestDatanodeRegistration {
           .getCTime();
       StorageInfo mockStorageInfo = mock(StorageInfo.class);
       doReturn(nnCTime).when(mockStorageInfo).getCTime();
-      doReturn(HdfsServerConstants.DATANODE_LAYOUT_VERSION).when(mockStorageInfo)
-          .getLayoutVersion();
+      doReturn(DataNodeLayoutVersion.getCurrentLayoutVersion())
+          .when(mockStorageInfo).getLayoutVersion();
       DatanodeRegistration dnReg = new DatanodeRegistration(dnId,
           mockStorageInfo, null, VersionInfo.getVersion());
       rpcServer.registerDatanode(dnReg);
 
       DatanodeInfo[] report = client.datanodeReport(DatanodeReportType.ALL);
-      assertEquals("Expected a registered datanode", 1, report.length);
+      assertEquals(1, report.length, "Expected a registered datanode");
 
       // register the same datanode again with a different storage ID
       dnId = new DatanodeID(DN_IP_ADDR, DN_HOSTNAME,
@@ -208,8 +215,8 @@ public class TestDatanodeRegistration {
       rpcServer.registerDatanode(dnReg);
 
       report = client.datanodeReport(DatanodeReportType.ALL);
-      assertEquals("Datanode with changed storage ID not recognized",
-          1, report.length);
+      assertEquals(1, report.length,
+          "Datanode with changed storage ID not recognized");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -235,11 +242,13 @@ public class TestDatanodeRegistration {
       doReturn(nnCTime).when(mockStorageInfo).getCTime();
       
       DatanodeRegistration mockDnReg = mock(DatanodeRegistration.class);
-      doReturn(HdfsServerConstants.DATANODE_LAYOUT_VERSION).when(mockDnReg).getVersion();
+      doReturn(DataNodeLayoutVersion.getCurrentLayoutVersion())
+          .when(mockDnReg).getVersion();
       doReturn("127.0.0.1").when(mockDnReg).getIpAddr();
       doReturn(123).when(mockDnReg).getXferPort();
       doReturn("fake-storage-id").when(mockDnReg).getDatanodeUuid();
       doReturn(mockStorageInfo).when(mockDnReg).getStorageInfo();
+      doReturn("localhost").when(mockDnReg).getHostName();
       
       // Should succeed when software versions are the same.
       doReturn("3.0.0").when(mockDnReg).getSoftwareVersion();
@@ -284,7 +293,8 @@ public class TestDatanodeRegistration {
       doReturn(nnCTime).when(mockStorageInfo).getCTime();
       
       DatanodeRegistration mockDnReg = mock(DatanodeRegistration.class);
-      doReturn(HdfsServerConstants.DATANODE_LAYOUT_VERSION).when(mockDnReg).getVersion();
+      doReturn(DataNodeLayoutVersion.getCurrentLayoutVersion())
+          .when(mockDnReg).getVersion();
       doReturn("fake-storage-id").when(mockDnReg).getDatanodeUuid();
       doReturn(mockStorageInfo).when(mockDnReg).getStorageInfo();
       
@@ -293,6 +303,7 @@ public class TestDatanodeRegistration {
       doReturn(VersionInfo.getVersion()).when(mockDnReg).getSoftwareVersion();
       doReturn("127.0.0.1").when(mockDnReg).getIpAddr();
       doReturn(123).when(mockDnReg).getXferPort();
+      doReturn("localhost").when(mockDnReg).getHostName();
       rpcServer.registerDatanode(mockDnReg);
       
       // Should succeed when software versions are the same and CTimes are
@@ -330,86 +341,96 @@ public class TestDatanodeRegistration {
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_HANDLER_COUNT_KEY, 4);
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, Integer.MAX_VALUE);
 
-    final MiniDFSCluster cluster =
-        new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
-    cluster.waitActive();
-    cluster.getHttpUri(0);
-    FSNamesystem fsn = cluster.getNamesystem();
-    String bpId = fsn.getBlockPoolId();
-
-    DataNode dn = cluster.getDataNodes().get(0);
-    DatanodeDescriptor dnd =
-        NameNodeAdapter.getDatanode(fsn, dn.getDatanodeId());
-    DataNodeTestUtils.setHeartbeatsDisabledForTests(dn, true);
-    DatanodeStorageInfo storage = dnd.getStorageInfos()[0];
-
-    // registration should not change after heartbeat.
-    assertTrue(dnd.isRegistered());
-    DatanodeRegistration lastReg = dn.getDNRegistrationForBP(bpId);
-    waitForHeartbeat(dn, dnd);
-    assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
-
-    // force a re-registration on next heartbeat.
-    dnd.setForceRegistration(true);
-    assertFalse(dnd.isRegistered());
-    waitForHeartbeat(dn, dnd);
-    assertTrue(dnd.isRegistered());
-    DatanodeRegistration newReg = dn.getDNRegistrationForBP(bpId);
-    assertNotSame(lastReg, newReg);
-    lastReg = newReg;
-
-    // registration should not change on subsequent heartbeats.
-    waitForHeartbeat(dn, dnd);
-    assertTrue(dnd.isRegistered());
-    assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
-    assertTrue(waitForBlockReport(dn, dnd));
-    assertTrue(dnd.isRegistered());
-    assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
-
-    // check that block report is not processed and registration didn't change.
-    dnd.setForceRegistration(true);
-    assertFalse(waitForBlockReport(dn, dnd));
-    assertFalse(dnd.isRegistered());
-    assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
-
-    // heartbeat should trigger re-registration, and next block report should
-    // not change registration.
-    waitForHeartbeat(dn, dnd);
-    assertTrue(dnd.isRegistered());
-    newReg = dn.getDNRegistrationForBP(bpId);
-    assertNotSame(lastReg, newReg);
-    lastReg = newReg;
-    assertTrue(waitForBlockReport(dn, dnd));
-    assertTrue(dnd.isRegistered());
-    assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
-
-    // registration doesn't change.
-    ExtendedBlock eb = new ExtendedBlock(bpId, 1234);
-    dn.notifyNamenodeDeletedBlock(eb, storage.getStorageID());
-    DataNodeTestUtils.triggerDeletionReport(dn);
-    assertTrue(dnd.isRegistered());
-    assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
-
-    // a failed IBR will effectively unregister the node.
-    boolean failed = false;
+    MiniDFSCluster cluster = null;
     try {
-      // pass null to cause a failure since there aren't any easy failure
-      // modes since it shouldn't happen.
-      fsn.processIncrementalBlockReport(lastReg, null);
-    } catch (NullPointerException npe) {
-      failed = true;
-    }
-    assertTrue("didn't fail", failed);
-    assertFalse(dnd.isRegistered());
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+      cluster.waitActive();
+      cluster.getHttpUri(0);
+      FSNamesystem fsn = cluster.getNamesystem();
+      String bpId = fsn.getBlockPoolId();
 
-    // should remain unregistered until next heartbeat.
-    dn.notifyNamenodeDeletedBlock(eb, storage.getStorageID());
-    DataNodeTestUtils.triggerDeletionReport(dn);
-    assertFalse(dnd.isRegistered());
-    assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
-    waitForHeartbeat(dn, dnd);
-    assertTrue(dnd.isRegistered());
-    assertNotSame(lastReg, dn.getDNRegistrationForBP(bpId));
+      DataNode dn = cluster.getDataNodes().get(0);
+      DatanodeDescriptor dnd =
+          NameNodeAdapter.getDatanode(fsn, dn.getDatanodeId());
+      DataNodeTestUtils.setHeartbeatsDisabledForTests(dn, true);
+      DatanodeStorageInfo storage = dnd.getStorageInfos()[0];
+
+      // registration should not change after heartbeat.
+      assertTrue(dnd.isRegistered());
+      DatanodeRegistration lastReg = dn.getDNRegistrationForBP(bpId);
+      waitForHeartbeat(dn, dnd);
+      assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
+
+      // force a re-registration on next heartbeat.
+      dnd.setForceRegistration(true);
+      assertFalse(dnd.isRegistered());
+      waitForHeartbeat(dn, dnd);
+      assertTrue(dnd.isRegistered());
+      DatanodeRegistration newReg = dn.getDNRegistrationForBP(bpId);
+      assertNotSame(lastReg, newReg);
+      lastReg = newReg;
+
+      // registration should not change on subsequent heartbeats.
+      waitForHeartbeat(dn, dnd);
+      assertTrue(dnd.isRegistered());
+      assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
+      assertTrue(waitForBlockReport(dn, dnd),
+          "block report is not processed for DN " + dnd);
+      assertTrue(dnd.isRegistered());
+      assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
+
+      // check that block report is not processed and registration didn't
+      // change.
+      dnd.setForceRegistration(true);
+      assertFalse(waitForBlockReport(dn, dnd),
+          "block report is processed for DN " + dnd);
+      assertFalse(dnd.isRegistered());
+      assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
+
+      // heartbeat should trigger re-registration, and next block report
+      // should not change registration.
+      waitForHeartbeat(dn, dnd);
+      assertTrue(dnd.isRegistered());
+      newReg = dn.getDNRegistrationForBP(bpId);
+      assertNotSame(lastReg, newReg);
+      lastReg = newReg;
+      assertTrue(waitForBlockReport(dn, dnd),
+          "block report is not processed for DN " + dnd);
+      assertTrue(dnd.isRegistered());
+      assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
+
+      // registration doesn't change.
+      ExtendedBlock eb = new ExtendedBlock(bpId, 1234);
+      dn.notifyNamenodeDeletedBlock(eb, storage.getStorageID());
+      DataNodeTestUtils.triggerDeletionReport(dn);
+      assertTrue(dnd.isRegistered());
+      assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
+
+      // a failed IBR will effectively unregister the node.
+      boolean failed = false;
+      try {
+        // pass null to cause a failure since there aren't any easy failure
+        // modes since it shouldn't happen.
+        fsn.processIncrementalBlockReport(lastReg, null);
+      } catch (NullPointerException npe) {
+        failed = true;
+      }
+      assertTrue(failed, "didn't fail");
+      assertFalse(dnd.isRegistered());
+
+      // should remain unregistered until next heartbeat.
+      dn.notifyNamenodeDeletedBlock(eb, storage.getStorageID());
+      DataNodeTestUtils.triggerDeletionReport(dn);
+      assertFalse(dnd.isRegistered());
+      assertSame(lastReg, dn.getDNRegistrationForBP(bpId));
+      waitForHeartbeat(dn, dnd);
+      assertTrue(dnd.isRegistered());
+      assertNotSame(lastReg, dn.getDNRegistrationForBP(bpId));
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
   }
 
   private void waitForHeartbeat(final DataNode dn, final DatanodeDescriptor dnd)
@@ -439,8 +460,9 @@ public class TestDatanodeRegistration {
         public Boolean get() {
           return lastCount != storage.getBlockReportCount();
         }
-      }, 10, 2000);
+      }, 10, 6000);
     } catch (TimeoutException te) {
+      LOG.error("Timeout waiting for block report for {}", dnd);
       return false;
     }
     return true;

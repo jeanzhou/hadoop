@@ -18,22 +18,22 @@
 package org.apache.hadoop.ipc;
 
 import org.apache.hadoop.conf.Configuration;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestMultipleProtocolServer extends TestRpcBase {
 
   private static RPC.Server server;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     super.setupConf();
 
     server = setupTestServer(conf, 2);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     server.stop();
   }
@@ -45,7 +45,7 @@ public class TestMultipleProtocolServer extends TestRpcBase {
     // Set RPC engine to protobuf RPC engine
     Configuration conf2 = new Configuration();
     RPC.setProtocolEngine(conf2, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     TestRpcService client = RPC.getProxy(TestRpcService.class, 0, addr, conf2);
     TestProtoBufRpc.testProtoBufRpc(client);
   }

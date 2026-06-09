@@ -29,11 +29,18 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.lib.IdentityMapper;
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class TestJobName extends ClusterMapReduceTestCase {
+
+  @BeforeAll
+  public static void setupClass() throws Exception {
+    setupClassBase(TestJobName.class);
+  }
 
   @Test
   public void testComplexName() throws Exception {

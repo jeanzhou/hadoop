@@ -18,136 +18,50 @@
 
 package org.apache.hadoop.fs.s3native;
 
-import org.apache.commons.lang.StringUtils;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Objects;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.io.UnsupportedEncodingException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URLDecoder;
-import java.util.Objects;
-
-import static org.apache.commons.lang.StringUtils.equalsIgnoreCase;
+import static org.apache.commons.lang3.StringUtils.equalsIgnoreCase;
 
 /**
  * Class to aid logging in to S3 endpoints.
  * It is in S3N so that it can be used across all S3 filesystems.
+ *
+ * The core function of this class was the extraction and decoding of user:secret
+ * information from filesystems URIs.
+ * All that is left now is some URI canonicalization and checking.
  */
+@InterfaceAudience.Private
+@InterfaceStability.Evolving
 public final class S3xLoginHelper {
-  private static final Logger LOG =
-      LoggerFactory.getLogger(S3xLoginHelper.class);
 
   private S3xLoginHelper() {
   }
 
-  public static final String LOGIN_WARNING =
-      "The Filesystem URI contains login details."
-      +" This is insecure and may be unsupported in future.";
-
-  public static final String PLUS_WARNING =
-      "Secret key contains a special character that should be URL encoded! " +
-          "Attempting to resolve...";
-
-  public static final String PLUS_UNENCODED = "+";
-  public static final String PLUS_ENCODED = "%2B";
-
   /**
-   * Build the filesystem URI. This can include stripping down of part
-   * of the URI.
+   * Build the filesystem URI.
    * @param uri filesystem uri
    * @return the URI to use as the basis for FS operation and qualifying paths.
-   * @throws IllegalArgumentException if the URI is in some way invalid.
+   * @throws NullPointerException if the URI has null parts.
    */
   public static URI buildFSURI(URI uri) {
+    // look for login secrets and fail if they are present.
     Objects.requireNonNull(uri, "null uri");
     Objects.requireNonNull(uri.getScheme(), "null uri.getScheme()");
-    if (uri.getHost() == null && uri.getAuthority() != null) {
-      Objects.requireNonNull(uri.getHost(), "null uri host." +
-          " This can be caused by unencoded / in the password string");
-    }
     Objects.requireNonNull(uri.getHost(), "null uri host.");
     return URI.create(uri.getScheme() + "://" + uri.getHost());
   }
 
   /**
-   * Create a stripped down string value for error messages.
-   * @param pathUri URI
-   * @return a shortened schema://host/path value
-   */
-  public static String toString(URI pathUri) {
-    return pathUri != null
-        ? String.format("%s://%s/%s",
-        pathUri.getScheme(), pathUri.getHost(), pathUri.getPath())
-        : "(null URI)";
-  }
-
-  /**
-   * Extract the login details from a URI, logging a warning if
-   * the URI contains these.
-   * @param name URI of the filesystem, can be null
-   * @return a login tuple, possibly empty.
-   */
-  public static Login extractLoginDetailsWithWarnings(URI name) {
-    Login login = extractLoginDetails(name);
-    if (login.hasLogin()) {
-      LOG.warn(LOGIN_WARNING);
-    }
-    return login;
-  }
-
-  /**
-   * Extract the login details from a URI.
-   * @param name URI of the filesystem, may be null
-   * @return a login tuple, possibly empty.
-   */
-  public static Login extractLoginDetails(URI name) {
-    if (name == null) {
-      return Login.EMPTY;
-    }
-
-    try {
-      String authority = name.getAuthority();
-      if (authority == null) {
-        return Login.EMPTY;
-      }
-      int loginIndex = authority.indexOf('@');
-      if (loginIndex < 0) {
-        // no login
-        return Login.EMPTY;
-      }
-      String login = authority.substring(0, loginIndex);
-      int loginSplit = login.indexOf(':');
-      if (loginSplit > 0) {
-        String user = login.substring(0, loginSplit);
-        String encodedPassword = login.substring(loginSplit + 1);
-        if (encodedPassword.contains(PLUS_UNENCODED)) {
-          LOG.warn(PLUS_WARNING);
-          encodedPassword = encodedPassword.replaceAll("\\" + PLUS_UNENCODED,
-              PLUS_ENCODED);
-        }
-        String password = URLDecoder.decode(encodedPassword,
-            "UTF-8");
-        return new Login(user, password);
-      } else if (loginSplit == 0) {
-        // there is no user, just a password. In this case, there's no login
-        return Login.EMPTY;
-      } else {
-        return new Login(login, "");
-      }
-    } catch (UnsupportedEncodingException e) {
-      // this should never happen; translate it if it does.
-      throw new RuntimeException(e);
-    }
-  }
-
-  /**
    * Canonicalize the given URI.
-   *
-   * This strips out login information.
    *
    * @param uri the URI to canonicalize
    * @param defaultPort default port to use in canonicalized URI if the input
@@ -159,7 +73,7 @@ public final class S3xLoginHelper {
       // reconstruct the uri with the default port set
       try {
         uri = new URI(uri.getScheme(),
-            null,
+            uri.getUserInfo(),
             uri.getHost(),
             defaultPort,
             uri.getPath(),
@@ -177,8 +91,7 @@ public final class S3xLoginHelper {
 
   /**
    * Check the path, ignoring authentication details.
-   * See {@link FileSystem#checkPath(Path)} for the operation of this.
-   *
+   * See {@code FileSystem.checkPath(Path)} for the operation of this.
    * Essentially
    * <ol>
    *   <li>The URI is canonicalized.</li>
@@ -234,8 +147,7 @@ public final class S3xLoginHelper {
     }
     // make sure the exception strips out any auth details
     throw new IllegalArgumentException(
-        "Wrong FS " + S3xLoginHelper.toString(pathUri)
-            + " -expected " + fsUri);
+        "Wrong FS " + pathUri + " -expected " + fsUri);
   }
 
   /**
@@ -244,8 +156,6 @@ public final class S3xLoginHelper {
   public static class Login {
     private final String user;
     private final String password;
-
-    public static final Login EMPTY = new Login();
 
     /**
      * Create an instance with no login details.
@@ -262,10 +172,10 @@ public final class S3xLoginHelper {
 
     /**
      * Predicate to verify login details are defined.
-     * @return true if the username is defined (not null, not empty).
+     * @return true if the instance contains login information.
      */
     public boolean hasLogin() {
-      return StringUtils.isNotEmpty(user);
+      return StringUtils.isNotEmpty(password) || StringUtils.isNotEmpty(user);
     }
 
     /**

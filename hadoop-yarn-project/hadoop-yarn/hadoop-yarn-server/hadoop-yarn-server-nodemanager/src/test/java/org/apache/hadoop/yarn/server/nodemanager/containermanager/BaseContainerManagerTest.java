@@ -18,14 +18,15 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.doNothing;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.anyString;
 
+import org.apache.hadoop.yarn.server.nodemanager.NodeResourceMonitorImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,7 +76,7 @@ import org.apache.hadoop.yarn.server.nodemanager.DefaultContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.DeletionService;
 import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
 import org.apache.hadoop.yarn.server.nodemanager.LocalRMInterface;
-import org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager.NMContext;
 import org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdater;
@@ -92,9 +93,11 @@ import org.apache.hadoop.yarn.server.nodemanager.security.NMContainerTokenSecret
 import org.apache.hadoop.yarn.server.nodemanager.security.NMTokenSecretManagerInNM;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
+import org.apache.hadoop.yarn.util.resource.Resources;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public abstract class BaseContainerManagerTest {
 
@@ -107,7 +110,7 @@ public abstract class BaseContainerManagerTest {
   protected static File remoteLogDir;
   protected static File tmpDir;
 
-  protected final NodeManagerMetrics metrics = NodeManagerMetrics.create();
+  protected NodeManagerMetrics metrics = NodeManagerMetrics.create();
 
   public BaseContainerManagerTest() throws UnsupportedFileSystemException {
     localFS = FileContext.getLocalFSFileContext();
@@ -156,32 +159,20 @@ public abstract class BaseContainerManagerTest {
   protected NodeHealthCheckerService nodeHealthChecker;
   protected LocalDirsHandlerService dirsHandler;
   protected final long DUMMY_RM_IDENTIFIER = 1234;
-
-  protected NodeStatusUpdater nodeStatusUpdater = new NodeStatusUpdaterImpl(
-      context, new AsyncDispatcher(), null, metrics) {
-    @Override
-    protected ResourceTracker getRMClient() {
-      return new LocalRMInterface();
-    };
-
-    @Override
-    protected void stopRMProxy() {
-      return;
-    }
-
-    @Override
-    protected void startStatusUpdater() {
-      return; // Don't start any updating thread.
-    }
-
-    @Override
-    public long getRMIdentifier() {
-      // There is no real RM registration, simulate and set RMIdentifier
-      return DUMMY_RM_IDENTIFIER;
-    }
-  };
-
+  private NodeResourceMonitorImpl nodeResourceMonitor = mock(
+      NodeResourceMonitorImpl.class);
+  private NodeHealthCheckerService nodeHealthCheckerService;
+  private NodeStatusUpdater nodeStatusUpdater;
   protected ContainerManagerImpl containerManager = null;
+
+  public NodeStatusUpdater getNodeStatusUpdater() {
+    return nodeStatusUpdater;
+  }
+
+  public void setNodeStatusUpdater(
+      NodeStatusUpdater nodeStatusUpdater) {
+    this.nodeStatusUpdater = nodeStatusUpdater;
+  }
 
   protected ContainerExecutor createContainerExecutor() {
     DefaultContainerExecutor exec = new DefaultContainerExecutor();
@@ -189,7 +180,7 @@ public abstract class BaseContainerManagerTest {
     return spy(exec);
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     localFS.delete(new Path(localDir.getAbsolutePath()), true);
     localFS.delete(new Path(tmpDir.getAbsolutePath()), true);
@@ -218,11 +209,36 @@ public abstract class BaseContainerManagerTest {
     delSrvc.init(conf);
 
     dirsHandler = new LocalDirsHandlerService();
-    nodeHealthChecker = new NodeHealthCheckerService(
-        NodeManager.getNodeHealthScriptRunner(conf), dirsHandler);
-    nodeHealthChecker.init(conf);
+    dirsHandler.init(conf);
+    nodeHealthCheckerService = new NodeHealthCheckerService(dirsHandler);
+    nodeStatusUpdater = new NodeStatusUpdaterImpl(
+        context, new AsyncDispatcher(), nodeHealthCheckerService, metrics) {
+      @Override
+      protected ResourceTracker getRMClient() {
+        return new LocalRMInterface();
+      };
+
+      @Override
+      protected void stopRMProxy() {
+        return;
+      }
+
+      @Override
+      protected void startStatusUpdater() {
+        return; // Don't start any updating thread.
+      }
+
+      @Override
+      public long getRMIdentifier() {
+        // There is no real RM registration, simulate and set RMIdentifier
+        return DUMMY_RM_IDENTIFIER;
+      }
+    };
+
     containerManager = createContainerManager(delSrvc);
     ((NMContext)context).setContainerManager(containerManager);
+    ((NMContext)context).setContainerExecutor(exec);
+    ((NMContext)context).setNodeResourceMonitor(nodeResourceMonitor);
     nodeStatusUpdater.init(conf);
     containerManager.init(conf);
     nodeStatusUpdater.start();
@@ -238,10 +254,12 @@ public abstract class BaseContainerManagerTest {
       metrics, dirsHandler) {
 
       @Override
-        protected void authorizeGetAndStopContainerRequest(ContainerId containerId,
-            Container container, boolean stopRequest, NMTokenIdentifier identifier) throws YarnException {
-          // do nothing
-        }
+      protected void authorizeGetAndStopContainerRequest(
+          ContainerId containerId, Container container, boolean stopRequest,
+          NMTokenIdentifier identifier, String remoteUser)
+          throws YarnException {
+        // do nothing
+      }
       @Override
       protected void authorizeUser(UserGroupInformation remoteUgi,
           NMTokenIdentifier nmTokenIdentifier) {
@@ -290,7 +308,7 @@ public abstract class BaseContainerManagerTest {
     };
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException, InterruptedException {
     if (containerManager != null) {
       containerManager.stop();
@@ -341,8 +359,8 @@ public abstract class BaseContainerManagerTest {
     } while (!fStates.contains(containerStatus.getState())
         && timeoutSecs < timeOutMax);
     LOG.info("Container state is " + containerStatus.getState());
-    Assert.assertTrue("ContainerState is not correct (timedout)",
-          fStates.contains(containerStatus.getState()));
+    assertTrue(fStates.contains(containerStatus.getState()),
+        "ContainerState is not correct (timedout)");
   }
 
   public static void waitForApplicationState(
@@ -361,8 +379,8 @@ public abstract class BaseContainerManagerTest {
       Thread.sleep(1000);
     }
   
-    Assert.assertTrue("App is not in " + finalState + " yet!! Timedout!!",
-        app.getApplicationState().equals(finalState));
+    assertTrue(app.getApplicationState().equals(finalState),
+        "App is not in " + finalState + " yet!! Timedout!!");
   }
 
   public static void waitForNMContainerState(ContainerManagerImpl
@@ -406,8 +424,8 @@ public abstract class BaseContainerManagerTest {
     } while (!finalStates.contains(currentState)
         && timeoutSecs < timeOutMax);
     LOG.info("Container state is " + currentState);
-    Assert.assertTrue("ContainerState is not correct (timedout)",
-        finalStates.contains(currentState));
+    assertTrue(finalStates.contains(currentState),
+        "ContainerState is not correct (timedout)");
   }
 
   public static Token createContainerToken(ContainerId cId, long rmIdentifier,
@@ -423,9 +441,19 @@ public abstract class BaseContainerManagerTest {
       NMContainerTokenSecretManager containerTokenSecretManager,
       LogAggregationContext logAggregationContext)
       throws IOException {
-    Resource r = BuilderUtils.newResource(1024, 1);
+    Resource r = Resources.createResource(1024);
     return createContainerToken(cId, rmIdentifier, nodeId, user, r,
         containerTokenSecretManager, logAggregationContext);
+  }
+
+  public static Token createContainerToken(ContainerId cId, long rmIdentifier,
+      NodeId nodeId, String user,
+      NMContainerTokenSecretManager containerTokenSecretManager,
+      LogAggregationContext logAggregationContext, ContainerType containerType)
+      throws IOException {
+    Resource r = Resources.createResource(1024);
+    return createContainerToken(cId, rmIdentifier, nodeId, user, r,
+        containerTokenSecretManager, logAggregationContext, containerType);
   }
 
   public static Token createContainerToken(ContainerId cId, long rmIdentifier,
@@ -440,6 +468,21 @@ public abstract class BaseContainerManagerTest {
     return BuilderUtils.newContainerToken(nodeId, containerTokenSecretManager
         .retrievePassword(containerTokenIdentifier),
             containerTokenIdentifier);
+  }
+
+  public static Token createContainerToken(ContainerId cId, long rmIdentifier,
+      NodeId nodeId, String user, Resource resource,
+      NMContainerTokenSecretManager containerTokenSecretManager,
+      LogAggregationContext logAggregationContext, ContainerType continerType)
+      throws IOException {
+    ContainerTokenIdentifier containerTokenIdentifier =
+        new ContainerTokenIdentifier(cId, nodeId.toString(), user, resource,
+            System.currentTimeMillis() + 100000L, 123, rmIdentifier,
+            Priority.newInstance(0), 0, logAggregationContext, null,
+            continerType);
+    return BuilderUtils.newContainerToken(nodeId,
+        containerTokenSecretManager.retrievePassword(containerTokenIdentifier),
+        containerTokenIdentifier);
   }
 
   public static Token createContainerToken(ContainerId cId, int version,

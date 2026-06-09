@@ -27,12 +27,12 @@ import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.server.balancer.TestBalancer;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.net.ServerSocketUtil;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 
+@Timeout(300)
 public class TestBlockTokenWithDFSStriped extends TestBlockTokenWithDFS {
   private final ErasureCodingPolicy ecPolicy =
       StripedFileTestUtil.getDefaultECPolicy();
@@ -48,9 +48,6 @@ public class TestBlockTokenWithDFSStriped extends TestBlockTokenWithDFS {
     BLOCK_SIZE = cellSize * stripesPerBlock;
     FILE_SIZE =  BLOCK_SIZE * dataBlocks * 3;
   }
-
-  @Rule
-  public Timeout globalTimeout = new Timeout(300000);
 
   private Configuration getConf() {
     Configuration conf = super.getConf(numDNs);
@@ -136,7 +133,7 @@ public class TestBlockTokenWithDFSStriped extends TestBlockTokenWithDFS {
     LocatedBlock[] internalBlocks = StripedBlockUtil.parseStripedBlockGroup
         (lsb, cellSize, dataBlocks, parityBlocks);
     for (LocatedBlock internalBlock : internalBlocks) {
-      if(super.isBlockTokenExpired(internalBlock)){
+      if(internalBlock != null && super.isBlockTokenExpired(internalBlock)) {
         return true;
       }
     }

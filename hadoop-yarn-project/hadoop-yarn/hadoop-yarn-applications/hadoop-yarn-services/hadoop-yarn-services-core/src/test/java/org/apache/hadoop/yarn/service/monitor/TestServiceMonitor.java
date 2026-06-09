@@ -29,10 +29,9 @@ import org.apache.hadoop.yarn.service.ServiceTestUtils;
 import org.apache.hadoop.yarn.service.api.records.Service;
 import org.apache.hadoop.yarn.service.api.records.Component;
 import org.apache.hadoop.yarn.service.conf.YarnServiceConf;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
@@ -40,6 +39,8 @@ import java.util.Collections;
 
 import static org.apache.hadoop.registry.client.api.RegistryConstants
     .KEY_REGISTRY_ZK_QUORUM;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestServiceMonitor extends ServiceTestUtils {
 
@@ -47,7 +48,7 @@ public class TestServiceMonitor extends ServiceTestUtils {
   YarnConfiguration conf = new YarnConfiguration();
   TestingCluster zkCluster;
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     basedir = new File("target", "apps");
     if (basedir.exists()) {
@@ -62,7 +63,7 @@ public class TestServiceMonitor extends ServiceTestUtils {
     System.out.println("ZK cluster: " +  zkCluster.getConnectString());
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (basedir != null) {
       FileUtils.deleteDirectory(basedir);
@@ -81,28 +82,38 @@ public class TestServiceMonitor extends ServiceTestUtils {
   public void testComponentDependency() throws Exception{
     ApplicationId applicationId = ApplicationId.newInstance(123456, 1);
     Service exampleApp = new Service();
+    exampleApp.setVersion("v1");
     exampleApp.setId(applicationId.toString());
     exampleApp.setName("testComponentDependency");
     exampleApp.addComponent(createComponent("compa", 1, "sleep 1000"));
-    Component compb = createComponent("compb", 1, "sleep 1000");
-
     // Let compb depends on compa;
-    compb.setDependencies(Collections.singletonList("compa"));
+    Component compb = createComponent("compb", 1, "sleep 1000", Component
+        .RestartPolicyEnum.ON_FAILURE, Collections.singletonList("compa"));
+    // Let compb depends on compb;
+    Component compc = createComponent("compc", 1, "sleep 1000", Component
+        .RestartPolicyEnum.NEVER, Collections.singletonList("compb"));
+
     exampleApp.addComponent(compb);
+    exampleApp.addComponent(compc);
 
     MockServiceAM am = new MockServiceAM(exampleApp);
     am.init(conf);
     am.start();
 
     // compa ready
-    Assert.assertTrue(am.getComponent("compa").areDependenciesReady());
+    assertTrue(am.getComponent("compa").areDependenciesReady());
     //compb not ready
-    Assert.assertFalse(am.getComponent("compb").areDependenciesReady());
+    assertFalse(am.getComponent("compb").areDependenciesReady());
 
     // feed 1 container to compa,
     am.feedContainerToComp(exampleApp, 1, "compa");
     // waiting for compb's dependencies are satisfied
     am.waitForDependenciesSatisfied("compb");
+
+    // feed 1 container to compb,
+    am.feedContainerToComp(exampleApp, 2, "compb");
+    // waiting for compc's dependencies are satisfied
+    am.waitForDependenciesSatisfied("compc");
 
     // feed 1 container to compb
     am.feedContainerToComp(exampleApp, 2, "compb");
@@ -110,7 +121,7 @@ public class TestServiceMonitor extends ServiceTestUtils {
     am.waitForNumDesiredContainers("compa", 2);
 
     // compb dependencies not satisfied again.
-    Assert.assertFalse(am.getComponent("compb").areDependenciesReady());
+    assertFalse(am.getComponent("compb").areDependenciesReady());
     am.stop();
   }
 }

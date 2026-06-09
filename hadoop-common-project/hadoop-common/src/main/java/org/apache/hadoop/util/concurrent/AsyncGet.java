@@ -37,7 +37,7 @@ public interface AsyncGet<R, E extends Throwable> {
    *
    * @param timeout The maximum time period to wait.
    *                When timeout == 0, it does not wait at all.
-   *                When timeout < 0, it waits indefinitely.
+   *                When timeout &lt; 0, it waits indefinitely.
    * @param unit The unit of the timeout value
    * @return the result, which is possibly null.
    * @throws E an exception thrown by the underlying implementation.
@@ -52,7 +52,13 @@ public interface AsyncGet<R, E extends Throwable> {
 
   /** Utility */
   class Util {
-    /** Use {@link #get(long, TimeUnit)} timeout parameters to wait. */
+    /**
+     * Use {@link #get(long, TimeUnit)} timeout parameters to wait.
+     * @param obj object.
+     * @param timeout timeout.
+     * @param unit unit.
+     * @throws InterruptedException if the thread is interrupted.
+     */
     public static void wait(Object obj, long timeout, TimeUnit unit)
         throws InterruptedException {
       if (timeout < 0) {

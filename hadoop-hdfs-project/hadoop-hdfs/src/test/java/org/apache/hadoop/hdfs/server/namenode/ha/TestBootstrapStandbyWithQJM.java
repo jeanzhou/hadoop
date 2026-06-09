@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.io.File;
 import java.io.IOException;
@@ -33,12 +33,12 @@ import org.apache.hadoop.hdfs.qjournal.MiniQJMHACluster;
 import org.apache.hadoop.hdfs.server.namenode.FSImage;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.collect.ImmutableList;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 
 /**
  * Test BootstrapStandby when QJM is used for shared edits. 
@@ -54,14 +54,19 @@ public class TestBootstrapStandbyWithQJM {
   private MiniJournalCluster jCluster;
   private int nnCount = 3;
 
-  @Before
-  public void setup() throws Exception {
+  protected Configuration createConfig() {
     Configuration conf = new Configuration();
     // Turn off IPC client caching, so that the suite can handle
     // the restart of the daemons between test cases.
     conf.setInt(
         CommonConfigurationKeysPublic.IPC_CLIENT_CONNECTION_MAXIDLETIME_KEY,
         0);
+    return conf;
+  }
+
+  @BeforeEach
+  public void setup() throws Exception {
+    Configuration conf = createConfig();
 
     MiniQJMHACluster miniQjmHaCluster =
         new MiniQJMHACluster.Builder(conf).setNumNameNodes(nnCount).build();
@@ -77,7 +82,7 @@ public class TestBootstrapStandbyWithQJM {
     dfs.close();
   }
   
-  @After
+  @AfterEach
   public void cleanup() throws IOException {
     if (cluster != null) {
       cluster.shutdown();

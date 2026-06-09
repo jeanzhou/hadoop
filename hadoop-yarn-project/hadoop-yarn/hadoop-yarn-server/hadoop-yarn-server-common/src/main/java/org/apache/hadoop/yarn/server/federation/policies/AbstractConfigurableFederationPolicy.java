@@ -53,7 +53,7 @@ public abstract class AbstractConfigurableFederationPolicy
         initializationContext.getSubClusterPolicyConfiguration().getParams());
 
     // if nothing has changed skip the rest of initialization
-    // and signal to childs that the reinit is free via isDirty var.
+    // and signal to children that the reinit is free via isDirty var.
     if (policyInfo != null && policyInfo.equals(newPolicyInfo)) {
       isDirty = false;
       return;
@@ -83,7 +83,7 @@ public abstract class AbstractConfigurableFederationPolicy
   /**
    * Returns true whether the last reinitialization requires actual changes, or
    * was "free" as the weights have not changed. This is used by subclasses
-   * overriding reinitialize and calling super.reinitialize() to know wheter to
+   * overriding reinitialize and calling super.reinitialize() to know whether to
    * quit early.
    *
    * @return whether more work is needed to initialize.

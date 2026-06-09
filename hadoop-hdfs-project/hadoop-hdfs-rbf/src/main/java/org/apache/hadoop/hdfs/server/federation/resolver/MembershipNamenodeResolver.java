@@ -19,6 +19,7 @@ package org.apache.hadoop.hdfs.server.federation.resolver;
 
 import static org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeServiceState.ACTIVE;
 import static org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeServiceState.EXPIRED;
+import static org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeServiceState.OBSERVER;
 import static org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeServiceState.UNAVAILABLE;
 
 import java.io.IOException;
@@ -29,10 +30,14 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.server.federation.store.DisabledNameserviceStore;
 import org.apache.hadoop.hdfs.server.federation.store.MembershipStore;
+import org.apache.hadoop.hdfs.server.federation.store.RecordStore;
 import org.apache.hadoop.hdfs.server.federation.store.StateStoreCache;
 import org.apache.hadoop.hdfs.server.federation.store.StateStoreService;
 import org.apache.hadoop.hdfs.server.federation.store.StateStoreUnavailableException;
@@ -44,6 +49,7 @@ import org.apache.hadoop.hdfs.server.federation.store.protocol.NamenodeHeartbeat
 import org.apache.hadoop.hdfs.server.federation.store.protocol.UpdateNamenodeRegistrationRequest;
 import org.apache.hadoop.hdfs.server.federation.store.records.MembershipState;
 import org.apache.hadoop.hdfs.server.federation.store.records.MembershipStats;
+import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,12 +69,17 @@ public class MembershipNamenodeResolver
   private final StateStoreService stateStore;
   /** Membership State Store interface. */
   private MembershipStore membershipInterface;
+  /** Disabled Nameservice State Store interface. */
+  private DisabledNameserviceStore disabledNameserviceInterface;
 
   /** Parent router ID. */
   private String routerId;
 
-  /** Cached lookup of NN for nameservice. Invalidated on cache refresh. */
-  private Map<String, List<? extends FederationNamenodeContext>> cacheNS;
+  /** Cached lookup of namenodes for nameservice. The keys are a pair of the nameservice
+   * name and a boolean indicating if observer namenodes should be listed first.
+   * If true, observer namenodes are listed first. If false, active namenodes are listed first.
+   *  Invalidated on cache refresh. */
+  private Map<Pair<String, Boolean>, List<? extends FederationNamenodeContext>> cacheNS;
   /** Cached lookup of NN for block pool. Invalidated on cache refresh. */
   private Map<String, List<? extends FederationNamenodeContext>> cacheBP;
 
@@ -88,14 +99,28 @@ public class MembershipNamenodeResolver
 
   private synchronized MembershipStore getMembershipStore() throws IOException {
     if (this.membershipInterface == null) {
-      this.membershipInterface = this.stateStore.getRegisteredRecordStore(
-          MembershipStore.class);
-      if (this.membershipInterface == null) {
-        throw new IOException("State Store does not have an interface for " +
-            MembershipStore.class.getSimpleName());
-      }
+      this.membershipInterface = getStoreInterface(MembershipStore.class);
     }
     return this.membershipInterface;
+  }
+
+  private synchronized DisabledNameserviceStore getDisabledNameserviceStore()
+      throws IOException {
+    if (this.disabledNameserviceInterface == null) {
+      this.disabledNameserviceInterface =
+          getStoreInterface(DisabledNameserviceStore.class);
+    }
+    return this.disabledNameserviceInterface;
+  }
+
+  private <T extends RecordStore<?>> T getStoreInterface(Class<T> clazz)
+      throws IOException{
+    T store = this.stateStore.getRegisteredRecordStore(clazz);
+    if (store == null) {
+      throw new IOException("State Store does not have an interface for " +
+          clazz.getSimpleName());
+    }
+    return store;
   }
 
   @Override
@@ -103,7 +128,13 @@ public class MembershipNamenodeResolver
     // Our cache depends on the store, update it first
     try {
       MembershipStore membership = getMembershipStore();
-      membership.loadCache(force);
+      if (!membership.loadCache(force)) {
+        return false;
+      }
+      DisabledNameserviceStore disabled = getDisabledNameserviceStore();
+      if (!disabled.loadCache(force)) {
+        return false;
+      }
     } catch (IOException e) {
       LOG.error("Cannot update membership from the State Store", e);
     }
@@ -114,11 +145,21 @@ public class MembershipNamenodeResolver
     return true;
   }
 
+  @Override public void updateUnavailableNamenode(String nsId,
+      InetSocketAddress address) throws IOException {
+    updateNameNodeState(nsId, address, UNAVAILABLE);
+  }
+
   @Override
   public void updateActiveNamenode(
       final String nsId, final InetSocketAddress address) throws IOException {
+    updateNameNodeState(nsId, address, ACTIVE);
+  }
 
-    // Called when we have an RPC miss and successful hit on an alternate NN.
+
+  private void updateNameNodeState(final String nsId,
+      final InetSocketAddress address, FederationNamenodeServiceState state)
+      throws IOException {
     // Temporarily update our cache, it will be overwritten on the next update.
     try {
       MembershipState partial = MembershipState.newInstance();
@@ -138,43 +179,108 @@ public class MembershipNamenodeResolver
         MembershipState record = records.get(0);
         UpdateNamenodeRegistrationRequest updateRequest =
             UpdateNamenodeRegistrationRequest.newInstance(
-                record.getNameserviceId(), record.getNamenodeId(), ACTIVE);
+                record.getNameserviceId(), record.getNamenodeId(), state);
         membership.updateNamenodeRegistration(updateRequest);
+
+        cacheNS.remove(Pair.of(nsId, Boolean.TRUE));
+        cacheNS.remove(Pair.of(nsId, Boolean.FALSE));
+        // Invalidating the full cacheBp since getting the blockpool id from
+        // namespace id is quite costly.
+        cacheBP.clear();
       }
     } catch (StateStoreUnavailableException e) {
       LOG.error("Cannot update {} as active, State Store unavailable", address);
     }
   }
 
-  @Override
-  public List<? extends FederationNamenodeContext> getNamenodesForNameserviceId(
-      final String nsId) throws IOException {
-
-    List<? extends FederationNamenodeContext> ret = cacheNS.get(nsId);
-    if (ret == null) {
-      try {
-        MembershipState partial = MembershipState.newInstance();
-        partial.setNameserviceId(nsId);
-        GetNamenodeRegistrationsRequest request =
-            GetNamenodeRegistrationsRequest.newInstance(partial);
-
-        final List<MembershipState> result =
-            getRecentRegistrationForQuery(request, true, false);
-        if (result == null || result.isEmpty()) {
-          LOG.error("Cannot locate eligible NNs for {}", nsId);
-          return null;
-        } else {
-          cacheNS.put(nsId, result);
-          ret = result;
-        }
-      } catch (StateStoreUnavailableException e) {
-        LOG.error("Cannot get active NN for {}, State Store unavailable", nsId);
+  /**
+   * Try to shuffle the multiple observer namenodes if listObserversFirst is true.
+   * @param inputNameNodes the input FederationNamenodeContext list. If listObserversFirst is true,
+   *                       all observers will be placed at the front of the collection.
+   * @param listObserversFirst true if we need to shuffle the multiple front observer namenodes.
+   * @return a list of FederationNamenodeContext.
+   * @param <T> a subclass of FederationNamenodeContext.
+   */
+  private <T extends FederationNamenodeContext> List<T> shuffleObserverNN(
+      List<T> inputNameNodes, boolean listObserversFirst) {
+    if (!listObserversFirst) {
+      return inputNameNodes;
+    }
+    // Get Observers first.
+    List<T> observerList = new ArrayList<>();
+    for (T t : inputNameNodes) {
+      if (t.getState() == OBSERVER) {
+        observerList.add(t);
+      } else {
+        // The inputNameNodes are already sorted, so it can break
+        // when the first non-observer is encountered.
+        break;
       }
     }
-    if (ret == null) {
-      return null;
+    // Returns the inputNameNodes if no shuffle is required
+    if (observerList.size() <= 1) {
+      return inputNameNodes;
+    }
+
+    // Shuffle multiple Observers
+    Collections.shuffle(observerList);
+
+    List<T> ret = new ArrayList<>(inputNameNodes.size());
+    ret.addAll(observerList);
+    for (int i = observerList.size(); i < inputNameNodes.size(); i++) {
+      ret.add(inputNameNodes.get(i));
     }
     return Collections.unmodifiableList(ret);
+  }
+
+  @Override
+  public List<? extends FederationNamenodeContext> getNamenodesForNameserviceId(
+      final String nsId, boolean listObserversFirst) throws IOException {
+
+    List<? extends FederationNamenodeContext> ret = cacheNS.get(Pair.of(nsId, listObserversFirst));
+    if (ret != null) {
+      return shuffleObserverNN(ret, listObserversFirst);
+    }
+
+    // Not cached, generate the value
+    final List<MembershipState> result;
+    try {
+      MembershipState partial = MembershipState.newInstance();
+      partial.setNameserviceId(nsId);
+      GetNamenodeRegistrationsRequest request =
+          GetNamenodeRegistrationsRequest.newInstance(partial);
+      result = getRecentRegistrationForQuery(request, true,
+          false, listObserversFirst);
+    } catch (StateStoreUnavailableException e) {
+      LOG.error("Cannot get active NN for {}, State Store unavailable", nsId);
+      return null;
+    }
+    if (result == null || result.isEmpty()) {
+      LOG.error("Cannot locate eligible NNs for {}", nsId);
+      return null;
+    }
+
+    // Mark disabled name services
+    try {
+      Set<String> disabled =
+          getDisabledNameserviceStore().getDisabledNameservices();
+      if (disabled == null) {
+        LOG.error("Cannot get disabled name services");
+      } else {
+        for (MembershipState nn : result) {
+          if (disabled.contains(nn.getNameserviceId())) {
+            nn.setState(FederationNamenodeServiceState.DISABLED);
+          }
+        }
+      }
+    } catch (StateStoreUnavailableException e) {
+      LOG.error("Cannot get disabled name services, State Store unavailable");
+    }
+
+    // Cache the response
+    ret = Collections.unmodifiableList(result);
+    cacheNS.put(Pair.of(nsId, listObserversFirst), result);
+    return ret;
   }
 
   @Override
@@ -190,7 +296,7 @@ public class MembershipNamenodeResolver
             GetNamenodeRegistrationsRequest.newInstance(partial);
 
         final List<MembershipState> result =
-            getRecentRegistrationForQuery(request, true, false);
+            getRecentRegistrationForQuery(request, true, false, false);
         if (result == null || result.isEmpty()) {
           LOG.error("Cannot locate eligible NNs for {}", bpId);
         } else {
@@ -219,9 +325,11 @@ public class MembershipNamenodeResolver
 
     MembershipState record = MembershipState.newInstance(
         routerId, report.getNameserviceId(), report.getNamenodeId(),
-        report.getClusterId(), report.getBlockPoolId(), report.getRpcAddress(),
+        report.getClusterId(), report.getBlockPoolId(),
+        NetUtils.normalizeIP2HostName(report.getRpcAddress()),
         report.getServiceAddress(), report.getLifelineAddress(),
-        report.getWebAddress(), report.getState(), report.getSafemode());
+        report.getWebScheme(), report.getWebAddress(), report.getState(),
+        report.getSafemode());
 
     if (report.statsValid()) {
       MembershipStats stats = MembershipStats.newInstance();
@@ -241,8 +349,27 @@ public class MembershipNamenodeResolver
           report.getNumDecommissioningDatanodes());
       stats.setNumOfActiveDatanodes(report.getNumLiveDatanodes());
       stats.setNumOfDeadDatanodes(report.getNumDeadDatanodes());
+      stats.setNumOfStaleDatanodes(report.getNumStaleDatanodes());
       stats.setNumOfDecomActiveDatanodes(report.getNumDecomLiveDatanodes());
       stats.setNumOfDecomDeadDatanodes(report.getNumDecomDeadDatanodes());
+      stats.setNumOfInMaintenanceLiveDataNodes(
+          report.getNumInMaintenanceLiveDataNodes());
+      stats.setNumOfInMaintenanceDeadDataNodes(
+          report.getNumInMaintenanceDeadDataNodes());
+      stats.setNumOfEnteringMaintenanceDataNodes(
+          report.getNumEnteringMaintenanceDataNodes());
+      stats.setCorruptFilesCount(report.getCorruptFilesCount());
+      stats.setScheduledReplicationBlocks(
+          report.getScheduledReplicationBlocks());
+      stats.setNumberOfMissingBlocksWithReplicationFactorOne(
+          report.getNumberOfMissingBlocksWithReplicationFactorOne());
+      stats.setNumberOfBadlyDistributedBlocks(
+          report.getNumberOfBadlyDistributedBlocks());
+      stats.setHighestPriorityLowRedundancyReplicatedBlocks(
+          report.getHighestPriorityLowRedundancyReplicatedBlocks());
+      stats.setHighestPriorityLowRedundancyECBlocks(
+          report.getHighestPriorityLowRedundancyECBlocks());
+      stats.setPendingSPSPaths(report.getPendingSPSPaths());
       record.setStats(stats);
     }
 
@@ -261,26 +388,55 @@ public class MembershipNamenodeResolver
     GetNamespaceInfoRequest request = GetNamespaceInfoRequest.newInstance();
     GetNamespaceInfoResponse response =
         getMembershipStore().getNamespaceInfo(request);
-    return response.getNamespaceInfo();
+    Set<FederationNamespaceInfo> nss = response.getNamespaceInfo();
+
+    // Filter disabled namespaces
+    Set<FederationNamespaceInfo> ret = new TreeSet<>();
+    Set<String> disabled = getDisabledNamespaces();
+    for (FederationNamespaceInfo ns : nss) {
+      if (!disabled.contains(ns.getNameserviceId())) {
+        ret.add(ns);
+      }
+    }
+
+    return ret;
+  }
+
+  @Override
+  public Set<String> getDisabledNamespaces() throws IOException {
+    DisabledNameserviceStore store = getDisabledNameserviceStore();
+    return store.getDisabledNameservices();
   }
 
   /**
-   * Picks the most relevant record registration that matches the query. Return
-   * registrations matching the query in this preference: 1) Most recently
-   * updated ACTIVE registration 2) Most recently updated STANDBY registration
-   * (if showStandby) 3) Most recently updated UNAVAILABLE registration (if
-   * showUnavailable). EXPIRED registrations are ignored.
+   * Picks the most relevant record registration that matches the query.
+   * If not observer read,
+   * return registrations matching the query in this preference:
+   * 1) Most recently updated ACTIVE registration
+   * 2) Most recently updated Observer registration
+   * 3) Most recently updated STANDBY registration (if showStandby)
+   * 4) Most recently updated UNAVAILABLE registration (if showUnavailable).
+   *
+   * If observer read,
+   * return registrations matching the query in this preference:
+   * 1) Observer registrations, shuffled to disperse queries.
+   * 2) Most recently updated ACTIVE registration
+   * 3) Most recently updated STANDBY registration (if showStandby)
+   * 4) Most recently updated UNAVAILABLE registration (if showUnavailable).
+   *
+   * EXPIRED registrations are ignored.
    *
    * @param request The select query for NN registrations.
    * @param addUnavailable include UNAVAILABLE registrations.
    * @param addExpired include EXPIRED registrations.
+   * @param observerRead  Observer read case, observer NN will be ranked first
    * @return List of memberships or null if no registrations that
    *         both match the query AND the selected states.
    * @throws IOException
    */
   private List<MembershipState> getRecentRegistrationForQuery(
       GetNamenodeRegistrationsRequest request, boolean addUnavailable,
-      boolean addExpired) throws IOException {
+      boolean addExpired, boolean observerRead) throws IOException {
 
     // Retrieve a list of all registrations that match this query.
     // This may include all NN records for a namespace/blockpool, including
@@ -290,28 +446,82 @@ public class MembershipNamenodeResolver
         membershipStore.getNamenodeRegistrations(request);
 
     List<MembershipState> memberships = response.getNamenodeMemberships();
-    if (!addExpired || !addUnavailable) {
-      Iterator<MembershipState> iterator = memberships.iterator();
-      while (iterator.hasNext()) {
-        MembershipState membership = iterator.next();
-        if (membership.getState() == EXPIRED && !addExpired) {
-          iterator.remove();
-        } else if (membership.getState() == UNAVAILABLE && !addUnavailable) {
-          iterator.remove();
-        }
+    List<MembershipState> observerMemberships = new ArrayList<>();
+    Iterator<MembershipState> iterator = memberships.iterator();
+    while (iterator.hasNext()) {
+      MembershipState membership = iterator.next();
+      if (membership.getState() == EXPIRED && !addExpired) {
+        iterator.remove();
+      } else if (membership.getState() == UNAVAILABLE && !addUnavailable) {
+        iterator.remove();
+      } else if (membership.getState() == OBSERVER && observerRead) {
+        iterator.remove();
+        observerMemberships.add(membership);
       }
     }
 
-    List<MembershipState> priorityList = new ArrayList<>();
-    priorityList.addAll(memberships);
-    Collections.sort(priorityList, new NamenodePriorityComparator());
+    memberships.sort(new NamenodePriorityComparator());
+    if(observerRead) {
+      List<MembershipState> ret = new ArrayList<>(
+          memberships.size() + observerMemberships.size());
+      if(observerMemberships.size() > 1) {
+        Collections.shuffle(observerMemberships);
+      }
+      ret.addAll(observerMemberships);
+      ret.addAll(memberships);
+      memberships = ret;
+    }
 
-    LOG.debug("Selected most recent NN {} for query", priorityList);
-    return priorityList;
+    LOG.debug("Selected most recent NN {} for query", memberships);
+    return memberships;
   }
 
   @Override
   public void setRouterId(String router) {
     this.routerId = router;
+  }
+
+  /**
+   * Rotate cache, make the current namenode have the lowest priority,
+   * to ensure that the current namenode will not be accessed first next time.
+   *
+   * @param nsId name service id.
+   * @param namenode namenode contexts.
+   * @param listObserversFirst Observer read case, observer NN will be ranked first.
+   */
+  @Override
+  public void rotateCache(
+      String nsId, FederationNamenodeContext namenode, boolean listObserversFirst) {
+    cacheNS.compute(Pair.of(nsId, listObserversFirst), (ns, namenodeContexts) -> {
+      if (namenodeContexts == null || namenodeContexts.size() <= 1) {
+        return namenodeContexts;
+      }
+
+      // If there is active nn, rotateCache is not needed
+      // because the router has already loaded the cache.
+      for (FederationNamenodeContext namenodeContext : namenodeContexts) {
+        if (namenodeContext.getState() == ACTIVE) {
+          return namenodeContexts;
+        }
+      }
+
+      // If the last namenode in the cache at this time
+      // is the namenode whose priority needs to be lowered.
+      // No need to rotate cache, because other threads have already rotated the cache.
+      FederationNamenodeContext lastNamenode = namenodeContexts.get(namenodeContexts.size()-1);
+      if (lastNamenode.getRpcAddress().equals(namenode.getRpcAddress())) {
+        return namenodeContexts;
+      }
+
+      // Move the inaccessible namenode to the end of the cache,
+      // to ensure that the namenode will not be accessed first next time.
+      List<FederationNamenodeContext> rotateNamenodeContexts =
+          (List<FederationNamenodeContext>) namenodeContexts;
+      rotateNamenodeContexts.remove(namenode);
+      rotateNamenodeContexts.add(namenode);
+      LOG.info("Rotate cache of pair<{}, {}> -> {}",
+          nsId, listObserversFirst, rotateNamenodeContexts);
+      return rotateNamenodeContexts;
+    });
   }
 }

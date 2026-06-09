@@ -17,10 +17,13 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.spy;
 
@@ -29,11 +32,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.namenode.JournalSet.JournalAndStream;
@@ -41,15 +45,15 @@ import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
 import org.apache.hadoop.util.ExitUtil.ExitException;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mockito;
 
-@RunWith(Parameterized.class)
+@MethodSource("data")
+@ParameterizedClass
 public class TestEditLogJournalFailures {
 
   private int editsPerformed = 0;
@@ -57,7 +61,6 @@ public class TestEditLogJournalFailures {
   private FileSystem fs;
   private boolean useAsyncEdits;
 
-  @Parameters
   public static Collection<Object[]> data() {
     Collection<Object[]> params = new ArrayList<Object[]>();
     params.add(new Object[]{Boolean.FALSE});
@@ -80,7 +83,7 @@ public class TestEditLogJournalFailures {
    * Create the mini cluster for testing and sub in a custom runtime so that
    * edit log journal failures don't actually cause the JVM to exit.
    */
-  @Before
+  @BeforeEach
   public void setUpMiniCluster() throws IOException {
     setUpMiniCluster(getConf(), true);
   }
@@ -93,7 +96,7 @@ public class TestEditLogJournalFailures {
     fs = cluster.getFileSystem();
   }
   
-  @After
+  @AfterEach
   public void shutDownMiniCluster() throws IOException {
     if (fs != null) {
       fs.close();
@@ -260,6 +263,46 @@ public class TestEditLogJournalFailures {
           "setReadyToFlush failed for too many journals. " +
           "Unsynced transactions: 1", re);
     }
+  }
+
+  @Test
+  public void testMultipleRedundantFailedEditsDirOnStartLogSegment()
+      throws Exception {
+    // Set up 4 name/edits dirs.
+    shutDownMiniCluster();
+    Configuration conf = getConf();
+    String[] nameDirs = new String[4];
+    for (int i = 0; i < nameDirs.length; i++) {
+      File nameDir = new File(PathUtils.getTestDir(getClass()), "name-dir" + i);
+      nameDir.mkdirs();
+      nameDirs[i] = nameDir.getAbsolutePath();
+    }
+    conf.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY,
+        StringUtils.join(nameDirs, ","));
+    conf.set(DFSConfigKeys.DFS_NAMENODE_EDITS_DIR_REQUIRED_KEY,
+        StringUtils.join(nameDirs, ",", 0, 3));
+
+    setUpMiniCluster(conf, false);
+
+    // All journals active.
+    assertTrue(doAnEdit());
+    // The NN has not terminated (no ExitException thrown)
+    spyOnJASjournal(3);
+    RemoteException re = intercept(RemoteException.class,
+        "too few journals successfully started.",
+        () -> ((DistributedFileSystem) fs).rollEdits());
+    GenericTestUtils.assertExceptionContains("ExitException", re);
+  }
+
+  private JournalManager spyOnJASjournal(int index) throws Exception {
+    JournalAndStream jas = getJournalAndStream(index);
+    JournalManager manager = jas.getManager();
+    JournalManager spyManager = spy(manager);
+    jas.setJournalForTests(spyManager);
+    doThrow(new IOException("Unable to start log segment ")).when(spyManager)
+        .startLogSegment(anyLong(), anyInt());
+
+    return spyManager;
   }
 
   /**

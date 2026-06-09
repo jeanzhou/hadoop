@@ -17,17 +17,20 @@
  */
 package org.apache.hadoop.hdfs.tools;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NN_NOT_BECOME_ACTIVE_IN_SAFEMODE;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAAdmin;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
@@ -38,24 +41,24 @@ import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Shell;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.base.Charsets;
-import com.google.common.base.Joiner;
-import com.google.common.io.Files;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.io.Files;
 
 /**
  * Tests for HAAdmin command with {@link MiniDFSCluster} set up in HA mode.
  */
 public class TestDFSHAAdminMiniCluster {
   static {
-    GenericTestUtils.setLogLevel(LogFactory.getLog(HAAdmin.class),
-        Level.ALL);
+    GenericTestUtils.setLogLevel(LoggerFactory.getLogger(HAAdmin.class),
+        Level.TRACE);
   }
-  private static final Log LOG = LogFactory.getLog(TestDFSHAAdminMiniCluster.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDFSHAAdminMiniCluster.class);
   
   private MiniDFSCluster cluster;
   private Configuration conf; 
@@ -66,9 +69,10 @@ public class TestDFSHAAdminMiniCluster {
 
   private int nn1Port;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     conf = new Configuration();
+    conf.setBoolean(DFS_HA_NN_NOT_BECOME_ACTIVE_IN_SAFEMODE, true);
     cluster = new MiniDFSCluster.Builder(conf)
         .nnTopology(MiniDFSNNTopology.simpleHATopology()).numDataNodes(0)
         .build();
@@ -80,7 +84,7 @@ public class TestDFSHAAdminMiniCluster {
     nn1Port = cluster.getNameNodePort(0);
   }
 
-  @After
+  @AfterEach
   public void shutdown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -115,8 +119,73 @@ public class TestDFSHAAdminMiniCluster {
     assertFalse(nnode2.isStandbyState());
     assertEquals(0, runTool("-transitionToStandby", "nn2"));
     assertTrue(nnode2.isStandbyState());
+    assertEquals(0, runTool("-transitionToObserver", "nn2"));
+    assertFalse(nnode2.isStandbyState());
+    assertTrue(nnode2.isObserverState());
   }
-  
+
+  @Test
+  public void testObserverTransition() throws Exception {
+    NameNode nnode1 = cluster.getNameNode(0);
+    assertTrue(nnode1.isStandbyState());
+
+    // Should be able to transition from STANDBY to OBSERVER
+    assertEquals(0, runTool("-transitionToObserver", "nn1"));
+    assertFalse(nnode1.isStandbyState());
+    assertTrue(nnode1.isObserverState());
+
+    // Transition from Observer to Observer should be no-op
+    assertEquals(0, runTool("-transitionToObserver", "nn1"));
+    assertTrue(nnode1.isObserverState());
+
+    // Should also be able to transition back from OBSERVER to STANDBY
+    assertEquals(0, runTool("-transitionToStandby", "nn1"));
+    assertTrue(nnode1.isStandbyState());
+    assertFalse(nnode1.isObserverState());
+  }
+
+  @Test
+  public void testObserverIllegalTransition() throws Exception {
+    NameNode nnode1 = cluster.getNameNode(0);
+    assertTrue(nnode1.isStandbyState());
+    assertEquals(0, runTool("-transitionToActive", "nn1"));
+    assertFalse(nnode1.isStandbyState());
+    assertTrue(nnode1.isActiveState());
+
+    // Should NOT be able to transition from ACTIVE to OBSERVER
+    assertEquals(-1, runTool("-transitionToObserver", "nn1"));
+    assertTrue(nnode1.isActiveState());
+
+    // Should NOT be able to transition from OBSERVER to ACTIVE
+    assertEquals(0, runTool("-transitionToStandby", "nn1"));
+    assertTrue(nnode1.isStandbyState());
+    assertEquals(0, runTool("-transitionToObserver", "nn1"));
+    assertTrue(nnode1.isObserverState());
+    assertEquals(-1, runTool("-transitionToActive", "nn1"));
+    assertFalse(nnode1.isActiveState());
+  }
+
+  /**
+   * Tests that a Namenode in safe mode should not be transfer to observer.
+   */
+  @Test
+  public void testObserverTransitionInSafeMode() throws Exception {
+    NameNodeAdapter.enterSafeMode(cluster.getNameNode(0), false);
+    DFSHAAdmin admin = new DFSHAAdmin();
+    admin.setConf(conf);
+    System.setIn(new ByteArrayInputStream("yes\n".getBytes()));
+    int result = admin.run(
+        new String[]{"-transitionToObserver", "-forcemanual", "nn1"});
+    assertEquals(-1, result, "State transition returned: " + result);
+
+    NameNodeAdapter.leaveSafeMode(cluster.getNameNode(0));
+    System.setIn(new ByteArrayInputStream("yes\n".getBytes()));
+    int result1 = admin.run(
+        new String[]{"-transitionToObserver", "-forcemanual", "nn1"});
+    assertEquals(0, result1, "State transition returned: " + result1);
+    assertFalse(cluster.getNameNode(0).isInSafeMode());
+  }
+
   @Test
   public void testTryFailoverToSafeMode() throws Exception {
     conf.set(DFSConfigKeys.DFS_HA_FENCE_METHODS_KEY, 
@@ -125,9 +194,8 @@ public class TestDFSHAAdminMiniCluster {
 
     NameNodeAdapter.enterSafeMode(cluster.getNameNode(0), false);
     assertEquals(-1, runTool("-failover", "nn2", "nn1"));
-    assertTrue("Bad output: " + errOutput,
-        errOutput.contains("is not ready to become active: " +
-            "The NameNode is in safemode"));
+    assertTrue(errOutput.contains("is not ready to become active: " +
+        "The NameNode is in safemode"), "Bad output: " + errOutput);
   }
     
   /**
@@ -144,13 +212,13 @@ public class TestDFSHAAdminMiniCluster {
     tmpFile.deleteOnExit();
     if (Shell.WINDOWS) {
       conf.set(DFSConfigKeys.DFS_HA_FENCE_METHODS_KEY,
-          "shell(echo %target_nameserviceid%.%target_namenodeid% " +
-              "%target_port% %dfs_ha_namenode_id% > " +
+          "shell(echo %source_nameserviceid%.%source_namenodeid% " +
+              "%source_port% %dfs_ha_namenode_id% > " +
               tmpFile.getAbsolutePath() + ")");
     } else {
       conf.set(DFSConfigKeys.DFS_HA_FENCE_METHODS_KEY,
-          "shell(echo -n $target_nameserviceid.$target_namenodeid " +
-          "$target_port $dfs_ha_namenode_id > " +
+          "shell(echo -n $source_nameserviceid.$source_namenodeid " +
+          "$source_port $dfs_ha_namenode_id > " +
           tmpFile.getAbsolutePath() + ")");
     }
 
@@ -163,7 +231,7 @@ public class TestDFSHAAdminMiniCluster {
     assertEquals(0, runTool("-ns", "minidfs-ns", "-failover", "nn2", "nn1"));
 
     // Fencer has not run yet, since none of the above required fencing 
-    assertEquals("", Files.toString(tmpFile, Charsets.UTF_8));
+    assertEquals("", Files.asCharSource(tmpFile, StandardCharsets.UTF_8).read());
 
     // Test failover with fencer and forcefence option
     assertEquals(0, runTool("-failover", "nn1", "nn2", "--forcefence"));
@@ -171,8 +239,8 @@ public class TestDFSHAAdminMiniCluster {
     // The fence script should run with the configuration from the target
     // node, rather than the configuration from the fencing node. Strip
     // out any trailing spaces and CR/LFs which may be present on Windows.
-    String fenceCommandOutput =Files.toString(tmpFile, Charsets.UTF_8).
-            replaceAll(" *[\r\n]+", "");
+    String fenceCommandOutput = Files.asCharSource(tmpFile, StandardCharsets.UTF_8)
+        .read().replaceAll(" *[\r\n]+", "");
     assertEquals("minidfs-ns.nn1 " + nn1Port + " nn1", fenceCommandOutput);
     tmpFile.delete();
     
@@ -232,8 +300,8 @@ public class TestDFSHAAdminMiniCluster {
     runTool("-transitionToActive", "nn1");
     runTool("-transitionToActive", "nn2");
 
-    assertFalse("Both namenodes cannot be active", nn1.isActiveState() 
-        && nn2.isActiveState());
+    assertFalse(nn1.isActiveState()
+        && nn2.isActiveState(), "Both namenodes cannot be active");
    
     /*  In this test case, we have deliberately shut down nn1 and this will
         cause HAAAdmin#isOtherTargetNodeActive to throw an Exception 
@@ -249,14 +317,14 @@ public class TestDFSHAAdminMiniCluster {
     assertFalse(cluster.isNameNodeUp(0));
     
     runTool("-transitionToActive", "nn2", "--forceactive");
-    assertTrue("Namenode nn2 should be active", nn2.isActiveState());
+    assertTrue(nn2.isActiveState(), "Namenode nn2 should be active");
   }
   
   private int runTool(String ... args) throws Exception {
     errOutBytes.reset();
     LOG.info("Running: DFSHAAdmin " + Joiner.on(" ").join(args));
     int ret = tool.run(args);
-    errOutput = new String(errOutBytes.toByteArray(), Charsets.UTF_8);
+    errOutput = new String(errOutBytes.toByteArray(), StandardCharsets.UTF_8);
     LOG.info("Output:\n" + errOutput);
     return ret;
   }

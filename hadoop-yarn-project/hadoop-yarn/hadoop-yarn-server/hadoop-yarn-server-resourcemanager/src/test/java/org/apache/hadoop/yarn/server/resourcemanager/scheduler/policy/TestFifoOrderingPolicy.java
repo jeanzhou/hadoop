@@ -18,14 +18,18 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy;
 
-import java.util.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.junit.Assert;
-import org.junit.Test;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
 
 import org.apache.hadoop.yarn.api.records.Priority;
+import org.junit.jupiter.api.Test;
 
-public class TestFifoOrderingPolicy {
+public
+class TestFifoOrderingPolicy {
   
   @Test
   public void testFifoOrderingPolicy() {
@@ -33,14 +37,20 @@ public class TestFifoOrderingPolicy {
       new FifoOrderingPolicy<MockSchedulableEntity>();
     MockSchedulableEntity r1 = new MockSchedulableEntity();
     MockSchedulableEntity r2 = new MockSchedulableEntity();
-    
-    Assert.assertEquals(policy.getComparator().compare(r1, r2), 0);
+
+    assertEquals(0, policy.getComparator().compare(r1, r2),
+        "The comparator should return 0 because the entities are created with " +
+        "the same values.");
     
     r1.setSerial(1);
-    Assert.assertEquals(policy.getComparator().compare(r1, r2), 1);
+    assertEquals(1, policy.getComparator().compare(r1, r2),
+        "The lhs entity has a larger serial, the comparator return " +
+        "value should be 1.");
     
     r2.setSerial(2);
-    Assert.assertEquals(policy.getComparator().compare(r1, r2), -1);
+    assertEquals(-1, policy.getComparator().compare(r1, r2),
+        "The rhs entity has a larger serial, the comparator return " +
+        "value should be -1.");
   }
   
   @Test
@@ -61,46 +71,80 @@ public class TestFifoOrderingPolicy {
     schedOrder.addSchedulableEntity(msp3);
     
     //Assignment, oldest to youngest
-    checkSerials(schedOrder.getAssignmentIterator(), new long[]{1, 2, 3});
+    checkSerials(Arrays.asList(1L, 2L, 3L), schedOrder.getAssignmentIterator(
+        IteratorSelector.EMPTY_ITERATOR_SELECTOR));
     
     //Preemption, youngest to oldest
-    checkSerials(schedOrder.getPreemptionIterator(), new long[]{3, 2, 1});
+    checkSerials(Arrays.asList(3L, 2L, 1L), schedOrder.getPreemptionIterator());
   }
   
-  public void checkSerials(Iterator<MockSchedulableEntity> si, 
-      long[] serials) {
-    for (int i = 0;i < serials.length;i++) {
-      Assert.assertEquals(si.next().getSerial(), 
-        serials[i]);
+  public void checkSerials(List<Long> expectedSerials, Iterator<MockSchedulableEntity>
+      actualSerialIterator) {
+    for (long expectedSerial : expectedSerials) {
+      assertEquals(expectedSerial, actualSerialIterator.next().getSerial());
     }
   }
   
   @Test
-  public void testFifoOrderingPolicyAlongWithPriorty() {
+  public void testFifoOrderingPolicyAlongWithPriority() {
     FifoOrderingPolicy<MockSchedulableEntity> policy =
         new FifoOrderingPolicy<MockSchedulableEntity>();
     MockSchedulableEntity r1 = new MockSchedulableEntity();
     MockSchedulableEntity r2 = new MockSchedulableEntity();
 
-    Priority p1 = Priority.newInstance(1);
-    Priority p2 = Priority.newInstance(0);
+    assertEquals(0, policy.getComparator().compare(r1, r2),
+        "Both r1 and r2 priority is null, the comparator should return 0.");
 
-    // Both r1 and r1 priority is null
-    Assert.assertEquals(0, policy.getComparator().compare(r1, r2));
+    Priority p2 = Priority.newInstance(0);
 
     // r1 is null and r2 is not null
     r2.setApplicationPriority(p2);
-    Assert.assertEquals(-1, policy.getComparator().compare(r1, r2));
+    assertTrue(policy.getComparator().compare(r1, r2) < 0,
+        "The priority of r1 is null, the priority of r2 is not null, " +
+        "the comparator should return a negative value.");
+
+    Priority p1 = Priority.newInstance(1);
 
     // r1 is not null and r2 is null
-    r2.setApplicationPriority(null);
     r1.setApplicationPriority(p1);
-    Assert.assertEquals(1, policy.getComparator().compare(r1, r2));
+    r2.setApplicationPriority(null);
+    assertTrue(policy.getComparator().compare(r1, r2) > 0,
+        "The priority of r1 is not null, the priority of r2 is null," +
+        "the comparator should return a positive value.");
 
     // r1 is not null and r2 is not null
     r1.setApplicationPriority(p1);
     r2.setApplicationPriority(p2);
-    Assert.assertEquals(-1, policy.getComparator().compare(r1, r2));
+    assertTrue(policy.getComparator().compare(r1, r2) < 0,
+        "Both priorities are not null, the r1 has higher priority, " +
+        "the result should be a negative value.");
   }
 
+  @Test
+  public void testOrderingUsingAppSubmitTime() {
+    FifoOrderingPolicy<MockSchedulableEntity> policy =
+        new FifoOrderingPolicy<MockSchedulableEntity>();
+    MockSchedulableEntity r1 = new MockSchedulableEntity();
+    MockSchedulableEntity r2 = new MockSchedulableEntity();
+
+    // R1, R2 has been started at same time
+    assertEquals(r1.getStartTime(), r2.getStartTime());
+
+    // No changes, equal
+    assertEquals(0, policy.getComparator().compare(r1, r2),
+        "The submit times are the same, the comparator should return 0.");
+
+    // R2 has been started after R1
+    r1.setStartTime(5);
+    r2.setStartTime(10);
+    assertTrue(policy.getComparator().compare(r1, r2) < 0,
+        "r2 was started after r1, " +
+        "the comparator should return a negative value.");
+
+    // R1 has been started after R2
+    r1.setStartTime(10);
+    r2.setStartTime(5);
+    assertTrue(policy.getComparator().compare(r1, r2) > 0,
+        "r2 was started before r1, the comparator should return a positive value.");
+  }
 }

@@ -22,9 +22,10 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.nativeio.NativeIO;
 import org.apache.hadoop.io.nativeio.NativeIOException;
@@ -46,7 +47,7 @@ public class AtomicFileOutputStream extends FilterOutputStream {
 
   private static final String TMP_EXTENSION = ".tmp";
   
-  private final static Log LOG = LogFactory.getLog(
+  private final static Logger LOG = LoggerFactory.getLogger(
       AtomicFileOutputStream.class);
   
   private final File origFile;
@@ -58,6 +59,11 @@ public class AtomicFileOutputStream extends FilterOutputStream {
     super(new FileOutputStream(new File(f.getParentFile(), f.getName() + TMP_EXTENSION)));
     origFile = f.getAbsoluteFile();
     tmpFile = new File(f.getParentFile(), f.getName() + TMP_EXTENSION).getAbsoluteFile();
+  }
+
+  @Override
+  public void write(byte[] b, int off, int len) throws IOException {
+    out.write(b, off, len);
   }
 
   @Override
@@ -75,8 +81,12 @@ public class AtomicFileOutputStream extends FilterOutputStream {
         boolean renamed = tmpFile.renameTo(origFile);
         if (!renamed) {
           // On windows, renameTo does not replace.
-          if (origFile.exists() && !origFile.delete()) {
-            throw new IOException("Could not delete original file " + origFile);
+          if (origFile.exists()) {
+            try {
+              Files.delete(origFile.toPath());
+            } catch (IOException e) {
+              throw new IOException("Could not delete original file " + origFile, e);
+            }
           }
           try {
             NativeIO.renameTo(tmpFile, origFile);

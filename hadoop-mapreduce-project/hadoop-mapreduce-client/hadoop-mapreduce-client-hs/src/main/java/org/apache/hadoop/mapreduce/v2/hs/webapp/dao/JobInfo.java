@@ -28,7 +28,7 @@ import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlRootElement;
 import javax.xml.bind.annotation.XmlTransient;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.mapreduce.JobACL;
 import org.apache.hadoop.mapreduce.v2.api.records.JobReport;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId;
@@ -117,7 +117,7 @@ public class JobInfo {
       this.diagnostics = "";
       List<String> diagnostics = job.getDiagnostics();
       if (diagnostics != null && !diagnostics.isEmpty()) {
-        StringBuffer b = new StringBuffer();
+        StringBuilder b = new StringBuilder();
         for (String diag : diagnostics) {
           b.append(diag);
         }

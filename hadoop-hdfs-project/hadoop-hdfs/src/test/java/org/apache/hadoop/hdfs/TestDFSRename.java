@@ -16,9 +16,9 @@
  * limitations under the License.
  */
 package org.apache.hadoop.hdfs;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -30,8 +30,12 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.Options.Rename;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
+import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestDFSRename {
   static int countLease(MiniDFSCluster cluster) {
@@ -133,7 +137,8 @@ public class TestDFSRename {
    * Check the blocks of dst file are cleaned after rename with overwrite
    * Restart NN to check the rename successfully
    */
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testRenameWithOverwrite() throws Exception {
     final short replFactor = 2;
     final long blockSize = 512;
@@ -159,6 +164,8 @@ public class TestDFSRename {
       assertTrue(bm.getStoredBlock(lbs.getLocatedBlocks().get(0).getBlock().
           getLocalBlock()) != null);
       dfs.rename(srcPath, dstPath, Rename.OVERWRITE);
+      BlockManagerTestUtil.waitForMarkedDeleteQueueIsEmpty(
+          cluster.getNamesystem(0).getBlockManager());
       assertTrue(bm.getStoredBlock(lbs.getLocatedBlocks().get(0).getBlock().
           getLocalBlock()) == null);
       
@@ -173,6 +180,25 @@ public class TestDFSRename {
       if (cluster != null) {
         cluster.shutdown();
       }
+    }
+  }
+
+  @Test
+  public void testRename2Options() throws Exception {
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(
+        new HdfsConfiguration()).build()) {
+      cluster.waitActive();
+      final DistributedFileSystem dfs = cluster.getFileSystem();
+      Path path = new Path("/test");
+      dfs.mkdirs(path);
+      GenericTestUtils.LogCapturer auditLog =
+          GenericTestUtils.LogCapturer.captureLogs(FSNamesystem.AUDIT_LOG);
+      dfs.rename(path, new Path("/dir1"),
+          new Rename[] {Rename.OVERWRITE, Rename.TO_TRASH});
+      String auditOut = auditLog.getOutput();
+      assertTrue(auditOut.contains("options=[OVERWRITE, TO_TRASH]"),
+          "Rename should have both OVERWRITE and TO_TRASH "
+              + "flags at namenode but had only " + auditOut);
     }
   }
 }

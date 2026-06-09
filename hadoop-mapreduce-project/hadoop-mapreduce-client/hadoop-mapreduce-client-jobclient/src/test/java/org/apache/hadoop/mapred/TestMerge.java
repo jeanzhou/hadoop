@@ -44,8 +44,8 @@ import org.apache.hadoop.io.serializer.SerializationFactory;
 import org.apache.hadoop.io.serializer.Serializer;
 
 import org.apache.hadoop.mapred.Task.TaskReporter;
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @SuppressWarnings(value={"unchecked", "deprecation"})
 /**
@@ -87,11 +87,11 @@ public class TestMerge {
       // Run the test.
       runMergeTest(new JobConf(mrCluster.getConfig()), fileSystem);
     } finally {
-      if (dfsCluster != null) {
-        dfsCluster.shutdown();
-      }
       if (mrCluster != null) {
         mrCluster.stop();
+      }
+      if (dfsCluster != null) {
+        dfsCluster.shutdown();
       }
     }
   }

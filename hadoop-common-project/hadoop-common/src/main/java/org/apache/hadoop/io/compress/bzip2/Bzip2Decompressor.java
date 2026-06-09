@@ -50,6 +50,8 @@ public class Bzip2Decompressor implements Decompressor {
 
   /**
    * Creates a new decompressor.
+   * @param conserveMemory conserveMemory.
+   * @param directBufferSize directBufferSize.
    */
   public Bzip2Decompressor(boolean conserveMemory, int directBufferSize) {
     this.conserveMemory = conserveMemory;
@@ -183,7 +185,7 @@ public class Bzip2Decompressor implements Decompressor {
   }
 
   /**
-   * Returns the total number of compressed bytes input so far.</p>
+   * Returns the total number of compressed bytes input so far.
    *
    * @return the total (non-negative) number of compressed bytes input so far
    */
@@ -195,7 +197,7 @@ public class Bzip2Decompressor implements Decompressor {
   /**
    * Returns the number of bytes remaining in the input buffers; normally
    * called when finished() is true to determine amount of post-gzip-stream
-   * data.</p>
+   * data.
    *
    * @return the total (non-negative) number of unprocessed bytes in input
    */
@@ -206,7 +208,7 @@ public class Bzip2Decompressor implements Decompressor {
   }
 
   /**
-   * Resets everything including the input buffers (user and direct).</p>
+   * Resets everything including the input buffers (user and direct).
    */
   @Override
   public synchronized void reset() {

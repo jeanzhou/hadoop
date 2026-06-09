@@ -39,7 +39,7 @@ public class RpcServerException extends RpcException {
    * 
    * @param message message.
    * @param cause the cause (can be retried by the {@link #getCause()} method).
-   *          (A <tt>null</tt> value is permitted, and indicates that the cause
+   *          (A <code>null</code> value is permitted, and indicates that the cause
    *          is nonexistent or unknown.)
    */
   public RpcServerException(final String message, final Throwable cause) {
@@ -47,14 +47,14 @@ public class RpcServerException extends RpcException {
   }
   
   /**
-   * get the rpc status corresponding to this exception
+   * @return get the rpc status corresponding to this exception.
    */
   public RpcStatusProto getRpcStatusProto() {
     return RpcStatusProto.ERROR;
   }
 
   /**
-   * get the detailed rpc status corresponding to this exception
+   * @return get the detailed rpc status corresponding to this exception.
    */
   public RpcErrorCodeProto getRpcErrorCodeProto() {
     return RpcErrorCodeProto.ERROR_RPC_SERVER;

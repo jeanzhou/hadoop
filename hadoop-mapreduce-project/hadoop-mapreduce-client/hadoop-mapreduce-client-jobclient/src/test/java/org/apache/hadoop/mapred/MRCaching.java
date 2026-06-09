@@ -26,20 +26,13 @@ import org.apache.hadoop.fs.*;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapred.JobClient;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapred.Mapper;
-import org.apache.hadoop.mapred.OutputCollector;
-import org.apache.hadoop.mapred.Reducer;
-import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.util.*;
-import org.apache.hadoop.mapred.MapReduceBase;
-import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 
 import java.net.URI;
 
-import org.junit.Assert;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class MRCaching {
   static String testStr = "This is a test file " + "used for testing caching "
@@ -62,8 +55,8 @@ public class MRCaching {
     public void configure(JobConf jconf) {
       conf = jconf;
       try {
-        Path[] localArchives = DistributedCache.getLocalCacheArchives(conf);
-        Path[] localFiles = DistributedCache.getLocalCacheFiles(conf);
+        Path[] localArchives = JobContextImpl.getLocalCacheArchives(conf);
+        Path[] localFiles = JobContextImpl.getLocalCacheFiles(conf);
         // read the cached files (unzipped, unjarred and text)
         // and put it into a single file TEST_ROOT_DIR/test.txt
         String TEST_ROOT_DIR = jconf.get("test.build.data","/tmp");
@@ -254,7 +247,7 @@ public class MRCaching {
     uris[3] = fs.getUri().resolve(cacheDir + "/test.tgz");
     uris[4] = fs.getUri().resolve(cacheDir + "/test.tar.gz");
     uris[5] = fs.getUri().resolve(cacheDir + "/test.tar");
-    DistributedCache.addCacheFile(uris[0], conf);
+    Job.addCacheFile(uris[0], conf);
 
     // Save expected file sizes
     long[] fileSizes = new long[1];
@@ -262,7 +255,7 @@ public class MRCaching {
 
     long[] archiveSizes = new long[5]; // track last 5
     for (int i = 1; i < 6; i++) {
-      DistributedCache.addCacheArchive(uris[i], conf);
+      Job.addCacheArchive(uris[i], conf);
       archiveSizes[i-1] = // starting with second archive
         fs.getFileStatus(new Path(uris[i].getPath())).getLen();
     }
@@ -306,13 +299,12 @@ public class MRCaching {
     String configValues = job.get(configKey, "");
     System.out.println(configKey + " -> " + configValues);
     String[] realSizes = StringUtils.getStrings(configValues);
-    Assert.assertEquals("Number of files for "+ configKey,
-                        expectedSizes.length, realSizes.length);
+    assertEquals(expectedSizes.length, realSizes.length, "Number of files for "+ configKey);
 
     for (int i=0; i < expectedSizes.length; ++i) {
       long actual = Long.valueOf(realSizes[i]);
       long expected = expectedSizes[i];
-      Assert.assertEquals("File "+ i +" for "+ configKey, expected, actual);
+      assertEquals(expected, actual, "File "+ i +" for "+ configKey);
     }
   }
 }

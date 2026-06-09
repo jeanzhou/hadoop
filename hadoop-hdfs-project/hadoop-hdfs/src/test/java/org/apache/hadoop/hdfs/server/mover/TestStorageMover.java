@@ -26,8 +26,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -61,24 +61,29 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeImpl;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test the data migration tool (for Archival Storage)
  */
+@Tag("slow")
 public class TestStorageMover {
-  static final Log LOG = LogFactory.getLog(TestStorageMover.class);
+  static final Logger LOG = LoggerFactory.getLogger(TestStorageMover.class);
   static {
-    GenericTestUtils.setLogLevel(LogFactory.getLog(BlockPlacementPolicy.class),
-        Level.ALL);
-    GenericTestUtils.setLogLevel(LogFactory.getLog(Dispatcher.class),
-        Level.ALL);
-    GenericTestUtils.setLogLevel(DataTransferProtocol.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(
+        LoggerFactory.getLogger(BlockPlacementPolicy.class), Level.TRACE);
+    GenericTestUtils.setLogLevel(LoggerFactory.getLogger(Dispatcher.class),
+        Level.TRACE);
+    GenericTestUtils.setLogLevel(DataTransferProtocol.LOG, Level.TRACE);
   }
 
   private static final int BLOCK_SIZE = 1024;
@@ -96,6 +101,8 @@ public class TestStorageMover {
     DEFAULT_CONF.setLong(
         DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 2L);
     DEFAULT_CONF.setLong(DFSConfigKeys.DFS_MOVER_MOVEDWINWIDTH_KEY, 2000L);
+    DEFAULT_CONF.set(DFSConfigKeys.DFS_STORAGE_POLICY_SATISFIER_MODE_KEY,
+        DFSConfigKeys.DFS_STORAGE_POLICY_SATISFIER_MODE_DEFAULT);
 
     DEFAULT_POLICIES = BlockStoragePolicySuite.createDefaultSuite();
     HOT = DEFAULT_POLICIES.getPolicy(HdfsConstants.HOT_STORAGE_POLICY_NAME);
@@ -228,7 +235,7 @@ public class TestStorageMover {
     }
 
     void shutdownCluster() throws Exception {
-      IOUtils.cleanup(null, dfs);
+      IOUtils.cleanupWithLogger(null, dfs);
       if (cluster != null) {
         cluster.shutdown();
       }
@@ -273,7 +280,7 @@ public class TestStorageMover {
         nnMap.put(nn, null);
       }
       int result = Mover.run(nnMap, conf);
-      Assert.assertEquals(expectedExitCode.getExitCode(), result);
+      assertEquals(expectedExitCode.getExitCode(), result);
     }
 
     private void verifyNamespace() throws Exception {
@@ -307,7 +314,7 @@ public class TestStorageMover {
           return;
         }
       }
-      Assert.fail("File " + file + " not found.");
+      fail("File " + file + " not found.");
     }
 
     private void verifyFile(final Path parent, final HdfsFileStatus status,
@@ -316,17 +323,17 @@ public class TestStorageMover {
       byte policyId = fileStatus.getStoragePolicy();
       BlockStoragePolicy policy = policies.getPolicy(policyId);
       if (expectedPolicyId != null) {
-        Assert.assertEquals((byte)expectedPolicyId, policy.getId());
+        assertEquals((byte) expectedPolicyId, policy.getId());
       }
       final List<StorageType> types = policy.chooseStorageTypes(
           status.getReplication());
       for(LocatedBlock lb : fileStatus.getLocatedBlocks().getLocatedBlocks()) {
         final Mover.StorageTypeDiff diff = new Mover.StorageTypeDiff(types,
             lb.getStorageTypes());
-        Assert.assertTrue(fileStatus.getFullName(parent.toString())
-            + " with policy " + policy + " has non-empty overlap: " + diff
-            + ", the corresponding block is " + lb.getBlock().getLocalBlock(),
-            diff.removeOverlap(true));
+        assertTrue(diff.removeOverlap(true),
+            fileStatus.getFullName(parent.toString())
+                + " with policy " + policy + " has non-empty overlap: " + diff
+                + ", the corresponding block is " + lb.getBlock().getLocalBlock());
       }
     }
 
@@ -346,7 +353,7 @@ public class TestStorageMover {
         throws IOException {
       final List<LocatedBlock> lbs = dfs.getClient().getLocatedBlocks(
           file.toString(), 0).getLocatedBlocks();
-      Assert.assertEquals(1, lbs.size());
+      assertEquals(1, lbs.size());
 
       LocatedBlock lb = lbs.get(0);
       StringBuilder types = new StringBuilder(); 
@@ -358,13 +365,13 @@ public class TestStorageMover {
         } else if (t == StorageType.ARCHIVE) {
           r.archive++;
         } else {
-          Assert.fail("Unexpected storage type " + t);
+          fail("Unexpected storage type " + t);
         }
       }
 
       if (expected != null) {
         final String s = "file = " + file + "\n  types = [" + types + "]";
-        Assert.assertEquals(s, expected, r);
+        assertEquals(expected, r, s);
       }
       return r;
     }
@@ -518,7 +525,7 @@ public class TestStorageMover {
       Map<URI, List<Path>> map = Mover.Cli.getNameNodePathsToMove(test.conf,
           "-p", "/foo/bar", "/foo2");
       int result = Mover.run(map, test.conf);
-      Assert.assertEquals(ExitStatus.SUCCESS.getExitCode(), result);
+      assertEquals(ExitStatus.SUCCESS.getExitCode(), result);
 
       Thread.sleep(5000);
       test.verify(true);
@@ -561,21 +568,21 @@ public class TestStorageMover {
           barFile.toString(), BLOCK_SIZE);
       LOG.info("Locations: " + lbs);
       List<LocatedBlock> blks = lbs.getLocatedBlocks();
-      Assert.assertEquals(1, blks.size());
-      Assert.assertEquals(1, blks.get(0).getLocations().length);
+      assertEquals(1, blks.size());
+      assertEquals(1, blks.get(0).getLocations().length);
 
       banner("finish the migration, continue writing");
       // make sure the writing can continue
       out.writeBytes("world!");
       ((DFSOutputStream) out.getWrappedStream()).hsync();
-      IOUtils.cleanup(LOG, out);
+      IOUtils.cleanupWithLogger(LOG, out);
 
       lbs = test.dfs.getClient().getLocatedBlocks(
           barFile.toString(), BLOCK_SIZE);
       LOG.info("Locations: " + lbs);
       blks = lbs.getLocatedBlocks();
-      Assert.assertEquals(1, blks.size());
-      Assert.assertEquals(1, blks.get(0).getLocations().length);
+      assertEquals(1, blks.size());
+      assertEquals(1, blks.get(0).getLocations().length);
 
       banner("finish writing, starting reading");
       // check the content of /foo/bar
@@ -583,8 +590,8 @@ public class TestStorageMover {
       byte[] buf = new byte[13];
       // read from offset 1024
       in.readFully(BLOCK_SIZE, buf, 0, buf.length);
-      IOUtils.cleanup(LOG, in);
-      Assert.assertEquals("hello, world!", new String(buf));
+      IOUtils.cleanupWithLogger(LOG, in);
+      assertEquals("hello, world!", new String(buf));
     } finally {
       test.shutdownCluster();
     }
@@ -738,7 +745,7 @@ public class TestStorageMover {
         // since no more ARCHIVE space.
         final Path file0 = new Path(pathPolicyMap.cold, "file0");
         final Replication r = test.getReplication(file0);
-        Assert.assertEquals(0, r.disk);
+        assertEquals(0, r.disk);
 
         final short newReplication = (short) 5;
         test.dfs.setReplication(file0, newReplication);

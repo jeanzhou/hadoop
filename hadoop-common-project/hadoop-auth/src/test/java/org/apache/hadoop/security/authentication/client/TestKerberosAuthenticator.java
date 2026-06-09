@@ -13,6 +13,10 @@
  */
 package org.apache.hadoop.security.authentication.client;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.apache.hadoop.security.authentication.server.MultiSchemeAuthenticationHandler.SCHEMES_PROPERTY;
 import static org.apache.hadoop.security.authentication.server.MultiSchemeAuthenticationHandler.AUTH_HANDLER_PROPERTY;
 import static org.apache.hadoop.security.authentication.server.AuthenticationFilter.AUTH_TYPE;
@@ -21,21 +25,27 @@ import static org.apache.hadoop.security.authentication.server.KerberosAuthentic
 import static org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler.NAME_RULES;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.charset.CharacterCodingException;
 import javax.security.sasl.AuthenticationException;
+
+import org.apache.commons.codec.binary.Base64;
+import org.apache.commons.lang3.reflect.FieldUtils;
 import org.apache.hadoop.minikdc.KerberosSecurityTestcase;
 import org.apache.hadoop.security.authentication.KerberosTestUtils;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.authentication.server.MultiSchemeAuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.PseudoAuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.Properties;
 import java.util.concurrent.Callable;
 
@@ -47,7 +57,7 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
   public TestKerberosAuthenticator() {
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     // create keytab
     File keytabFile = new File(KerberosTestUtils.getKeytabFile());
@@ -65,6 +75,7 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     props.setProperty(KerberosAuthenticationHandler.KEYTAB, KerberosTestUtils.getKeytabFile());
     props.setProperty(KerberosAuthenticationHandler.NAME_RULES,
                       "RULE:[1:$1@$0](.*@" + KerberosTestUtils.getRealm()+")s/@.*//\n");
+    props.setProperty(KerberosAuthenticationHandler.RULE_MECHANISM, "hadoop");
     return props;
   }
 
@@ -81,7 +92,8 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     return props;
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testFallbacktoPseudoAuthenticator() throws Exception {
     AuthenticatorTestCase auth = new AuthenticatorTestCase();
     Properties props = new Properties();
@@ -91,7 +103,8 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     auth._testAuthentication(new KerberosAuthenticator(), false);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testFallbacktoPseudoAuthenticatorAnonymous() throws Exception {
     AuthenticatorTestCase auth = new AuthenticatorTestCase();
     Properties props = new Properties();
@@ -101,7 +114,8 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     auth._testAuthentication(new KerberosAuthenticator(), false);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testNotAuthenticated() throws Exception {
     AuthenticatorTestCase auth = new AuthenticatorTestCase();
     AuthenticatorTestCase.setAuthenticationHandlerConfig(getAuthenticationHandlerConfiguration());
@@ -110,14 +124,15 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
       URL url = new URL(auth.getBaseURL());
       HttpURLConnection conn = (HttpURLConnection) url.openConnection();
       conn.connect();
-      Assert.assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED, conn.getResponseCode());
-      Assert.assertTrue(conn.getHeaderField(KerberosAuthenticator.WWW_AUTHENTICATE) != null);
+      assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED, conn.getResponseCode());
+      assertTrue(conn.getHeaderField(KerberosAuthenticator.WWW_AUTHENTICATE) != null);
     } finally {
       auth.stop();
     }
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testAuthentication() throws Exception {
     final AuthenticatorTestCase auth = new AuthenticatorTestCase();
     AuthenticatorTestCase.setAuthenticationHandlerConfig(
@@ -131,7 +146,8 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     });
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testAuthenticationPost() throws Exception {
     final AuthenticatorTestCase auth = new AuthenticatorTestCase();
     AuthenticatorTestCase.setAuthenticationHandlerConfig(
@@ -145,7 +161,8 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     });
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testAuthenticationHttpClient() throws Exception {
     final AuthenticatorTestCase auth = new AuthenticatorTestCase();
     AuthenticatorTestCase.setAuthenticationHandlerConfig(
@@ -159,7 +176,8 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     });
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testAuthenticationHttpClientPost() throws Exception {
     final AuthenticatorTestCase auth = new AuthenticatorTestCase();
     AuthenticatorTestCase.setAuthenticationHandlerConfig(
@@ -173,7 +191,8 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     });
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testNotAuthenticatedWithMultiAuthHandler() throws Exception {
     AuthenticatorTestCase auth = new AuthenticatorTestCase();
     AuthenticatorTestCase
@@ -183,16 +202,17 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
       URL url = new URL(auth.getBaseURL());
       HttpURLConnection conn = (HttpURLConnection) url.openConnection();
       conn.connect();
-      Assert.assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED,
+      assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED,
           conn.getResponseCode());
-      Assert.assertTrue(conn
+      assertTrue(conn
           .getHeaderField(KerberosAuthenticator.WWW_AUTHENTICATE) != null);
     } finally {
       auth.stop();
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testAuthenticationWithMultiAuthHandler() throws Exception {
     final AuthenticatorTestCase auth = new AuthenticatorTestCase();
     AuthenticatorTestCase
@@ -206,7 +226,8 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     });
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testAuthenticationHttpClientPostWithMultiAuthHandler()
       throws Exception {
     final AuthenticatorTestCase auth = new AuthenticatorTestCase();
@@ -221,21 +242,22 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     });
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testWrapExceptionWithMessage() {
     IOException ex;
     ex = new IOException("Induced exception");
     ex = KerberosAuthenticator.wrapExceptionWithMessage(ex, "Error while "
         + "authenticating with endpoint: localhost");
-    Assert.assertEquals("Induced exception", ex.getCause().getMessage());
-    Assert.assertEquals("Error while authenticating with endpoint: localhost",
+    assertEquals("Induced exception", ex.getCause().getMessage());
+    assertEquals("Error while authenticating with endpoint: localhost",
         ex.getMessage());
 
     ex = new AuthenticationException("Auth exception");
     ex = KerberosAuthenticator.wrapExceptionWithMessage(ex, "Error while "
         + "authenticating with endpoint: localhost");
-    Assert.assertEquals("Auth exception", ex.getCause().getMessage());
-    Assert.assertEquals("Error while authenticating with endpoint: localhost",
+    assertEquals("Auth exception", ex.getCause().getMessage());
+    assertEquals("Error while authenticating with endpoint: localhost",
         ex.getMessage());
 
     // Test for Exception with  no (String) constructor
@@ -243,8 +265,87 @@ public class TestKerberosAuthenticator extends KerberosSecurityTestcase {
     ex = new CharacterCodingException();
     Exception ex2 = KerberosAuthenticator.wrapExceptionWithMessage(ex,
         "Error while authenticating with endpoint: localhost");
-    Assert.assertTrue(ex instanceof CharacterCodingException);
-    Assert.assertTrue(ex.equals(ex2));
+    assertTrue(ex instanceof CharacterCodingException);
+    assertTrue(ex.equals(ex2));
   }
 
+  @Test
+  @Timeout(value = 60)
+  public void testNegotiate() throws NoSuchMethodException, InvocationTargetException,
+          IllegalAccessException, IOException {
+    KerberosAuthenticator kerberosAuthenticator = new KerberosAuthenticator();
+
+    HttpURLConnection conn = mock(HttpURLConnection.class);
+    when(conn.getHeaderField(KerberosAuthenticator.WWW_AUTHENTICATE)).
+            thenReturn(KerberosAuthenticator.NEGOTIATE);
+    when(conn.getResponseCode()).thenReturn(HttpURLConnection.HTTP_UNAUTHORIZED);
+
+    Method method = KerberosAuthenticator.class.getDeclaredMethod("isNegotiate",
+            HttpURLConnection.class);
+    method.setAccessible(true);
+
+    assertTrue((boolean)method.invoke(kerberosAuthenticator, conn));
+  }
+
+  @Test
+  @Timeout(value = 60)
+  public void testNegotiateLowerCase() throws NoSuchMethodException, InvocationTargetException,
+          IllegalAccessException, IOException {
+    KerberosAuthenticator kerberosAuthenticator = new KerberosAuthenticator();
+
+    HttpURLConnection conn = mock(HttpURLConnection.class);
+    when(conn.getHeaderField("www-authenticate"))
+            .thenReturn(KerberosAuthenticator.NEGOTIATE);
+    when(conn.getResponseCode()).thenReturn(HttpURLConnection.HTTP_UNAUTHORIZED);
+
+    Method method = KerberosAuthenticator.class.getDeclaredMethod("isNegotiate",
+            HttpURLConnection.class);
+    method.setAccessible(true);
+
+    assertTrue((boolean)method.invoke(kerberosAuthenticator, conn));
+  }
+
+  @Test
+  @Timeout(value = 60)
+  public void testReadToken() throws NoSuchMethodException, IOException, IllegalAccessException,
+          InvocationTargetException {
+    KerberosAuthenticator kerberosAuthenticator = new KerberosAuthenticator();
+    FieldUtils.writeField(kerberosAuthenticator, "base64", new Base64(), true);
+
+    Base64 base64 = new Base64();
+
+    HttpURLConnection conn = mock(HttpURLConnection.class);
+    when(conn.getResponseCode()).thenReturn(HttpURLConnection.HTTP_UNAUTHORIZED);
+    when(conn.getHeaderField(KerberosAuthenticator.WWW_AUTHENTICATE))
+            .thenReturn(KerberosAuthenticator.NEGOTIATE + " " +
+                    Arrays.toString(base64.encode("foobar".getBytes())));
+
+    Method method = KerberosAuthenticator.class.getDeclaredMethod("readToken",
+            HttpURLConnection.class);
+    method.setAccessible(true);
+
+    method.invoke(kerberosAuthenticator, conn); // expecting this not to throw an exception
+  }
+
+  @Test
+  @Timeout(value = 60)
+  public void testReadTokenLowerCase() throws NoSuchMethodException, IOException,
+          IllegalAccessException, InvocationTargetException {
+    KerberosAuthenticator kerberosAuthenticator = new KerberosAuthenticator();
+    FieldUtils.writeField(kerberosAuthenticator, "base64", new Base64(), true);
+
+    Base64 base64 = new Base64();
+
+    HttpURLConnection conn = mock(HttpURLConnection.class);
+    when(conn.getResponseCode()).thenReturn(HttpURLConnection.HTTP_UNAUTHORIZED);
+    when(conn.getHeaderField("www-authenticate"))
+            .thenReturn(KerberosAuthenticator.NEGOTIATE +
+                    Arrays.toString(base64.encode("foobar".getBytes())));
+
+    Method method = KerberosAuthenticator.class.getDeclaredMethod("readToken",
+            HttpURLConnection.class);
+    method.setAccessible(true);
+
+    method.invoke(kerberosAuthenticator, conn); // expecting this not to throw an exception
+  }
 }

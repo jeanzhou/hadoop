@@ -62,6 +62,7 @@ import org.apache.hadoop.mapreduce.v2.app.rm.preemption.AMPreemptionPolicy;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringInterner;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerExitStatus;
@@ -87,7 +88,7 @@ import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.RackResolver;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -111,7 +112,7 @@ public class RMContainerAllocator extends RMContainerRequestor
   public static final String RAMPDOWN_DIAGNOSTIC = "Reducer preempted "
       + "to make room for pending map attempts";
 
-  private Thread eventHandlingThread;
+  private SubjectInheritingThread eventHandlingThread;
   private final AtomicBoolean stopped;
 
   static {
@@ -246,10 +247,10 @@ public class RMContainerAllocator extends RMContainerRequestor
 
   @Override
   protected void serviceStart() throws Exception {
-    this.eventHandlingThread = new Thread() {
+    this.eventHandlingThread = new SubjectInheritingThread() {
       @SuppressWarnings("unchecked")
       @Override
-      public void run() {
+      public void work() {
 
         ContainerAllocatorEvent event;
 
@@ -968,16 +969,20 @@ public class RMContainerAllocator extends RMContainerRequestor
 
   @VisibleForTesting
   public TaskAttemptEvent createContainerFinishedEvent(ContainerStatus cont,
-      TaskAttemptId attemptID) {
-    if (cont.getExitStatus() == ContainerExitStatus.ABORTED
-        || cont.getExitStatus() == ContainerExitStatus.PREEMPTED) {
-      // killed by framework
-      return new TaskAttemptEvent(attemptID,
-          TaskAttemptEventType.TA_KILL);
-    } else {
-      return new TaskAttemptEvent(attemptID,
+      TaskAttemptId attemptId) {
+    TaskAttemptEvent event;
+    switch (cont.getExitStatus()) {
+    case ContainerExitStatus.ABORTED:
+    case ContainerExitStatus.PREEMPTED:
+    case ContainerExitStatus.KILLED_BY_CONTAINER_SCHEDULER:
+      // killed by YARN
+      event = new TaskAttemptEvent(attemptId, TaskAttemptEventType.TA_KILL);
+      break;
+    default:
+      event = new TaskAttemptEvent(attemptId,
           TaskAttemptEventType.TA_CONTAINER_COMPLETED);
     }
+    return event;
   }
   
   @SuppressWarnings("unchecked")
@@ -1020,12 +1025,14 @@ public class RMContainerAllocator extends RMContainerRequestor
     }
   }
 
-  private void handleJobPriorityChange(AllocateResponse response) {
-    Priority priorityFromResponse = Priority.newInstance(response
-        .getApplicationPriority().getPriority());
-
-    // Update the job priority to Job directly.
-    getJob().setJobPriority(priorityFromResponse);
+  void handleJobPriorityChange(AllocateResponse response) {
+    Priority applicationPriority = response.getApplicationPriority();
+    if (null != applicationPriority) {
+      Priority priorityFromResponse = Priority
+          .newInstance(applicationPriority.getPriority());
+      // Update the job priority to Job directly.
+      getJob().setJobPriority(priorityFromResponse);
+    }
   }
 
   @Private

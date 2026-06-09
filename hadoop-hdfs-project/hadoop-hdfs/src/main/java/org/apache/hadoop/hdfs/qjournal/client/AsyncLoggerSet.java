@@ -23,9 +23,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.GetJournalStateResponseProto;
+import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.GetJournaledEditsResponseProto;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.NewEpochResponseProto;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.PrepareRecoveryResponseProto;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.SegmentStateProto;
@@ -33,12 +34,12 @@ import org.apache.hadoop.hdfs.server.common.StorageInfo;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Maps;
-import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListenableFuture;
 
 /**
  * Wrapper around a set of Loggers, taking care of fanning out
@@ -46,7 +47,7 @@ import com.google.common.util.concurrent.ListenableFuture;
  * {@link QuorumCall} instances.
  */
 class AsyncLoggerSet {
-  static final Log LOG = LogFactory.getLog(AsyncLoggerSet.class);
+  static final Logger LOG = LoggerFactory.getLogger(AsyncLoggerSet.class);
 
   private final List<AsyncLogger> loggers;
   
@@ -86,7 +87,7 @@ class AsyncLoggerSet {
   
   /**
    * @return the epoch number for this writer. This may only be called after
-   * a successful call to {@link #createNewUniqueEpoch(NamespaceInfo)}.
+   * a successful call to {@link QuorumJournalManager#createNewUniqueEpoch()}.
    */
   long getEpoch() {
     Preconditions.checkState(myEpoch != INVALID_EPOCH,
@@ -261,6 +262,19 @@ class AsyncLoggerSet {
     return QuorumCall.create(calls);
   }
 
+  public QuorumCall<AsyncLogger, GetJournaledEditsResponseProto>
+  getJournaledEdits(long fromTxnId, int maxTransactions) {
+    Map<AsyncLogger,
+        ListenableFuture<GetJournaledEditsResponseProto>> calls
+        = Maps.newHashMap();
+    for (AsyncLogger logger : loggers) {
+      ListenableFuture<GetJournaledEditsResponseProto> future =
+          logger.getJournaledEdits(fromTxnId, maxTransactions);
+      calls.put(logger, future);
+    }
+    return QuorumCall.create(calls);
+  }
+
   public QuorumCall<AsyncLogger, RemoteEditLogManifest> getEditLogManifest(
       long fromTxnId, boolean inProgressOk) {
     Map<AsyncLogger,
@@ -299,12 +313,12 @@ class AsyncLoggerSet {
     return QuorumCall.create(calls);
   }
 
-  QuorumCall<AsyncLogger,Void> format(NamespaceInfo nsInfo) {
+  QuorumCall<AsyncLogger, Void> format(NamespaceInfo nsInfo, boolean force) {
     Map<AsyncLogger, ListenableFuture<Void>> calls =
         Maps.newHashMap();
     for (AsyncLogger logger : loggers) {
       ListenableFuture<Void> future =
-          logger.format(nsInfo);
+          logger.format(nsInfo, force);
       calls.put(logger, future);
     }
     return QuorumCall.create(calls);

@@ -19,15 +19,18 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -42,23 +45,21 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.DataNodeVolumeMetrics;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.apache.hadoop.test.MetricsAsserts;
+
+import org.junit.jupiter.api.Test;
 
 /**
  * Test class for DataNodeVolumeMetrics.
  */
+@Timeout(300)
 public class TestDataNodeVolumeMetrics {
-  private static final Log LOG =
-      LogFactory.getLog(TestDataNodeVolumeMetrics.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDataNodeVolumeMetrics.class);
 
   private static final int BLOCK_SIZE = 1024;
   private static final short REPL = 1;
   private static final int NUM_DATANODES = 1;
-
-  @Rule
-  public Timeout timeout = new Timeout(300000);
 
   @Test
   public void testVolumeMetrics() throws Exception {
@@ -101,7 +102,7 @@ public class TestDataNodeVolumeMetrics {
       }
 
       ArrayList<DataNode> dns = cluster.getDataNodes();
-      assertTrue("DN1 should be up", dns.get(0).isDatanodeUp());
+      assertTrue(dns.get(0).isDatanodeUp(), "DN1 should be up");
       final File dn1Vol2 = cluster.getInstanceStorageDir(0, 1);
 
       DataNodeTestUtils.injectDataDirFailure(dn1Vol2);
@@ -149,7 +150,7 @@ public class TestDataNodeVolumeMetrics {
     LOG.info("MetadataOperationSampleCount : " +
         metrics.getMetadataOperationSampleCount());
     LOG.info("MetadataOperationMean : " + metrics.getMetadataOperationMean());
-    LOG.info("MetadataFileIoStdDev : " +
+    LOG.info("MetadataOperationStdDev : " +
         metrics.getMetadataOperationStdDev());
 
     LOG.info("DataFileIoSampleCount : " + metrics.getDataFileIoSampleCount());
@@ -164,7 +165,7 @@ public class TestDataNodeVolumeMetrics {
     LOG.info("syncIoMean : " + metrics.getSyncIoMean());
     LOG.info("syncIoStdDev : " + metrics.getSyncIoStdDev());
 
-    LOG.info("readIoSampleCount : " + metrics.getReadIoMean());
+    LOG.info("readIoSampleCount : " + metrics.getReadIoSampleCount());
     LOG.info("readIoMean : " + metrics.getReadIoMean());
     LOG.info("readIoStdDev : " + metrics.getReadIoStdDev());
 
@@ -172,9 +173,73 @@ public class TestDataNodeVolumeMetrics {
     LOG.info("writeIoMean : " + metrics.getWriteIoMean());
     LOG.info("writeIoStdDev : " + metrics.getWriteIoStdDev());
 
+    LOG.info("transferIoSampleCount : " + metrics.getTransferIoSampleCount());
+    LOG.info("transferIoMean : " + metrics.getTransferIoMean());
+    LOG.info("transferIoStdDev : " + metrics.getTransferIoStdDev());
+
+    LOG.info("nativeCopyIoSampleCount : " +
+        metrics.getNativeCopyIoSampleCount());
+    LOG.info("nativeCopyIoMean : " + metrics.getNativeCopyIoMean());
+    LOG.info("nativeCopyIoStdDev : " + metrics.getNativeCopyIoStdDev());
+
     LOG.info("fileIoErrorSampleCount : "
         + metrics.getFileIoErrorSampleCount());
     LOG.info("fileIoErrorMean : " + metrics.getFileIoErrorMean());
     LOG.info("fileIoErrorStdDev : " + metrics.getFileIoErrorStdDev());
+
+    MetricsAsserts.assertTag("VolumeName", metrics.getVolumeName(), rb);
+  }
+
+  @Test
+  public void testWriteIoVolumeMetrics() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    conf.setInt(
+        DFSConfigKeys.DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY,
+        100);
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf)
+            .numDataNodes(NUM_DATANODES)
+            .storageTypes(
+                new StorageType[]{StorageType.RAM_DISK, StorageType.DISK})
+            .storagesPerDatanode(2).build();
+
+    try {
+      FileSystem fs = cluster.getFileSystem();
+      final Path fileName = new Path("/test.dat");
+      final long fileLen = Integer.MAX_VALUE + 1L;
+      long lastWriteIoSampleCount;
+
+      DFSTestUtil.createFile(fs, fileName, false, BLOCK_SIZE, fileLen,
+          fs.getDefaultBlockSize(fileName), REPL, 1L, true);
+
+      List<DataNode> datanodes = cluster.getDataNodes();
+      DataNode datanode = datanodes.get(0);
+
+      final ExtendedBlock block = DFSTestUtil.getFirstBlock(fs, fileName);
+      final FsVolumeSpi volume = datanode.getFSDataset().getVolume(block);
+      DataNodeVolumeMetrics metrics = volume.getMetrics();
+
+      assertEquals(0, metrics.getSyncIoSampleCount());
+      assertNotEquals(0, metrics.getWriteIoSampleCount());
+      assertTrue(metrics.getFlushIoSampleCount() > metrics
+          .getSyncIoSampleCount());
+      assertTrue(metrics.getWriteIoSampleCount() > metrics
+          .getFlushIoSampleCount());
+
+      lastWriteIoSampleCount = metrics.getWriteIoSampleCount();
+
+      try (FSDataOutputStream out = fs.append(fileName)) {
+        out.writeBytes("hello world");
+        out.hflush();
+      }
+
+      assertEquals(0, metrics.getSyncIoSampleCount());
+      assertTrue(metrics.getWriteIoSampleCount() > lastWriteIoSampleCount);
+
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
   }
 }

@@ -18,33 +18,33 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.curator.test.TestingServer;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStoreTestBase.TestDispatcher;
 import org.apache.hadoop.util.ZKUtil;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 
-import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.server.auth.DigestAuthenticationProvider;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestZKRMStateStoreZKClientConnections {
-  private Log LOG =
-      LogFactory.getLog(TestZKRMStateStoreZKClientConnections.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestZKRMStateStoreZKClientConnections.class);
 
   private static final int ZK_TIMEOUT_MS = 1000;
   private static final String DIGEST_USER_PASS="test-user:test-password";
@@ -62,13 +62,13 @@ public class TestZKRMStateStoreZKClientConnections {
 
   private TestingServer testingServer;
 
-  @Before
+  @BeforeEach
   public void setupZKServer() throws Exception {
     testingServer = new TestingServer();
     testingServer.start();
   }
 
-  @After
+  @AfterEach
   public void cleanupZKServer() throws Exception {
     testingServer.stop();
   }
@@ -98,13 +98,14 @@ public class TestZKRMStateStoreZKClientConnections {
     }
   }
 
-  @Test (timeout = 20000)
+  @Test
+  @Timeout(value = 20)
   public void testZKClientRetry() throws Exception {
     TestZKClient zkClientTester = new TestZKClient();
     final String path = "/test";
     YarnConfiguration conf = new YarnConfiguration();
-    conf.setInt(YarnConfiguration.RM_ZK_TIMEOUT_MS, ZK_TIMEOUT_MS);
-    conf.setLong(YarnConfiguration.RM_ZK_RETRY_INTERVAL_MS, 100);
+    conf.setInt(CommonConfigurationKeys.ZK_TIMEOUT_MS, ZK_TIMEOUT_MS);
+    conf.setLong(CommonConfigurationKeys.ZK_RETRY_INTERVAL_MS, 100);
     final ZKRMStateStore store =
         (ZKRMStateStore) zkClientTester.getRMStateStore(conf);
     TestDispatcher dispatcher = new TestDispatcher();
@@ -112,9 +113,9 @@ public class TestZKRMStateStoreZKClientConnections {
     final AtomicBoolean assertionFailedInThread = new AtomicBoolean(false);
 
     testingServer.stop();
-    Thread clientThread = new Thread() {
+    SubjectInheritingThread clientThread = new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         try {
           store.getData(path);
         } catch (Exception e) {
@@ -126,14 +127,15 @@ public class TestZKRMStateStoreZKClientConnections {
     Thread.sleep(2000);
     testingServer.start();
     clientThread.join();
-    Assert.assertFalse(assertionFailedInThread.get());
+    assertFalse(assertionFailedInThread.get());
   }
 
-  @Test(timeout = 20000)
+  @Test
+  @Timeout(value = 20)
   public void testSetZKAcl() {
     TestZKClient zkClientTester = new TestZKClient();
     YarnConfiguration conf = new YarnConfiguration();
-    conf.set(YarnConfiguration.RM_ZK_ACL, "world:anyone:rwca");
+    conf.set(CommonConfigurationKeys.ZK_ACL, "world:anyone:rwca");
     try {
       zkClientTester.store.delete(zkClientTester.store
           .znodeWorkingPath);
@@ -142,11 +144,12 @@ public class TestZKRMStateStoreZKClientConnections {
     }
   }
 
-  @Test(timeout = 20000)
+  @Test
+  @Timeout(value = 20)
   public void testInvalidZKAclConfiguration() {
     TestZKClient zkClientTester = new TestZKClient();
     YarnConfiguration conf = new YarnConfiguration();
-    conf.set(YarnConfiguration.RM_ZK_ACL, "randomstring&*");
+    conf.set(CommonConfigurationKeys.ZK_ACL, "randomstring&*");
     try {
       zkClientTester.getRMStateStore(conf);
       fail("ZKRMStateStore created with bad ACL");
@@ -163,10 +166,10 @@ public class TestZKRMStateStoreZKClientConnections {
   public void testZKAuths() throws Exception {
     TestZKClient zkClientTester = new TestZKClient();
     YarnConfiguration conf = new YarnConfiguration();
-    conf.setInt(YarnConfiguration.RM_ZK_NUM_RETRIES, 1);
-    conf.setInt(YarnConfiguration.RM_ZK_TIMEOUT_MS, ZK_TIMEOUT_MS);
-    conf.set(YarnConfiguration.RM_ZK_ACL, TEST_ACL);
-    conf.set(YarnConfiguration.RM_ZK_AUTH, TEST_AUTH_GOOD);
+    conf.setInt(CommonConfigurationKeys.ZK_NUM_RETRIES, 1);
+    conf.setInt(CommonConfigurationKeys.ZK_TIMEOUT_MS, ZK_TIMEOUT_MS);
+    conf.set(CommonConfigurationKeys.ZK_ACL, TEST_ACL);
+    conf.set(CommonConfigurationKeys.ZK_AUTH, TEST_AUTH_GOOD);
 
     zkClientTester.getRMStateStore(conf);
   }

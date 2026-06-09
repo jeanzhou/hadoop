@@ -28,11 +28,11 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.ByteBuffer;
 
-import org.apache.commons.lang.SystemUtils;
+import org.apache.commons.lang3.SystemUtils;
 import org.apache.hadoop.util.NativeCodeLoader;
 import org.apache.hadoop.util.CloseableReferenceCount;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -106,6 +106,8 @@ public class DomainSocket implements Closeable {
 
   /**
    * Return true only if UNIX domain sockets are available.
+   *
+   * @return loadingFailureReason.
    */
   public static String getLoadingFailureReason() {
     return loadingFailureReason;
@@ -184,6 +186,7 @@ public class DomainSocket implements Closeable {
    *
    * @param path         The path to bind and listen on.
    * @return             The new DomainSocket.
+   * @throws IOException raised on errors performing I/O.
    */
   public static DomainSocket bindAndListen(String path) throws IOException {
     if (loadingFailureReason != null) {
@@ -336,10 +339,13 @@ public class DomainSocket implements Closeable {
   private static native void shutdown0(int fd) throws IOException;
 
   /**
-   * Close the Socket.
+   * Close the Server Socket without check refCount.
+   * When Server Socket is blocked on accept(), its refCount is 1.
+   * close() call on Server Socket will be stuck in the while loop count check.
+   * @param force         if true, will not check refCount before close socket.
+   * @throws IOException  raised on errors performing I/O.
    */
-  @Override
-  public void close() throws IOException {
+  public void close(boolean force) throws IOException {
     // Set the closed bit on this DomainSocket
     int count;
     try {
@@ -348,46 +354,66 @@ public class DomainSocket implements Closeable {
       // Someone else already closed the DomainSocket.
       return;
     }
-    // Wait for all references to go away
-    boolean didShutdown = false;
+
     boolean interrupted = false;
-    while (count > 0) {
-      if (!didShutdown) {
-        try {
-          // Calling shutdown on the socket will interrupt blocking system
-          // calls like accept, write, and read that are going on in a
-          // different thread.
-          shutdown0(fd);
-        } catch (IOException e) {
-          LOG.error("shutdown error: ", e);
-        }
-        didShutdown = true;
-      }
+    if (force) {
       try {
-        Thread.sleep(10);
-      } catch (InterruptedException e) {
-        interrupted = true;
+        // Calling shutdown on the socket will interrupt blocking system
+        // calls like accept, write, and read that are going on in a
+        // different thread.
+        shutdown0(fd);
+      } catch (IOException e) {
+        LOG.error("shutdown error: ", e);
       }
-      count = refCount.getReferenceCount();
+    } else {
+      // Wait for all references to go away
+      boolean didShutdown = false;
+      while (count > 0) {
+        if (!didShutdown) {
+          try {
+            // Calling shutdown on the socket will interrupt blocking system
+            // calls like accept, write, and read that are going on in a
+            // different thread.
+            shutdown0(fd);
+          } catch (IOException e) {
+            LOG.error("shutdown error: ", e);
+          }
+          didShutdown = true;
+        }
+        try {
+          Thread.sleep(10);
+        } catch (InterruptedException e) {
+          interrupted = true;
+        }
+        count = refCount.getReferenceCount();
+      }
     }
 
-    // At this point, nobody has a reference to the file descriptor, 
+    // At this point, nobody has a reference to the file descriptor,
     // and nobody will be able to get one in the future either.
     // We now call close(2) on the file descriptor.
-    // After this point, the file descriptor number will be reused by 
-    // something else.  Although this DomainSocket object continues to hold 
-    // the old file descriptor number (it's a final field), we never use it 
+    // After this point, the file descriptor number will be reused by
+    // something else.  Although this DomainSocket object continues to hold
+    // the old file descriptor number (it's a final field), we never use it
     // again because this DomainSocket is closed.
     close0(fd);
     if (interrupted) {
       Thread.currentThread().interrupt();
     }
   }
+
+  /**
+   * Close the Socket.
+   */
+  @Override
+  public void close() throws IOException {
+    close(false);
+  }
   
   /**
    * Call shutdown(SHUT_RDWR) on the UNIX domain socket.
    *
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public void shutdown() throws IOException {
     refCount.reference();
@@ -413,6 +439,7 @@ public class DomainSocket implements Closeable {
    *                          one byte.
    * @param offset            The offset in the jbuf array to start at.
    * @param length            Length of the jbuf array to use.
+   * @throws IOException raised on errors performing I/O.
    */
   public void sendFileDescriptors(FileDescriptor descriptors[],
       byte jbuf[], int offset, int length) throws IOException {
@@ -433,6 +460,13 @@ public class DomainSocket implements Closeable {
   /**
    * Receive some FileDescriptor objects from the process on the other side of
    * this socket, and wrap them in FileInputStream objects.
+   *
+   * @param streams input stream.
+   * @param buf input buf.
+   * @param offset input offset.
+   * @param length input length.
+   * @return wrap them in FileInputStream objects.
+   * @throws IOException raised on errors performing I/O.
    */
   public int recvFileInputStreams(FileInputStream[] streams, byte buf[],
         int offset, int length) throws IOException {

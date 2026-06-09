@@ -22,7 +22,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -36,13 +35,13 @@ import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.slf4j.event.Level;
 
 abstract public class BaseReplicationPolicyTest {
   {
-    GenericTestUtils.setLogLevel(BlockPlacementPolicy.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(BlockPlacementPolicy.LOG, Level.TRACE);
   }
 
   protected NetworkTopology cluster;
@@ -51,25 +50,26 @@ abstract public class BaseReplicationPolicyTest {
   protected NameNode namenode;
   protected DatanodeManager dnManager;
   protected BlockPlacementPolicy replicator;
+  private BlockPlacementPolicy striptedPolicy;
   protected final String filename = "/dummyfile.txt";
   protected DatanodeStorageInfo[] storages;
   protected String blockPlacementPolicy;
   protected NamenodeProtocols nameNodeRpc = null;
 
-  static void updateHeartbeatWithUsage(DatanodeDescriptor dn,
+  void updateHeartbeatWithUsage(DatanodeDescriptor dn,
     long capacity, long dfsUsed, long remaining, long blockPoolUsed,
     long dnCacheCapacity, long dnCacheUsed, int xceiverCount,
     int volFailures) {
     dn.getStorageInfos()[0].setUtilizationForTesting(
         capacity, dfsUsed, remaining, blockPoolUsed);
-    dn.updateHeartbeat(
+    dnManager.getHeartbeatManager().updateHeartbeat(dn,
         BlockManagerTestUtil.getStorageReportsForDatanode(dn),
         dnCacheCapacity, dnCacheUsed, xceiverCount, volFailures, null);
   }
 
   abstract DatanodeDescriptor[] getDatanodeDescriptors(Configuration conf);
 
-  @Before
+  @BeforeEach
   public void setupCluster() throws Exception {
     Configuration conf = new HdfsConfiguration();
     dataNodes = getDatanodeDescriptors(conf);
@@ -91,6 +91,7 @@ abstract public class BaseReplicationPolicyTest {
 
     final BlockManager bm = namenode.getNamesystem().getBlockManager();
     replicator = bm.getBlockPlacementPolicy();
+    striptedPolicy = bm.getStriptedBlockPlacementPolicy();
     cluster = bm.getDatanodeManager().getNetworkTopology();
     dnManager = bm.getDatanodeManager();
     // construct network topology
@@ -112,7 +113,11 @@ abstract public class BaseReplicationPolicyTest {
     }
   }
 
-  @After
+  public BlockPlacementPolicy getStriptedPolicy() {
+    return striptedPolicy;
+  }
+
+  @AfterEach
   public void tearDown() throws Exception {
     namenode.stop();
   }

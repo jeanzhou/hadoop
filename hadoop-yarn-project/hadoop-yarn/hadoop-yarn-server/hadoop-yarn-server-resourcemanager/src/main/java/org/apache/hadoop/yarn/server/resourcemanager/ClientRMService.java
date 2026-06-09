@@ -29,17 +29,18 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
-
+import java.util.stream.Collectors;
 import org.apache.commons.cli.UnrecognizedOptionException;
-import org.apache.commons.lang.math.LongRange;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.Range;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -66,8 +67,12 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAttributesToNodesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAttributesToNodesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeAttributesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeAttributesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodesRequest;
@@ -84,6 +89,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToAttributesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToAttributesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoRequest;
@@ -127,8 +134,12 @@ import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.api.records.ApplicationTimeoutType;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerReport;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
+import org.apache.hadoop.yarn.api.records.NodeAttributeKey;
+import org.apache.hadoop.yarn.api.records.NodeAttributeInfo;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.NodeToAttributeValue;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.api.records.QueueInfo;
@@ -144,14 +155,18 @@ import org.apache.hadoop.yarn.exceptions.ApplicationAttemptNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ContainerNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.exceptions.YARNFeatureNotEnabledException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.ipc.RPCUtil;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
+import org.apache.hadoop.yarn.nodelabels.AttributeValue;
+import org.apache.hadoop.yarn.nodelabels.NodeAttributesManager;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.Keys;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.preprocessor.SubmissionContextPreProcessor;
 import org.apache.hadoop.yarn.server.resourcemanager.resource.ResourceProfilesManager;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.Plan;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationAllocation;
@@ -182,8 +197,9 @@ import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.Records;
 import org.apache.hadoop.yarn.util.UTCClock;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
+import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
 
 
@@ -195,7 +211,8 @@ public class ClientRMService extends AbstractService implements
     ApplicationClientProtocol {
   private static final ArrayList<ApplicationReport> EMPTY_APPS_REPORT = new ArrayList<ApplicationReport>();
 
-  private static final Log LOG = LogFactory.getLog(ClientRMService.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ClientRMService.class);
 
   final private AtomicInteger applicationCounter = new AtomicInteger(0);
   final private YarnScheduler scheduler;
@@ -216,12 +233,15 @@ public class ClientRMService extends AbstractService implements
   private ReservationSystem reservationSystem;
   private ReservationInputValidator rValidator;
 
-  private boolean displayPerUserApps = false;
+  private SubmissionContextPreProcessor contextPreProcessor;
+
+  private boolean filterAppsByUser = false;
 
   private static final EnumSet<RMAppState> ACTIVE_APP_STATES = EnumSet.of(
       RMAppState.ACCEPTED, RMAppState.RUNNING);
 
   private ResourceProfilesManager resourceProfilesManager;
+  private boolean timelineServiceV2Enabled;
 
   public ClientRMService(RMContext rmContext, YarnScheduler scheduler,
       RMAppManager rmAppManager, ApplicationACLsManager applicationACLsManager,
@@ -265,6 +285,11 @@ public class ClientRMService extends AbstractService implements
             conf.getInt(YarnConfiguration.RM_CLIENT_THREAD_COUNT, 
                 YarnConfiguration.DEFAULT_RM_CLIENT_THREAD_COUNT));
     
+    this.server.addTerseExceptions(ApplicationNotFoundException.class,
+        ApplicationAttemptNotFoundException.class,
+        ContainerNotFoundException.class,
+        YARNFeatureNotEnabledException.class);
+
     // Enable service authorization?
     if (conf.getBoolean(
         CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, 
@@ -279,8 +304,8 @@ public class ClientRMService extends AbstractService implements
       refreshServiceAcls(conf, RMPolicyProvider.getInstance());
     }
 
-    this.displayPerUserApps  = conf.getBoolean(
-        YarnConfiguration.DISPLAY_APPS_FOR_LOGGED_IN_USER,
+    this.filterAppsByUser  = conf.getBoolean(
+        YarnConfiguration.FILTER_ENTITY_LIST_BY_USER,
         YarnConfiguration.DEFAULT_DISPLAY_APPS_FOR_LOGGED_IN_USER);
 
     this.server.start();
@@ -288,6 +313,16 @@ public class ClientRMService extends AbstractService implements
                                                YarnConfiguration.RM_ADDRESS,
                                                YarnConfiguration.DEFAULT_RM_ADDRESS,
                                                server.getListenerAddress());
+    this.timelineServiceV2Enabled = YarnConfiguration.
+        timelineServiceV2Enabled(conf);
+
+    if (conf.getBoolean(
+        YarnConfiguration.RM_SUBMISSION_PREPROCESSOR_ENABLED,
+        YarnConfiguration.DEFAULT_RM_SUBMISSION_PREPROCESSOR_ENABLED)) {
+      this.contextPreProcessor = new SubmissionContextPreProcessor();
+      this.contextPreProcessor.start(conf);
+    }
+
     super.serviceStart();
   }
 
@@ -295,6 +330,9 @@ public class ClientRMService extends AbstractService implements
   protected void serviceStop() throws Exception {
     if (this.server != null) {
         this.server.stop();
+    }
+    if (this.contextPreProcessor != null) {
+      this.contextPreProcessor.stop();
     }
     super.serviceStop();
   }
@@ -305,6 +343,11 @@ public class ClientRMService extends AbstractService implements
             YarnConfiguration.RM_ADDRESS,
             YarnConfiguration.DEFAULT_RM_ADDRESS,
             YarnConfiguration.DEFAULT_RM_PORT);
+  }
+
+  @VisibleForTesting
+  SubmissionContextPreProcessor getContextPreProcessor() {
+    return this.contextPreProcessor;
   }
 
   @Private
@@ -363,22 +406,11 @@ public class ClientRMService extends AbstractService implements
       throw new ApplicationNotFoundException("Invalid application id: null");
     }
 
-    UserGroupInformation callerUGI;
-    try {
-      callerUGI = UserGroupInformation.getCurrentUser();
-    } catch (IOException ie) {
-      LOG.info("Error getting UGI ", ie);
-      throw RPCUtil.getRemoteException(ie);
-    }
+    UserGroupInformation callerUGI = getCallerUgi(applicationId,
+        AuditConstants.GET_APP_REPORT);
 
-    RMApp application = this.rmContext.getRMApps().get(applicationId);
-    if (application == null) {
-      // If the RM doesn't have the application, throw
-      // ApplicationNotFoundException and let client to handle.
-      throw new ApplicationNotFoundException("Application with id '"
-          + applicationId + "' doesn't exist in RM. Please check "
-          + "that the job submission was successful.");
-    }
+    RMApp application = verifyUserAccessForRMApp(applicationId, callerUGI,
+        AuditConstants.GET_APP_REPORT, ApplicationAccessType.VIEW_APP, false);
 
     boolean allowAccess = checkAccess(callerUGI, application.getUser(),
         ApplicationAccessType.VIEW_APP, application);
@@ -466,6 +498,9 @@ public class ClientRMService extends AbstractService implements
   public GetContainerReportResponse getContainerReport(
       GetContainerReportRequest request) throws YarnException, IOException {
     ContainerId containerId = request.getContainerId();
+    if (containerId == null) {
+      throw new ContainerNotFoundException("Invalid container id: null");
+    }
     ApplicationAttemptId appAttemptId = containerId.getApplicationAttemptId();
     ApplicationId appId = appAttemptId.getApplicationId();
     UserGroupInformation callerUGI = getCallerUgi(appId,
@@ -554,19 +589,24 @@ public class ClientRMService extends AbstractService implements
     // checked here, those that are dependent on RM configuration are validated
     // in RMAppManager.
 
+    UserGroupInformation userUgi = null;
     String user = null;
     try {
       // Safety
-      user = UserGroupInformation.getCurrentUser().getShortUserName();
+      userUgi = UserGroupInformation.getCurrentUser();
+      user = userUgi.getShortUserName();
     } catch (IOException ie) {
       LOG.warn("Unable to get the current user.", ie);
       RMAuditLogger.logFailure(user, AuditConstants.SUBMIT_APP_REQUEST,
           ie.getMessage(), "ClientRMService",
-          "Exception in submitting application", applicationId, callerContext);
+          "Exception in submitting application", applicationId, callerContext,
+          submissionContext.getQueue());
       throw RPCUtil.getRemoteException(ie);
     }
 
-    if (YarnConfiguration.timelineServiceV2Enabled(getConfig())) {
+    checkTags(submissionContext.getApplicationTags());
+
+    if (timelineServiceV2Enabled) {
       // Sanity check for flow run
       String value = null;
       try {
@@ -585,7 +625,8 @@ public class ClientRMService extends AbstractService implements
             ". Flow run should be a long integer", e);
         RMAuditLogger.logFailure(user, AuditConstants.SUBMIT_APP_REQUEST,
             e.getMessage(), "ClientRMService",
-            "Exception in submitting application", applicationId);
+            "Exception in submitting application", applicationId,
+            submissionContext.getQueue());
         throw RPCUtil.getRemoteException(e);
       }
     }
@@ -636,20 +677,29 @@ public class ClientRMService extends AbstractService implements
     checkReservationACLs(submissionContext.getQueue(), AuditConstants
             .SUBMIT_RESERVATION_REQUEST, reservationId);
 
+    if (this.contextPreProcessor != null) {
+      this.contextPreProcessor.preProcess(Server.getRemoteIp().getHostName(),
+          applicationId, submissionContext);
+    }
+
     try {
       // call RMAppManager to submit application directly
       rmAppManager.submitApplication(submissionContext,
-          System.currentTimeMillis(), user);
+          System.currentTimeMillis(), userUgi);
 
       LOG.info("Application with id " + applicationId.getId() + 
           " submitted by user " + user);
       RMAuditLogger.logSuccess(user, AuditConstants.SUBMIT_APP_REQUEST,
-          "ClientRMService", applicationId, callerContext);
+          "ClientRMService", applicationId, callerContext,
+          submissionContext.getQueue(),
+          submissionContext.getNodeLabelExpression());
     } catch (YarnException e) {
       LOG.info("Exception in submitting " + applicationId, e);
       RMAuditLogger.logFailure(user, AuditConstants.SUBMIT_APP_REQUEST,
           e.getMessage(), "ClientRMService",
-          "Exception in submitting application", applicationId, callerContext);
+          "Exception in submitting application", applicationId, callerContext,
+          submissionContext.getQueue(),
+          submissionContext.getNodeLabelExpression());
       throw e;
     }
 
@@ -696,6 +746,31 @@ public class ClientRMService extends AbstractService implements
         attemptId);
 
     return response;
+  }
+
+  private void checkTags(Set<String> tags) throws YarnException {
+    int appMaxTags = getConfig().getInt(
+        YarnConfiguration.RM_APPLICATION_MAX_TAGS,
+        YarnConfiguration.DEFAULT_RM_APPLICATION_MAX_TAGS);
+    int appMaxTagLength = getConfig().getInt(
+        YarnConfiguration.RM_APPLICATION_MAX_TAG_LENGTH,
+        YarnConfiguration.DEFAULT_RM_APPLICATION_MAX_TAG_LENGTH);
+    if (tags.size() > appMaxTags) {
+      throw RPCUtil.getRemoteException(new IllegalArgumentException(
+          "Too many applicationTags, a maximum of only " + appMaxTags
+              + " are allowed!"));
+    }
+    for (String tag : tags) {
+      if (tag.length() > appMaxTagLength) {
+        throw RPCUtil.getRemoteException(
+            new IllegalArgumentException("Tag " + tag + " is too long, "
+                + "maximum allowed length of a tag is " + appMaxTagLength));
+      }
+      if (!org.apache.commons.lang3.StringUtils.isAsciiPrintable(tag)) {
+        throw RPCUtil.getRemoteException(new IllegalArgumentException(
+            "A tag can only have ASCII " + "characters! Invalid tag - " + tag));
+      }
+    }
   }
 
   @SuppressWarnings("unchecked")
@@ -750,11 +825,11 @@ public class ClientRMService extends AbstractService implements
       message.append(" at ").append(remoteAddress.getHostAddress());
     }
 
-    String diagnostics = org.apache.commons.lang.StringUtils
+    String diagnostics = org.apache.commons.lang3.StringUtils
         .trimToNull(request.getDiagnostics());
     if (diagnostics != null) {
-      message.append(" with diagnostic message: ");
-      message.append(diagnostics);
+      message.append(" with diagnostic message: ")
+          .append(diagnostics);
     }
 
     this.rmContext.getDispatcher().getEventHandler()
@@ -775,12 +850,14 @@ public class ClientRMService extends AbstractService implements
         .newRecordInstance(YarnClusterMetrics.class);
     ymetrics.setNumNodeManagers(this.rmContext.getRMNodes().size());
     ClusterMetrics clusterMetrics = ClusterMetrics.getMetrics();
+    ymetrics.setNumDecommissioningNodeManagers(clusterMetrics.getNumDecommissioningNMs());
     ymetrics.setNumDecommissionedNodeManagers(clusterMetrics
       .getNumDecommisionedNMs());
     ymetrics.setNumActiveNodeManagers(clusterMetrics.getNumActiveNMs());
     ymetrics.setNumLostNodeManagers(clusterMetrics.getNumLostNMs());
     ymetrics.setNumUnhealthyNodeManagers(clusterMetrics.getUnhealthyNMs());
     ymetrics.setNumRebootedNodeManagers(clusterMetrics.getNumRebootedNMs());
+    ymetrics.setNumShutdownNodeManagers(clusterMetrics.getNumShutdownNMs());
     response.setClusterMetrics(ymetrics);
     return response;
   }
@@ -793,13 +870,8 @@ public class ClientRMService extends AbstractService implements
   @Override
   public GetApplicationsResponse getApplications(GetApplicationsRequest request)
       throws YarnException {
-    UserGroupInformation callerUGI;
-    try {
-      callerUGI = UserGroupInformation.getCurrentUser();
-    } catch (IOException ie) {
-      LOG.info("Error getting UGI ", ie);
-      throw RPCUtil.getRemoteException(ie);
-    }
+    UserGroupInformation callerUGI = getCallerUgi(null,
+        AuditConstants.GET_APPLICATIONS_REQUEST);
 
     Set<String> applicationTypes = getLowerCasedAppTypes(request);
     EnumSet<YarnApplicationState> applicationStates =
@@ -808,51 +880,26 @@ public class ClientRMService extends AbstractService implements
     Set<String> queues = request.getQueues();
     Set<String> tags = request.getApplicationTags();
     long limit = request.getLimit();
-    LongRange start = request.getStartRange();
-    LongRange finish = request.getFinishRange();
+    Range<Long> start = request.getStartRange();
+    Range<Long> finish = request.getFinishRange();
     ApplicationsRequestScope scope = request.getScope();
+    String name = request.getName();
 
     final Map<ApplicationId, RMApp> apps = rmContext.getRMApps();
-    Iterator<RMApp> appsIter;
-    // If the query filters by queues, we can avoid considering apps outside
-    // of those queues by asking the scheduler for the apps in those queues.
-    if (queues != null && !queues.isEmpty()) {
-      // Construct an iterator over apps in given queues
-      // Collect list of lists to avoid copying all apps
-      final List<List<ApplicationAttemptId>> queueAppLists =
-          new ArrayList<List<ApplicationAttemptId>>();
-      for (String queue : queues) {
-        List<ApplicationAttemptId> appsInQueue = scheduler.getAppsInQueue(queue);
-        if (appsInQueue != null && !appsInQueue.isEmpty()) {
-          queueAppLists.add(appsInQueue);
-        }
-      }
-      appsIter = new Iterator<RMApp>() {
-        Iterator<List<ApplicationAttemptId>> appListIter = queueAppLists.iterator();
-        Iterator<ApplicationAttemptId> schedAppsIter;
+    final Set<ApplicationId> runningAppsFilteredByQueues =
+        getRunningAppsFilteredByQueues(apps, queues);
 
-        @Override
-        public boolean hasNext() {
-          // Because queueAppLists has no empty lists, hasNext is whether the
-          // current list hasNext or whether there are any remaining lists
-          return (schedAppsIter != null && schedAppsIter.hasNext())
-              || appListIter.hasNext();
-        }
-        @Override
-        public RMApp next() {
-          if (schedAppsIter == null || !schedAppsIter.hasNext()) {
-            schedAppsIter = appListIter.next().iterator();
-          }
-          return apps.get(schedAppsIter.next().getApplicationId());
-        }
-        @Override
-        public void remove() {
-          throw new UnsupportedOperationException("Remove not supported");
-        }
-      };
-    } else {
-      appsIter = apps.values().iterator();
+    Set<String> queuePaths = new HashSet<>();
+    for (String queue : queues) {
+      String queuePath = rmAppManager.getQueuePath(queue);
+      if (queuePath != null) {
+        queuePaths.add(queuePath);
+      } else {
+        queuePaths.add(queue);
+      }
     }
+
+    Iterator<RMApp> appsIter = apps.values().iterator();
     
     List<ApplicationReport> reports = new ArrayList<ApplicationReport>();
     while (appsIter.hasNext() && reports.size() < limit) {
@@ -862,6 +909,13 @@ public class ClientRMService extends AbstractService implements
       if (scope == ApplicationsRequestScope.OWN &&
           !callerUGI.getUserName().equals(application.getUser())) {
         continue;
+      }
+
+      if (queuePaths != null && !queuePaths.isEmpty()) {
+        if (!runningAppsFilteredByQueues.contains(application.getApplicationId()) &&
+            !queuePaths.contains(application.getQueue())) {
+          continue;
+        }
       }
 
       if (applicationTypes != null && !applicationTypes.isEmpty()) {
@@ -884,11 +938,11 @@ public class ClientRMService extends AbstractService implements
         continue;
       }
 
-      if (start != null && !start.containsLong(application.getStartTime())) {
+      if (start != null && !start.contains(application.getStartTime())) {
         continue;
       }
 
-      if (finish != null && !finish.containsLong(application.getFinishTime())) {
+      if (finish != null && !finish.contains(application.getFinishTime())) {
         continue;
       }
 
@@ -918,7 +972,11 @@ public class ClientRMService extends AbstractService implements
 
       // Given RM is configured to display apps per user, skip apps to which
       // this caller doesn't have access to view.
-      if (displayPerUserApps && !allowAccess) {
+      if (filterAppsByUser && !allowAccess) {
+        continue;
+      }
+
+      if (name != null && !name.equals(application.getName())) {
         continue;
       }
 
@@ -932,6 +990,23 @@ public class ClientRMService extends AbstractService implements
       recordFactory.newRecordInstance(GetApplicationsResponse.class);
     response.setApplicationList(reports);
     return response;
+  }
+
+  private Set<ApplicationId> getRunningAppsFilteredByQueues(
+      Map<ApplicationId, RMApp> apps, Set<String> queues) {
+    final Set<ApplicationId> runningApps = new HashSet<>();
+    for (String queue : queues) {
+      List<ApplicationAttemptId> appsInQueue = scheduler.getAppsInQueue(queue);
+      if (appsInQueue != null) {
+        for (ApplicationAttemptId appAttemptId : appsInQueue) {
+          RMApp rmApp = apps.get(appAttemptId.getApplicationId());
+          if (rmApp != null) {
+            runningApps.add(rmApp.getApplicationId());
+          }
+        }
+      }
+    }
+    return runningApps;
   }
 
   private Set<String> getLowerCasedAppTypes(GetApplicationsRequest request) {
@@ -968,13 +1043,8 @@ public class ClientRMService extends AbstractService implements
   @Override
   public GetQueueInfoResponse getQueueInfo(GetQueueInfoRequest request)
       throws YarnException {
-    UserGroupInformation callerUGI;
-    try {
-      callerUGI = UserGroupInformation.getCurrentUser();
-    } catch (IOException ie) {
-      LOG.info("Error getting UGI ", ie);
-      throw RPCUtil.getRemoteException(ie);
-    }
+    UserGroupInformation callerUGI = getCallerUgi(null,
+        AuditConstants.GET_QUEUE_INFO_REQUEST);
 
     GetQueueInfoResponse response =
       recordFactory.newRecordInstance(GetQueueInfoResponse.class);
@@ -1027,13 +1097,14 @@ public class ClientRMService extends AbstractService implements
   private NodeReport createNodeReports(RMNode rmNode) {
     SchedulerNodeReport schedulerNodeReport = 
         scheduler.getNodeReport(rmNode.getNodeID());
-    Resource used = BuilderUtils.newResource(0, 0);
+    Resource used = Resources.createResource(0);
     int numContainers = 0;
     if (schedulerNodeReport != null) {
       used = schedulerNodeReport.getUsedResource();
       numContainers = schedulerNodeReport.getNumContainers();
-    } 
+    }
 
+    Set<NodeAttribute> attrs = rmNode.getAllNodeAttributes();
     NodeReport report =
         BuilderUtils.newNodeReport(rmNode.getNodeID(), rmNode.getState(),
             rmNode.getHttpAddress(), rmNode.getRackName(), used,
@@ -1041,7 +1112,7 @@ public class ClientRMService extends AbstractService implements
             rmNode.getHealthReport(), rmNode.getLastHealthReportTime(),
             rmNode.getNodeLabels(), rmNode.getAggregatedContainersUtilization(),
             rmNode.getNodeUtilization(), rmNode.getDecommissioningTimeout(),
-            null);
+            null, attrs);
 
     return report;
   }
@@ -1475,10 +1546,8 @@ public class ClientRMService extends AbstractService implements
       ReservationDefinition contract, String reservationId) {
     if ((contract.getArrival() - clock.getTime()) < reservationSystem
         .getPlanFollowerTimeStep()) {
-      LOG.debug(MessageFormat
-          .format(
-              "Reservation {0} is within threshold so attempting to create synchronously.",
-              reservationId));
+      LOG.debug("Reservation {} is within threshold so attempting to"
+          + " create synchronously.", reservationId);
       reservationSystem.synchronizePlan(planName, true);
       LOG.info(MessageFormat.format("Created reservation {0} synchronously.",
           reservationId));
@@ -1641,16 +1710,10 @@ public class ClientRMService extends AbstractService implements
       SignalContainerRequest request) throws YarnException, IOException {
     ContainerId containerId = request.getContainerId();
 
-    UserGroupInformation callerUGI;
-    try {
-      callerUGI = UserGroupInformation.getCurrentUser();
-    } catch (IOException ie) {
-      LOG.info("Error getting UGI ", ie);
-      throw RPCUtil.getRemoteException(ie);
-    }
-
     ApplicationId applicationId = containerId.getApplicationAttemptId().
         getApplicationId();
+    UserGroupInformation callerUGI = getCallerUgi(applicationId,
+        AuditConstants.SIGNAL_CONTAINER);
     RMApp application = this.rmContext.getRMApps().get(applicationId);
     if (application == null) {
       RMAuditLogger.logFailure(callerUGI.getUserName(),
@@ -1834,8 +1897,60 @@ public class ClientRMService extends AbstractService implements
     return response;
   }
 
+  @Override
+  public GetAttributesToNodesResponse getAttributesToNodes(
+      GetAttributesToNodesRequest request) throws YarnException, IOException {
+    NodeAttributesManager attributesManager =
+        rmContext.getNodeAttributesManager();
+    Map<NodeAttributeKey, List<NodeToAttributeValue>> attrToNodesWithStrVal =
+        new HashMap<>();
+    Map<NodeAttributeKey, Map<String, AttributeValue>> attributesToNodes =
+        attributesManager.getAttributesToNodes(request.getNodeAttributes());
+    for (Map.Entry<NodeAttributeKey, Map<String, AttributeValue>> attrib :
+          attributesToNodes.entrySet()) {
+      Map<String, AttributeValue> nodesToVal = attrib.getValue();
+      List<NodeToAttributeValue> nodeToAttrValList = new ArrayList<>();
+      for (Map.Entry<String, AttributeValue> nodeToVal : nodesToVal
+          .entrySet()) {
+        nodeToAttrValList.add(NodeToAttributeValue
+            .newInstance(nodeToVal.getKey(), nodeToVal.getValue().getValue()));
+      }
+      attrToNodesWithStrVal.put(attrib.getKey(), nodeToAttrValList);
+    }
+    GetAttributesToNodesResponse response =
+        GetAttributesToNodesResponse.newInstance(attrToNodesWithStrVal);
+    return response;
+  }
+
+  @Override
+  public GetClusterNodeAttributesResponse getClusterNodeAttributes(
+      GetClusterNodeAttributesRequest request)
+      throws YarnException, IOException {
+    NodeAttributesManager attributesManager =
+        rmContext.getNodeAttributesManager();
+    Set<NodeAttribute> attributes =
+        attributesManager.getClusterNodeAttributes(null);
+
+    GetClusterNodeAttributesResponse response =
+        GetClusterNodeAttributesResponse.newInstance(
+            attributes.stream().map(attr -> NodeAttributeInfo.newInstance(attr))
+                .collect(Collectors.toSet()));
+    return response;
+  }
+
+  @Override
+  public GetNodesToAttributesResponse getNodesToAttributes(
+      GetNodesToAttributesRequest request) throws YarnException, IOException {
+    NodeAttributesManager attributesManager =
+        rmContext.getNodeAttributesManager();
+    GetNodesToAttributesResponse response = GetNodesToAttributesResponse
+        .newInstance(
+            attributesManager.getNodesToAttributes(request.getHostNames()));
+    return response;
+  }
+
   @VisibleForTesting
   public void setDisplayPerUserApps(boolean displayPerUserApps) {
-    this.displayPerUserApps = displayPerUserApps;
+    this.filterAppsByUser = displayPerUserApps;
   }
 }

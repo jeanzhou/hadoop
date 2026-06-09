@@ -28,12 +28,28 @@ import java.io.InputStream;
 import java.io.OutputStreamWriter;
 import java.io.RandomAccessFile;
 import java.io.Writer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Queue;
 import java.util.Scanner;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
+import java.util.concurrent.RecursiveAction;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hdfs.server.datanode.FSCachingGetSpaceUsed;
+import org.apache.hadoop.util.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CachingGetSpaceUsed;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -52,16 +68,20 @@ import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaBuilder;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskReplicaTracker.RamDiskReplica;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.ReplicaInputStreams;
-
 import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.util.AutoCloseableLock;
+import org.apache.hadoop.io.MultipleIOException;
 import org.apache.hadoop.util.DataChecksum;
+import org.apache.hadoop.util.DataChecksum.Type;
 import org.apache.hadoop.util.DiskChecker;
 import org.apache.hadoop.util.DiskChecker.DiskErrorException;
 import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.Timer;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
+
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DU_INTERVAL_KEY;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_GETSPACEUSED_JITTER_KEY;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_GETSPACEUSED_CLASSNAME;
 
 /**
  * A block pool slice represents a portion of a block pool stored on a volume.
@@ -70,8 +90,8 @@ import com.google.common.annotations.VisibleForTesting;
  *
  * This class is synchronized by {@link FsVolumeImpl}.
  */
-class BlockPoolSlice {
-  static final Log LOG = LogFactory.getLog(BlockPoolSlice.class);
+public class BlockPoolSlice {
+  static final Logger LOG = LoggerFactory.getLogger(BlockPoolSlice.class);
 
   private final String bpid;
   private final FsVolumeImpl volume; // volume to which this BlockPool belongs to
@@ -87,17 +107,36 @@ class BlockPoolSlice {
   private final Runnable shutdownHook;
   private volatile boolean dfsUsedSaved = false;
   private static final int SHUTDOWN_HOOK_PRIORITY = 30;
-  private final boolean deleteDuplicateReplicas;
+
+  /**
+   * Only tests are allowed to modify the value. For source code,
+   * this should be treated as final only.
+   */
+  private boolean deleteDuplicateReplicas;
   private static final String REPLICA_CACHE_FILE = "replicas";
-  private final long replicaCacheExpiry = 5*60*1000;
+  private final long replicaCacheExpiry;
+  private final File replicaCacheDir;
   private AtomicLong numOfBlocks = new AtomicLong();
   private final long cachedDfsUsedCheckTime;
   private final Timer timer;
   private final int maxDataLength;
   private final FileIoProvider fileIoProvider;
+  private final Configuration config;
+  private final File bpDir;
+
+  private static ForkJoinPool addReplicaThreadPool = null;
+  private static final int VOLUMES_REPLICA_ADD_THREADPOOL_SIZE = Runtime
+      .getRuntime().availableProcessors();
+  private static final Comparator<File> FILE_COMPARATOR =
+      new Comparator<File>() {
+    @Override
+    public int compare(File f1, File f2) {
+      return f1.getName().compareTo(f2.getName());
+    }
+  };
 
   // TODO:FEDERATION scalability issue - a thread per DU is needed
-  private final GetSpaceUsed dfsUsage;
+  private volatile GetSpaceUsed dfsUsage;
 
   /**
    * Create a blook pool slice
@@ -110,6 +149,8 @@ class BlockPoolSlice {
    */
   BlockPoolSlice(String bpid, FsVolumeImpl volume, File bpDir,
       Configuration conf, Timer timer) throws IOException {
+    this.config = conf;
+    this.bpDir = bpDir;
     this.bpid = bpid;
     this.volume = volume;
     this.fileIoProvider = volume.getFileIoProvider();
@@ -155,24 +196,99 @@ class BlockPoolSlice {
     fileIoProvider.mkdirs(volume, rbwDir);
     fileIoProvider.mkdirs(volume, tmpDir);
 
+    String cacheDirRoot = conf.get(
+        DFSConfigKeys.DFS_DATANODE_REPLICA_CACHE_ROOT_DIR_KEY);
+    if (cacheDirRoot != null && !cacheDirRoot.isEmpty()) {
+      this.replicaCacheDir = new File(cacheDirRoot,
+          currentDir.getCanonicalPath());
+      if (!this.replicaCacheDir.exists()) {
+        if (!this.replicaCacheDir.mkdirs()) {
+          throw new IOException("Failed to mkdirs " + this.replicaCacheDir);
+        }
+      }
+    } else {
+      this.replicaCacheDir = currentDir;
+    }
+    this.replicaCacheExpiry = conf.getTimeDuration(
+        DFSConfigKeys.DFS_DATANODE_REPLICA_CACHE_EXPIRY_TIME_KEY,
+        DFSConfigKeys.DFS_DATANODE_REPLICA_CACHE_EXPIRY_TIME_DEFAULT,
+        TimeUnit.MILLISECONDS);
+
     // Use cached value initially if available. Or the following call will
     // block until the initial du command completes.
-    this.dfsUsage = new CachingGetSpaceUsed.Builder().setPath(bpDir)
-                                                     .setConf(conf)
-                                                     .setInitialUsed(loadDfsUsed())
-                                                     .build();
+    this.dfsUsage = new FSCachingGetSpaceUsed.Builder().setBpid(bpid)
+            .setVolume(volume)
+            .setPath(bpDir)
+            .setConf(conf)
+            .setInitialUsed(loadDfsUsed())
+            .build();
 
+
+    if (addReplicaThreadPool == null) {
+      // initialize add replica fork join pool
+      initializeAddReplicaPool(conf, (FsDatasetImpl) volume.getDataset());
+    }
     // Make the dfs usage to be saved during shutdown.
     shutdownHook = new Runnable() {
       @Override
       public void run() {
         if (!dfsUsedSaved) {
           saveDfsUsed();
+          addReplicaThreadPool.shutdownNow();
         }
       }
     };
     ShutdownHookManager.get().addShutdownHook(shutdownHook,
         SHUTDOWN_HOOK_PRIORITY);
+  }
+
+  public void updateDfsUsageConfig(Long interval, Long jitter, Class<? extends GetSpaceUsed> klass)
+          throws IOException {
+    // Close the old dfsUsage if it is CachingGetSpaceUsed.
+    if (dfsUsage instanceof CachingGetSpaceUsed) {
+      ((CachingGetSpaceUsed) dfsUsage).close();
+    }
+    if (interval != null) {
+      Preconditions.checkArgument(interval > 0,
+          FS_DU_INTERVAL_KEY + " should be larger than 0");
+      config.setLong(FS_DU_INTERVAL_KEY, interval);
+    }
+    if (jitter != null) {
+      Preconditions.checkArgument(jitter >= 0,
+          FS_GETSPACEUSED_JITTER_KEY + " should be larger than or equal to 0");
+      config.setLong(FS_GETSPACEUSED_JITTER_KEY, jitter);
+    }
+
+    if (klass != null) {
+      config.setClass(FS_GETSPACEUSED_CLASSNAME, klass, CachingGetSpaceUsed.class);
+    }
+    // Start new dfsUsage.
+    this.dfsUsage = new FSCachingGetSpaceUsed.Builder().setBpid(bpid)
+        .setVolume(volume)
+        .setPath(bpDir)
+        .setConf(config)
+        .setInitialUsed(loadDfsUsed())
+        .build();
+  }
+
+  @VisibleForTesting
+  public GetSpaceUsed getDfsUsage() {
+    return dfsUsage;
+  }
+
+  private synchronized static void initializeAddReplicaPool(Configuration conf,
+      FsDatasetImpl dataset) {
+    if (addReplicaThreadPool == null) {
+      int numberOfBlockPoolSlice = dataset.getVolumeCount()
+          * dataset.getBPServiceCount();
+      int poolsize = Math.max(numberOfBlockPoolSlice,
+          VOLUMES_REPLICA_ADD_THREADPOOL_SIZE);
+      // Default pool sizes is max of (volume * number of bp_service) and
+      // number of processor.
+      addReplicaThreadPool = new ForkJoinPool(conf.getInt(
+          DFSConfigKeys.DFS_DATANODE_VOLUMES_REPLICA_ADD_THREADPOOL_SIZE_KEY,
+          poolsize));
+    }
   }
 
   File getDirectory() {
@@ -225,9 +341,13 @@ class BlockPoolSlice {
     long mtime;
     Scanner sc;
 
+    File duCacheFile = new File(currentDir, DU_CACHE_FILE);
     try {
-      sc = new Scanner(new File(currentDir, DU_CACHE_FILE), "UTF-8");
+      sc = new Scanner(duCacheFile, "UTF-8");
     } catch (FileNotFoundException fnfe) {
+      FsDatasetImpl.LOG.warn("{} file missing in {}, will proceed with Du " +
+              "for space computation calculation, ",
+              DU_CACHE_FILE, currentDir);
       return -1;
     }
 
@@ -236,21 +356,31 @@ class BlockPoolSlice {
       if (sc.hasNextLong()) {
         cachedDfsUsed = sc.nextLong();
       } else {
+        FsDatasetImpl.LOG.warn("cachedDfsUsed not found in file:{}, will " +
+                "proceed with Du for space computation calculation, ",
+                duCacheFile);
         return -1;
       }
       // Get the recorded mtime from the file.
       if (sc.hasNextLong()) {
         mtime = sc.nextLong();
       } else {
+        FsDatasetImpl.LOG.warn("mtime not found in file:{}, will proceed" +
+                " with Du for space computation calculation, ", duCacheFile);
         return -1;
       }
 
+      long elapsedTime = timer.now() - mtime;
       // Return the cached value if mtime is okay.
-      if (mtime > 0 && (timer.now() - mtime < cachedDfsUsedCheckTime)) {
+      if (mtime > 0 && (elapsedTime < cachedDfsUsedCheckTime)) {
         FsDatasetImpl.LOG.info("Cached dfsUsed found for " + currentDir + ": " +
             cachedDfsUsed);
         return cachedDfsUsed;
       }
+      FsDatasetImpl.LOG.warn("elapsed time:{} is greater than threshold:{}," +
+                      " mtime:{} in file:{}, will proceed with Du for space" +
+                      " computation calculation",
+              elapsedTime, cachedDfsUsedCheckTime, mtime, duCacheFile);
       return -1;
     } finally {
       sc.close();
@@ -270,7 +400,7 @@ class BlockPoolSlice {
     try {
       long used = getDfsUsed();
       try (Writer out = new OutputStreamWriter(
-          new FileOutputStream(outFile), "UTF-8")) {
+          Files.newOutputStream(outFile.toPath()), StandardCharsets.UTF_8)) {
         // mtime is written last, so that truncated writes won't be valid.
         out.write(Long.toString(used) + " " + Long.toString(timer.now()));
         // This is only called as part of the volume shutdown.
@@ -372,12 +502,57 @@ class BlockPoolSlice {
           "Recovered " + numRecovered + " replicas from " + lazypersistDir);
     }
 
-    boolean  success = readReplicasFromCache(volumeMap, lazyWriteReplicaMap);
+    boolean success = readReplicasFromCache(volumeMap, lazyWriteReplicaMap);
     if (!success) {
+      List<IOException> exceptions = Collections
+          .synchronizedList(new ArrayList<IOException>());
+      Queue<RecursiveAction> subTaskQueue =
+          new ConcurrentLinkedQueue<RecursiveAction>();
+
       // add finalized replicas
-      addToReplicasMap(volumeMap, finalizedDir, lazyWriteReplicaMap, true);
+      AddReplicaProcessor task = new AddReplicaProcessor(volumeMap,
+          finalizedDir, lazyWriteReplicaMap, true, exceptions, subTaskQueue);
+      ForkJoinTask<Void> finalizedTask = addReplicaThreadPool.submit(task);
+
       // add rbw replicas
-      addToReplicasMap(volumeMap, rbwDir, lazyWriteReplicaMap, false);
+      task = new AddReplicaProcessor(volumeMap, rbwDir, lazyWriteReplicaMap,
+          false, exceptions, subTaskQueue);
+      ForkJoinTask<Void> rbwTask = addReplicaThreadPool.submit(task);
+
+      try {
+        finalizedTask.get();
+        rbwTask.get();
+      } catch (InterruptedException | ExecutionException e) {
+        exceptions.add(new IOException(
+            "Failed to start sub tasks to add replica in replica map :"
+                + e.getMessage()));
+      }
+
+      //wait for all the tasks to finish.
+      waitForSubTaskToFinish(subTaskQueue, exceptions);
+    }
+  }
+
+  /**
+   * Wait till all the recursive task for add replica to volume completed.
+   *
+   * @param subTaskQueue
+   *          {@link AddReplicaProcessor} tasks list.
+   * @param exceptions
+   *          exceptions occurred in sub tasks.
+   * @throws IOException
+   *           throw if any sub task or multiple sub tasks failed.
+   */
+  private void waitForSubTaskToFinish(Queue<RecursiveAction> subTaskQueue,
+      List<IOException> exceptions) throws IOException {
+    while (!subTaskQueue.isEmpty()) {
+      RecursiveAction task = subTaskQueue.poll();
+      if (task != null) {
+        task.join();
+      }
+    }
+    if (!exceptions.isEmpty()) {
+      throw MultipleIOException.createIOException(exceptions);
     }
   }
 
@@ -526,10 +701,10 @@ class BlockPoolSlice {
       }
     }
 
-    ReplicaInfo oldReplica = volumeMap.get(bpid, newReplica.getBlockId());
-    if (oldReplica == null) {
-      volumeMap.add(bpid, newReplica);
-    } else {
+    ReplicaInfo tmpReplicaInfo = volumeMap.addAndGet(bpid, newReplica);
+    ReplicaInfo oldReplica = (tmpReplicaInfo == newReplica) ? null
+        : tmpReplicaInfo;
+    if (oldReplica != null) {
       // We have multiple replicas of the same block so decide which one
       // to keep.
       newReplica = resolveDuplicateReplicas(newReplica, oldReplica, volumeMap);
@@ -558,15 +733,23 @@ class BlockPoolSlice {
    *                                storage.
    * @param isFinalized true if the directory has finalized replicas;
    *                    false if the directory has rbw replicas
+   * @param exceptions list of exception which need to return to parent thread.
+   * @param subTaskQueue queue of sub tasks
    */
   void addToReplicasMap(ReplicaMap volumeMap, File dir,
-                        final RamDiskReplicaTracker lazyWriteReplicaMap,
-                        boolean isFinalized)
+      final RamDiskReplicaTracker lazyWriteReplicaMap, boolean isFinalized,
+      List<IOException> exceptions, Queue<RecursiveAction> subTaskQueue)
       throws IOException {
     File[] files = fileIoProvider.listFiles(volume, dir);
-    for (File file : files) {
+    Arrays.sort(files, FILE_COMPARATOR);
+    for (int i = 0; i < files.length; i++) {
+      File file = files[i];
       if (file.isDirectory()) {
-        addToReplicasMap(volumeMap, file, lazyWriteReplicaMap, isFinalized);
+        // Launch new sub task.
+        AddReplicaProcessor subTask = new AddReplicaProcessor(volumeMap, file,
+            lazyWriteReplicaMap, isFinalized, exceptions, subTaskQueue);
+        subTask.fork();
+        subTaskQueue.add(subTask);
       }
 
       if (isFinalized && FsDatasetUtil.isUnlinkTmpFile(file)) {
@@ -581,7 +764,7 @@ class BlockPoolSlice {
       }
 
       long genStamp = FsDatasetUtil.getGenerationStampFromFile(
-          files, file);
+          files, file, i);
       long blockId = Block.filename2id(file.getName());
       Block block = new Block(blockId, file.length(), genStamp);
       addReplicaToReplicasMap(block, volumeMap, lazyWriteReplicaMap,
@@ -702,6 +885,10 @@ class BlockPoolSlice {
         // read and handle the common header here. For now just a version
         final DataChecksum checksum = BlockMetadataHeader.readDataChecksum(
             checksumIn, metaFile);
+        if (Type.NULL.equals(checksum.getChecksumType())) {
+          // in case of NULL checksum type consider full file as valid
+          return blockFileLen;
+        }
         int bytesPerChecksum = checksum.getBytesPerChecksum();
         int checksumSize = checksum.getChecksumSize();
         long numChunks = Math.min(
@@ -764,14 +951,14 @@ class BlockPoolSlice {
     }
 
     if (dfsUsage instanceof CachingGetSpaceUsed) {
-      IOUtils.cleanup(LOG, ((CachingGetSpaceUsed) dfsUsage));
+      IOUtils.cleanupWithLogger(LOG, ((CachingGetSpaceUsed) dfsUsage));
     }
   }
 
   private boolean readReplicasFromCache(ReplicaMap volumeMap,
       final RamDiskReplicaTracker lazyWriteReplicaMap) {
-    ReplicaMap tmpReplicaMap = new ReplicaMap(new AutoCloseableLock());
-    File replicaFile = new File(currentDir, REPLICA_CACHE_FILE);
+    ReplicaMap tmpReplicaMap = new ReplicaMap();
+    File replicaFile = new File(replicaCacheDir, REPLICA_CACHE_FILE);
     // Check whether the file exists or not.
     if (!replicaFile.exists()) {
       LOG.info("Replica Cache file: "+  replicaFile.getPath() +
@@ -849,8 +1036,8 @@ class BlockPoolSlice {
         blocksListToPersist.getNumberOfBlocks()== 0) {
       return;
     }
-    final File tmpFile = new File(currentDir, REPLICA_CACHE_FILE + ".tmp");
-    final File replicaCacheFile = new File(currentDir, REPLICA_CACHE_FILE);
+    final File tmpFile = new File(replicaCacheDir, REPLICA_CACHE_FILE + ".tmp");
+    final File replicaCacheFile = new File(replicaCacheDir, REPLICA_CACHE_FILE);
     if (!fileIoProvider.deleteWithExistsCheck(volume, tmpFile) ||
         !fileIoProvider.deleteWithExistsCheck(volume, replicaCacheFile)) {
       return;
@@ -886,4 +1073,83 @@ class BlockPoolSlice {
   public long getNumOfBlocks() {
     return numOfBlocks.get();
   }
+
+  /**
+   * Recursive action for add replica in map.
+   */
+  class AddReplicaProcessor extends RecursiveAction {
+
+    private ReplicaMap volumeMap;
+    private File dir;
+    private RamDiskReplicaTracker lazyWriteReplicaMap;
+    private boolean isFinalized;
+    private List<IOException> exceptions;
+    private Queue<RecursiveAction> subTaskQueue;
+
+    /**
+     * @param volumeMap
+     *          the replicas map
+     * @param dir
+     *          an input directory
+     * @param lazyWriteReplicaMap
+     *          Map of replicas on transient storage.
+     * @param isFinalized
+     *          true if the directory has finalized replicas; false if the
+     *          directory has rbw replicas
+     * @param exceptions
+     *          List of exception which need to return to parent thread.
+     * @param subTaskQueue
+     *          queue of sub tasks
+     */
+    AddReplicaProcessor(ReplicaMap volumeMap, File dir,
+        RamDiskReplicaTracker lazyWriteReplicaMap, boolean isFinalized,
+        List<IOException> exceptions, Queue<RecursiveAction> subTaskQueue) {
+      this.volumeMap = volumeMap;
+      this.dir = dir;
+      this.lazyWriteReplicaMap = lazyWriteReplicaMap;
+      this.isFinalized = isFinalized;
+      this.exceptions = exceptions;
+      this.subTaskQueue = subTaskQueue;
+    }
+
+    @Override
+    protected void compute() {
+      try {
+        addToReplicasMap(volumeMap, dir, lazyWriteReplicaMap, isFinalized,
+            exceptions, subTaskQueue);
+      } catch (IOException e) {
+        LOG.warn("Caught exception while adding replicas from " + volume
+            + " in subtask. Will throw later.", e);
+        exceptions.add(e);
+      }
+    }
+  }
+
+  /**
+   * Return the size of fork pool used for adding replica in map.
+   */
+  @VisibleForTesting
+  public static int getAddReplicaForkPoolSize() {
+    return addReplicaThreadPool.getPoolSize();
+  }
+
+  @VisibleForTesting
+  public ForkJoinPool getAddReplicaThreadPool() {
+    return addReplicaThreadPool;
+  }
+
+  @VisibleForTesting
+  public synchronized static void reInitializeAddReplicaThreadPool() {
+    if (addReplicaThreadPool != null) {
+      addReplicaThreadPool.shutdown();
+      addReplicaThreadPool = null;
+    }
+  }
+
+  @VisibleForTesting
+  void setDeleteDuplicateReplicasForTests(
+      boolean deleteDuplicateReplicasForTests) {
+    this.deleteDuplicateReplicas = deleteDuplicateReplicasForTests;
+  }
+
 }

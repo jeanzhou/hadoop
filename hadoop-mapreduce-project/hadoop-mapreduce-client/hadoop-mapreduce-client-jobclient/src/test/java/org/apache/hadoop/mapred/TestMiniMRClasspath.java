@@ -24,8 +24,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
@@ -34,8 +32,9 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * A JUnit test to test Mini Map-Reduce Cluster with multiple directories
@@ -82,7 +81,7 @@ public class TestMiniMRClasspath {
     FileSystem fs = FileSystem.get(fileSys, conf);
     configureWordCount(fs, conf, input, numMaps, numReduces, inDir, outDir);
     JobClient.runJob(conf);
-    StringBuffer result = new StringBuffer();
+    StringBuilder result = new StringBuilder();
     {
       Path[] parents = FileUtil.stat2Paths(fs.listStatus(outDir.getParent()));
       Path[] fileList = FileUtil.stat2Paths(fs.listStatus(outDir,
@@ -139,7 +138,7 @@ public class TestMiniMRClasspath {
     // set the tests jar file
     conf.setJarByClass(TestMiniMRClasspath.class);
     JobClient.runJob(conf);
-    StringBuffer result = new StringBuffer();
+    StringBuilder result = new StringBuilder();
     Path[] fileList = FileUtil.stat2Paths(fs.listStatus(outDir,
                                  new Utils.OutputFileUtils
                                           .OutputFilesFilter()));
@@ -177,7 +176,7 @@ public class TestMiniMRClasspath {
       String result;
       result = launchWordCount(fileSys.getUri(), jobConf,
           "The quick brown fox\nhas many silly\n" + "red fox sox\n", 3, 1);
-      Assert.assertEquals("The\t1\nbrown\t1\nfox\t2\nhas\t1\nmany\t1\n"
+      assertEquals("The\t1\nbrown\t1\nfox\t2\nhas\t1\nmany\t1\n"
           + "quick\t1\nred\t1\nsilly\t1\nsox\t1\n", result);
           
     } finally {
@@ -210,7 +209,7 @@ public class TestMiniMRClasspath {
       
       result = launchExternal(fileSys.getUri(), jobConf,
           "Dennis was here!\nDennis again!", 3, 1);
-      Assert.assertEquals("Dennis again!\t1\nDennis was here!\t1\n", result);
+      assertEquals("Dennis again!\t1\nDennis was here!\t1\n", result);
       
     } 
     finally {

@@ -18,37 +18,47 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import org.apache.hadoop.metrics2.MetricsSystem;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.function.Supplier;
 
 public class TestClusterMetrics {
 
   private ClusterMetrics metrics;
   /**
-   * Test aMLaunchDelay and aMRegisterDelay Metrics
+   * Test below metrics
+   *  - aMLaunchDelay
+   *  - aMRegisterDelay
+   *  - aMContainerAllocationDelay
    */
   @Test
   public void testAmMetrics() throws Exception {
     assert(metrics != null);
-    Assert.assertTrue(!metrics.aMLaunchDelay.changed());
-    Assert.assertTrue(!metrics.aMRegisterDelay.changed());
+    assertTrue(!metrics.aMLaunchDelay.changed());
+    assertTrue(!metrics.aMRegisterDelay.changed());
+    assertTrue(!metrics.getAMContainerAllocationDelay().changed());
     metrics.addAMLaunchDelay(1);
     metrics.addAMRegisterDelay(1);
-    Assert.assertTrue(metrics.aMLaunchDelay.changed());
-    Assert.assertTrue(metrics.aMRegisterDelay.changed());
+    metrics.addAMContainerAllocationDelay(1);
+    assertTrue(metrics.aMLaunchDelay.changed());
+    assertTrue(metrics.aMRegisterDelay.changed());
+    assertTrue(metrics.getAMContainerAllocationDelay().changed());
   }
 
-  @Before
+  @BeforeEach
   public void setup() {
     DefaultMetricsSystem.initialize("ResourceManager");
     metrics = ClusterMetrics.getMetrics();
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     ClusterMetrics.destroy();
 
@@ -57,4 +67,18 @@ public class TestClusterMetrics {
       DefaultMetricsSystem.shutdown();
     }
   }
+
+  @Test
+  public void testClusterMetrics() throws Exception {
+    assertTrue(!metrics.containerAssignedPerSecond.changed());
+    metrics.incrNumContainerAssigned();
+    metrics.incrNumContainerAssigned();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return metrics.getContainerAssignedPerSecond() == 2;
+      }
+    }, 500, 5000);
+  }
+
 }

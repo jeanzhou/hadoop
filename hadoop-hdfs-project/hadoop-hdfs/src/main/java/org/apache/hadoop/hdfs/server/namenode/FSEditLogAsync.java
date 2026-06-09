@@ -24,37 +24,50 @@ import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
+import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.util.ExitUtil;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
 class FSEditLogAsync extends FSEditLog implements Runnable {
-  static final Log LOG = LogFactory.getLog(FSEditLog.class);
+  static final Logger LOG = LoggerFactory.getLogger(FSEditLog.class);
 
   // use separate mutex to avoid possible deadlock when stopping the thread.
   private final Object syncThreadLock = new Object();
   private Thread syncThread;
-  private static ThreadLocal<Edit> threadEdit = new ThreadLocal<Edit>();
+  private static final ThreadLocal<Edit> THREAD_EDIT = new ThreadLocal<Edit>();
 
   // requires concurrent access from caller threads and syncing thread.
-  private final BlockingQueue<Edit> editPendingQ =
-      new ArrayBlockingQueue<Edit>(4096);
+  private final BlockingQueue<Edit> editPendingQ;
 
   // only accessed by syncing thread so no synchronization required.
   // queue is unbounded because it's effectively limited by the size
   // of the edit log buffer - ie. a sync will eventually be forced.
   private final Deque<Edit> syncWaitQ = new ArrayDeque<Edit>();
 
+  private long lastFull = 0;
+
   FSEditLogAsync(Configuration conf, NNStorage storage, List<URI> editsDirs) {
     super(conf, storage, editsDirs);
     // op instances cannot be shared due to queuing for background thread.
     cache.disableCache();
+    int editPendingQSize = conf.getInt(
+        DFSConfigKeys.DFS_NAMENODE_EDITS_ASYNC_LOGGING_PENDING_QUEUE_SIZE,
+        DFSConfigKeys.
+            DFS_NAMENODE_EDITS_ASYNC_LOGGING_PENDING_QUEUE_SIZE_DEFAULT);
+
+    editPendingQ = new ArrayBlockingQueue<>(editPendingQSize);
   }
 
   private boolean isSyncThreadAlive() {
@@ -66,7 +79,7 @@ class FSEditLogAsync extends FSEditLog implements Runnable {
   private void startSyncThread() {
     synchronized(syncThreadLock) {
       if (!isSyncThreadAlive()) {
-        syncThread = new Thread(this, this.getClass().getSimpleName());
+        syncThread = new SubjectInheritingThread(this, this.getClass().getSimpleName());
         syncThread.start();
       }
     }
@@ -113,17 +126,22 @@ class FSEditLogAsync extends FSEditLog implements Runnable {
 
   @Override
   void logEdit(final FSEditLogOp op) {
+    assert isOpenForWrite();
+
     Edit edit = getEditInstance(op);
-    threadEdit.set(edit);
-    enqueueEdit(edit);
+    THREAD_EDIT.set(edit);
+    synchronized(this) {
+      enqueueEdit(edit);
+      beginTransaction(op);
+    }
   }
 
   @Override
   public void logSync() {
-    Edit edit = threadEdit.get();
+    Edit edit = THREAD_EDIT.get();
     if (edit != null) {
       // do NOT remove to avoid expunge & rehash penalties.
-      threadEdit.set(null);
+      THREAD_EDIT.set(null);
       if (LOG.isDebugEnabled()) {
         LOG.debug("logSync " + edit);
       }
@@ -145,15 +163,73 @@ class FSEditLogAsync extends FSEditLog implements Runnable {
     edit.logSyncWait();
   }
 
+  // draining permits is intended to provide a high priority reservation.
+  // however, release of outstanding permits must be postponed until
+  // drained permits are restored to avoid starvation.  logic has some races
+  // but is good enough to serve its purpose.
+  private Semaphore overflowMutex = new Semaphore(8){
+    private AtomicBoolean draining = new AtomicBoolean();
+    private AtomicInteger pendingReleases = new AtomicInteger();
+    @Override
+    public int drainPermits() {
+      draining.set(true);
+      return super.drainPermits();
+    }
+    // while draining, count the releases until release(int)
+    private void tryRelease(int permits) {
+      pendingReleases.getAndAdd(permits);
+      if (!draining.get()) {
+        super.release(pendingReleases.getAndSet(0));
+      }
+    }
+    @Override
+    public void release() {
+      tryRelease(1);
+    }
+    @Override
+    public void release(int permits) {
+      draining.set(false);
+      tryRelease(permits);
+    }
+  };
+
   private void enqueueEdit(Edit edit) {
     if (LOG.isDebugEnabled()) {
       LOG.debug("logEdit " + edit);
     }
     try {
-      if (!editPendingQ.offer(edit, 1, TimeUnit.SECONDS)) {
+      // not checking for overflow yet to avoid penalizing performance of
+      // the common case.  if there is persistent overflow, a mutex will be
+      // use to throttle contention on the queue.
+      if (!editPendingQ.offer(edit)) {
         Preconditions.checkState(
             isSyncThreadAlive(), "sync thread is not alive");
-        editPendingQ.put(edit);
+        long now = Time.monotonicNow();
+        if (now - lastFull > 4000) {
+          lastFull = now;
+          LOG.info("Edit pending queue is full");
+        }
+        if (Thread.holdsLock(this)) {
+          // if queue is full, synchronized caller must immediately relinquish
+          // the monitor before re-offering to avoid deadlock with sync thread
+          // which needs the monitor to write transactions.
+          int permits = overflowMutex.drainPermits();
+          try {
+            do {
+              this.wait(1000); // will be notified by next logSync.
+            } while (!editPendingQ.offer(edit));
+          } finally {
+            overflowMutex.release(permits);
+          }
+        } else {
+          // mutex will throttle contention during persistent overflow.
+          overflowMutex.acquire();
+          try {
+            editPendingQ.put(edit);
+          } finally {
+            overflowMutex.release();
+          }
+        }
       }
     } catch (Throwable t) {
       // should never happen!  failure to enqueue an edit is fatal
@@ -170,15 +246,18 @@ class FSEditLogAsync extends FSEditLog implements Runnable {
   public void run() {
     try {
       while (true) {
+        NameNodeMetrics metrics = NameNode.getNameNodeMetrics();
         boolean doSync;
         Edit edit = dequeueEdit();
         if (edit != null) {
           // sync if requested by edit log.
           doSync = edit.logEdit();
           syncWaitQ.add(edit);
+          metrics.setPendingEditsCount(editPendingQ.size() + 1);
         } else {
           // sync when editq runs dry, but have edits pending a sync.
           doSync = !syncWaitQ.isEmpty();
+          metrics.setPendingEditsCount(0);
         }
         if (doSync) {
           // normally edit log exceptions cause the NN to terminate, but tests
@@ -203,7 +282,7 @@ class FSEditLogAsync extends FSEditLog implements Runnable {
 
   private void terminate(Throwable t) {
     String message = "Exception while edit logging: "+t.getMessage();
-    LOG.fatal(message, t);
+    LOG.error(message, t);
     ExitUtil.terminate(1, message);
   }
 

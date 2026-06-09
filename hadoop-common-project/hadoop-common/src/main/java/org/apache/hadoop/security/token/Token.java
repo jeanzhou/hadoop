@@ -18,25 +18,21 @@
 
 package org.apache.hadoop.security.token;
 
-import com.google.common.collect.Maps;
-import com.google.protobuf.ByteString;
-import com.google.common.primitives.Bytes;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Bytes;
 
 import org.apache.commons.codec.binary.Base64;
+import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.*;
-import org.apache.hadoop.security.proto.SecurityProtos.TokenProto;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
-import java.util.Arrays;
-import java.util.Map;
-import java.util.ServiceLoader;
-import java.util.UUID;
+import java.security.MessageDigest;
+import java.util.*;
 
 /**
  * The client-side form of the token.
@@ -65,6 +61,14 @@ public class Token<T extends TokenIdentifier> implements Writable {
     identifier = id.getBytes();
     kind = id.getKind();
     service = new Text();
+  }
+
+  public void setID(byte[] bytes) {
+    identifier = bytes;
+  }
+
+  public void setPassword(byte[] newPassword) {
+    password = newPassword;
   }
 
   /**
@@ -107,32 +111,6 @@ public class Token<T extends TokenIdentifier> implements Writable {
   }
 
   /**
-   * Construct a Token from a TokenProto.
-   * @param tokenPB the TokenProto object
-   */
-  public Token(TokenProto tokenPB) {
-    this.identifier = tokenPB.getIdentifier().toByteArray();
-    this.password = tokenPB.getPassword().toByteArray();
-    this.kind = new Text(tokenPB.getKindBytes().toByteArray());
-    this.service = new Text(tokenPB.getServiceBytes().toByteArray());
-  }
-
-  /**
-   * Construct a TokenProto from this Token instance.
-   * @return a new TokenProto object holding copies of data in this instance
-   */
-  public TokenProto toTokenProto() {
-    return TokenProto.newBuilder().
-        setIdentifier(ByteString.copyFrom(this.getIdentifier())).
-        setPassword(ByteString.copyFrom(this.getPassword())).
-        setKindBytes(ByteString.copyFrom(
-            this.getKind().getBytes(), 0, this.getKind().getLength())).
-        setServiceBytes(ByteString.copyFrom(
-            this.getService().getBytes(), 0, this.getService().getLength())).
-        build();
-  }
-
-  /**
    * Get the token identifier's byte representation.
    * @return the token identifier's byte representation
    */
@@ -145,15 +123,30 @@ public class Token<T extends TokenIdentifier> implements Writable {
     Class<? extends TokenIdentifier> cls = null;
     synchronized (Token.class) {
       if (tokenKindMap == null) {
-        tokenKindMap = Maps.newHashMap();
-        for (TokenIdentifier id : ServiceLoader.load(TokenIdentifier.class)) {
-          tokenKindMap.put(id.getKind(), id.getClass());
+        tokenKindMap = new HashMap<>();
+        // start the service load process;
+        // both "hasNext()" and "next()" calls might trigger implementations loading.
+        final Iterator<TokenIdentifier> tokenIdentifiers =
+            ServiceLoader.load(TokenIdentifier.class).iterator();
+        while (true) {
+          try {
+            if (!tokenIdentifiers.hasNext()) {
+              break;
+            }
+            TokenIdentifier id = tokenIdentifiers.next();
+            LOG.debug("Added {}:{} into tokenKindMap", id.getKind(), id.getClass());
+            tokenKindMap.put(id.getKind(), id.getClass());
+          } catch (ServiceConfigurationError | LinkageError e) {
+            // failure to load a token implementation
+            // log at debug and continue.
+            LOG.debug("Failed to load token identifier implementation", e);
+          }
         }
       }
       cls = tokenKindMap.get(kind);
     }
     if (cls == null) {
-      LOG.debug("Cannot find class for token kind " + kind);
+      LOG.debug("Cannot find class for token kind {}", kind);
       return null;
     }
     return cls;
@@ -162,8 +155,9 @@ public class Token<T extends TokenIdentifier> implements Writable {
   /**
    * Get the token identifier object, or null if it could not be constructed
    * (because the class could not be loaded, for example).
-   * @return the token identifier, or null
-   * @throws IOException
+   * @return the token identifier, or null if there was no class found for it
+   * @throws IOException failure to unmarshall the data
+   * @throws RuntimeException if the token class could not be instantiated.
    */
   @SuppressWarnings("unchecked")
   public T decodeIdentifier() throws IOException {
@@ -198,7 +192,7 @@ public class Token<T extends TokenIdentifier> implements Writable {
   /**
    * Set the token kind. This is only intended to be used by services that
    * wrap another service's token.
-   * @param newKind
+   * @param newKind newKind.
    */
   @InterfaceAudience.Private
   public synchronized void setKind(Text newKind) {
@@ -262,7 +256,7 @@ public class Token<T extends TokenIdentifier> implements Writable {
       assert !publicToken.isPrivate();
       publicService = publicToken.service;
       if (LOG.isDebugEnabled()) {
-        LOG.debug("Cloned private token " + this + " from " + publicToken);
+        LOG.debug("Cloned private token {} from {}", this, publicToken);
       }
     }
 
@@ -358,6 +352,10 @@ public class Token<T extends TokenIdentifier> implements Writable {
    */
   private static void decodeWritable(Writable obj,
                                      String newValue) throws IOException {
+    if (newValue == null) {
+      throw new HadoopIllegalArgumentException(
+              "Invalid argument, newValue is null");
+    }
     Base64 decoder = new Base64(0, null, true);
     DataInputBuffer buf = new DataInputBuffer();
     byte[] decoded = decoder.decode(newValue);
@@ -368,7 +366,7 @@ public class Token<T extends TokenIdentifier> implements Writable {
   /**
    * Encode this token as a url safe string.
    * @return the encoded string
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public String encodeToUrlString() throws IOException {
     return encodeWritable(this);
@@ -377,7 +375,7 @@ public class Token<T extends TokenIdentifier> implements Writable {
   /**
    * Decode the given url safe string into this token.
    * @param newValue the encoded string
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public void decodeFromUrlString(String newValue) throws IOException {
     decodeWritable(this, newValue);
@@ -392,8 +390,8 @@ public class Token<T extends TokenIdentifier> implements Writable {
       return false;
     } else {
       Token<T> r = (Token<T>) right;
-      return Arrays.equals(identifier, r.identifier) &&
-             Arrays.equals(password, r.password) &&
+      return MessageDigest.isEqual(identifier, r.identifier) &&
+             MessageDigest.isEqual(password, r.password) &&
              kind.equals(r.kind) &&
              service.equals(r.service);
     }
@@ -437,11 +435,11 @@ public class Token<T extends TokenIdentifier> implements Writable {
   @Override
   public String toString() {
     StringBuilder buffer = new StringBuilder();
-    buffer.append("Kind: ");
-    buffer.append(kind.toString());
-    buffer.append(", Service: ");
-    buffer.append(service.toString());
-    buffer.append(", Ident: ");
+    buffer.append("Kind: ")
+        .append(kind.toString())
+        .append(", Service: ")
+        .append(service.toString())
+        .append(", Ident: ");
     identifierToString(buffer);
     return buffer.toString();
   }
@@ -451,7 +449,7 @@ public class Token<T extends TokenIdentifier> implements Writable {
         Bytes.concat(kind.getBytes(), identifier, password)).toString();
   }
 
-  private static ServiceLoader<TokenRenewer> renewers =
+  private final static ServiceLoader<TokenRenewer> renewers =
       ServiceLoader.load(TokenRenewer.class);
 
   private synchronized TokenRenewer getRenewer() throws IOException {
@@ -460,20 +458,33 @@ public class Token<T extends TokenIdentifier> implements Writable {
     }
     renewer = TRIVIAL_RENEWER;
     synchronized (renewers) {
-      for (TokenRenewer canidate : renewers) {
-        if (canidate.handleKind(this.kind)) {
-          renewer = canidate;
-          return renewer;
+      Iterator<TokenRenewer> it = renewers.iterator();
+      // both "hasNext()" and "next()" calls might trigger implementations loading.
+      while (true) {
+        try {
+          if (!it.hasNext()) {
+            break;
+          }
+          TokenRenewer candidate = it.next();
+          if (candidate.handleKind(this.kind)) {
+            renewer = candidate;
+            return renewer;
+          }
+        } catch (ServiceConfigurationError | LinkageError e) {
+          // failure to load a token implementation
+          // log at debug and continue.
+          LOG.debug("Failed to load token renewer implementation", e);
         }
       }
     }
-    LOG.warn("No TokenRenewer defined for token kind " + this.kind);
+    LOG.warn("No TokenRenewer defined for token kind {}", kind);
     return renewer;
   }
 
   /**
    * Is this token managed so that it can be renewed or cancelled?
    * @return true, if it can be renewed and cancelled.
+   * @throws IOException raised on errors performing I/O.
    */
   public boolean isManaged() throws IOException {
     return getRenewer().isManaged(this);
@@ -481,9 +492,10 @@ public class Token<T extends TokenIdentifier> implements Writable {
 
   /**
    * Renew this delegation token.
+   * @param conf configuration.
    * @return the new expiration time
-   * @throws IOException
-   * @throws InterruptedException
+   * @throws IOException raised on errors performing I/O.
+   * @throws InterruptedException if the thread is interrupted.
    */
   public long renew(Configuration conf
                     ) throws IOException, InterruptedException {
@@ -492,8 +504,10 @@ public class Token<T extends TokenIdentifier> implements Writable {
 
   /**
    * Cancel this delegation token.
-   * @throws IOException
-   * @throws InterruptedException
+   *
+   * @param conf configuration.
+   * @throws IOException raised on errors performing I/O.
+   * @throws InterruptedException if the thread is interrupted.
    */
   public void cancel(Configuration conf
                      ) throws IOException, InterruptedException {

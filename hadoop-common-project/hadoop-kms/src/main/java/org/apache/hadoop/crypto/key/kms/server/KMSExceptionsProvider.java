@@ -19,7 +19,7 @@ package org.apache.hadoop.crypto.key.kms.server;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 
-import com.sun.jersey.api.container.ContainerException;
+import org.glassfish.jersey.server.ContainerException;
 
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -111,9 +111,10 @@ public class KMSExceptionsProvider implements ExceptionMapper<Exception> {
     UserGroupInformation ugi = KMSMDCFilter.getUgi();
     String method = KMSMDCFilter.getMethod();
     String url = KMSMDCFilter.getURL();
+    String remoteClientAddress = KMSMDCFilter.getRemoteClientAddress();
     String msg = getOneLineMessage(ex);
-    LOG.warn("User:'{}' Method:{} URL:{} Response:{}-{}", ugi, method, url,
-        status, msg, ex);
+    LOG.warn("User:'{}' Method:{} URL:{} From:{} Response:{}-{}", ugi, method,
+        url, remoteClientAddress, status, msg, ex);
   }
 
 }

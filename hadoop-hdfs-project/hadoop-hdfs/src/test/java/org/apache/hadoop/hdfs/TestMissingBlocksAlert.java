@@ -17,25 +17,25 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.ChecksumException;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.server.blockmanagement.AvailableSpaceBlockPlacementPolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import javax.management.*;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The test makes sure that NameNode detects presense blocks that do not have
@@ -44,8 +44,8 @@ import static org.junit.Assert.assertTrue;
  */
 public class TestMissingBlocksAlert {
   
-  private static final Log LOG = 
-                           LogFactory.getLog(TestMissingBlocksAlert.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMissingBlocksAlert.class);
   
   @Test
   public void testMissingBlocksAlert()
@@ -104,8 +104,8 @@ public class TestMissingBlocksAlert {
       MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
       ObjectName mxbeanName = new ObjectName(
               "Hadoop:service=NameNode,name=NameNodeInfo");
-      Assert.assertEquals(1, (long)(Long) mbs.getAttribute(mxbeanName,
-                      "NumberOfMissingBlocks"));
+      assertEquals(1, (long) (Long) mbs.getAttribute(mxbeanName,
+          "NumberOfMissingBlocks"));
 
       // now do the reverse : remove the file expect the number of missing 
       // blocks to go to zero
@@ -120,8 +120,8 @@ public class TestMissingBlocksAlert {
       assertEquals(2, dfs.getLowRedundancyBlocksCount());
       assertEquals(2, bm.getUnderReplicatedNotMissingBlocks());
 
-      Assert.assertEquals(0, (long)(Long) mbs.getAttribute(mxbeanName,
-              "NumberOfMissingBlocks"));
+      assertEquals(0, (long) (Long) mbs.getAttribute(mxbeanName,
+          "NumberOfMissingBlocks"));
 
       Path replOneFile = new Path("/testMissingBlocks/replOneFile");
       DFSTestUtil.createFile(dfs, replOneFile, fileLen, (short)1, 0);
@@ -137,12 +137,41 @@ public class TestMissingBlocksAlert {
       }
       in.close();
       assertEquals(1, dfs.getMissingReplOneBlocksCount());
-      Assert.assertEquals(1, (long)(Long) mbs.getAttribute(mxbeanName,
+      assertEquals(1, (long) (Long) mbs.getAttribute(mxbeanName,
           "NumberOfMissingBlocksWithReplicationFactorOne"));
     } finally {
       if (cluster != null) {
         cluster.shutdown();
       }
+    }
+  }
+
+  @Test
+  public void testMissReplicatedBlockwithTwoRack() throws Exception {
+    Configuration conf = new Configuration();
+    //Start cluster with rack /default/rack1
+    String[] hosts = new String[] {"host0", "host1", "host2", "host3"};
+    String[] racks = new String[] {"/default/rack1", "/default/rack1",
+        "/default/rack1", "/default/rack1"};
+    conf.set(DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_KEY,
+        AvailableSpaceBlockPlacementPolicy.class.getName());
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(4)
+        .hosts(hosts).racks(racks).build();
+    Path file = new Path("/file2");
+    try {
+      DistributedFileSystem dfs = cluster.getFileSystem();
+      DFSTestUtil.createFile(dfs, file, 1024, (short) 2, 0);
+      dfs.getFileStatus(file);
+      //Add one more rack /default/rack2
+      cluster.startDataNodes(conf, 2, true, null,
+          new String[] {"/default/rack2", "/default/rack2"},
+          new String[] {"host4", "host5"}, null);
+      dfs.setReplication(file, (short) 3);
+      // wait for block replication
+      DFSTestUtil.waitForReplication(dfs, file, (short) 3, 60000);
+    } finally {
+      cluster.shutdown();
     }
   }
 }

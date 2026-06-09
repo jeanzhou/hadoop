@@ -17,6 +17,10 @@
  *******************************************************************************/
 package org.apache.hadoop.yarn.server.resourcemanager.reservation;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import org.apache.hadoop.yarn.api.records.ReservationAllocationState;
@@ -25,8 +29,7 @@ import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.impl.pb.ResourcePBImpl;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.Date;
@@ -49,10 +52,10 @@ public class TestReservationSystemUtil {
             .convertAllocationsToReservationInfo(
               Collections.singleton(allocation), true);
 
-    Assert.assertEquals(infoList.size(), 1);
-    Assert.assertEquals(infoList.get(0).getReservationId().toString(),
-            id.toString());
-    Assert.assertFalse(infoList.get(0).getResourceAllocationRequests()
+    assertThat(infoList).hasSize(1);
+    assertThat(infoList.get(0).getReservationId().toString()).isEqualTo(
+        id.toString());
+    assertFalse(infoList.get(0).getResourceAllocationRequests()
             .isEmpty());
   }
 
@@ -70,10 +73,10 @@ public class TestReservationSystemUtil {
             .convertAllocationsToReservationInfo(
                     Collections.singleton(allocation), false);
 
-    Assert.assertEquals(infoList.size(), 1);
-    Assert.assertEquals(infoList.get(0).getReservationId().toString(),
+    assertEquals(infoList.size(), 1);
+    assertEquals(infoList.get(0).getReservationId().toString(),
             id.toString());
-    Assert.assertTrue(infoList.get(0).getResourceAllocationRequests()
+    assertTrue(infoList.get(0).getResourceAllocationRequests()
             .isEmpty());
   }
 
@@ -91,10 +94,10 @@ public class TestReservationSystemUtil {
             .convertAllocationsToReservationInfo(
                     Collections.singleton(allocation), false);
 
-    Assert.assertEquals(infoList.size(), 1);
-    Assert.assertEquals(infoList.get(0).getReservationId().toString(),
+    assertEquals(infoList.size(), 1);
+    assertEquals(infoList.get(0).getReservationId().toString(),
             id.toString());
-    Assert.assertTrue(infoList.get(0).getResourceAllocationRequests()
+    assertTrue(infoList.get(0).getResourceAllocationRequests()
             .isEmpty());
   }
 
@@ -104,7 +107,7 @@ public class TestReservationSystemUtil {
             .convertAllocationsToReservationInfo(
                     Collections.<ReservationAllocation>emptySet(), false);
 
-    Assert.assertEquals(infoList.size(), 0);
+    assertThat(infoList).isEmpty();
   }
 
   private ReservationAllocation createReservationAllocation(long startTime,

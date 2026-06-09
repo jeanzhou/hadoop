@@ -25,12 +25,13 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
 import org.apache.hadoop.hdfs.tools.snapshot.SnapshotDiff;
-import org.apache.hadoop.util.ChunkedArrayList;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * This class includes end-to-end tests for snapshot related FsShell and
@@ -42,7 +43,7 @@ public class TestSnapshotCommands {
   private static MiniDFSCluster cluster;
   private static DistributedFileSystem fs;
   
-  @BeforeClass
+  @BeforeAll
   public static void clusterSetUp() throws IOException {
     conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_SNAPSHOT_MAX_LIMIT, 3);
@@ -51,7 +52,7 @@ public class TestSnapshotCommands {
     fs = cluster.getFileSystem();
   }
 
-  @AfterClass
+  @AfterAll
   public static void clusterShutdown() throws IOException{
     if(fs != null){
       fs.close();
@@ -61,7 +62,7 @@ public class TestSnapshotCommands {
     }
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     fs.mkdirs(new Path("/sub1"));
     fs.mkdirs(new Path("/Fully/QPath"));
@@ -70,7 +71,7 @@ public class TestSnapshotCommands {
     fs.mkdirs(new Path("/sub1/sub1sub2"));
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (fs.exists(new Path("/sub1"))) {
       if (fs.exists(new Path("/sub1/.snapshot"))) {
@@ -128,8 +129,8 @@ public class TestSnapshotCommands {
     DFSTestUtil.FsShellRun("-createSnapshot /sub3 sn2", 0,
         "Created snapshot /sub3/.snapshot/sn2", conf);
     DFSTestUtil.FsShellRun("-createSnapshot /sub3 sn3", 1,
-        "Failed to add snapshot: there are already 3 snapshot(s) and "
-            + "the max snapshot limit is 3", conf);
+        "Failed to create snapshot: there are already 3 snapshot(s) and "
+            + "the per directory snapshot limit is 3", conf);
   }
 
   @Test
@@ -154,6 +155,11 @@ public class TestSnapshotCommands {
     //try renaming from a non-existing snapshot
     DFSTestUtil.FsShellRun("-renameSnapshot /sub1 sn.nonexist sn.rename", 1,
         "renameSnapshot: The snapshot sn.nonexist does not exist for directory /sub1", conf);
+
+    //try renaming a non-existing snapshot to itself
+    DFSTestUtil.FsShellRun("-renameSnapshot /sub1 sn.nonexist sn.nonexist", 1,
+        "renameSnapshot: The snapshot sn.nonexist " +
+            "does not exist for directory /sub1", conf);
 
     //try renaming to existing snapshots
     DFSTestUtil.FsShellRun("-createSnapshot /sub1 sn.new", conf);
@@ -188,7 +194,8 @@ public class TestSnapshotCommands {
     DFSTestUtil.FsShellRun("-rmr /sub1", conf);
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSnapshotCommandsWithURI()throws Exception {
     Configuration config = new HdfsConfiguration();
     //fs.defaultFS should not be used, when path is fully qualified.
@@ -219,7 +226,8 @@ public class TestSnapshotCommands {
     fs.delete(new Path("/Fully/QPath"), true);
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 120)
   public void testSnapshotDiff()throws Exception {
     Configuration config = new HdfsConfiguration();
     Path snapDirPath = new Path(fs.getUri().toString() + "/snap_dir");

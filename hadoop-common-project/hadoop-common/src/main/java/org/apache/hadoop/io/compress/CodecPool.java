@@ -25,12 +25,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.ReflectionUtils;
 
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -109,7 +110,7 @@ public class CodecPool {
       synchronized (pool) {
         codecSet = pool.get(codecClass);
         if (codecSet == null) {
-          codecSet = new HashSet<T>();
+          codecSet = new HashSet<>();
           pool.put(codecClass, codecSet);
         }
       }
@@ -152,6 +153,9 @@ public class CodecPool {
       compressor = codec.createCompressor();
       LOG.info("Got brand-new compressor ["+codec.getDefaultExtension()+"]");
     } else {
+      if (conf == null && codec instanceof Configurable) {
+        conf = ((Configurable)codec).getConf();
+      }
       compressor.reinit(conf);
       if(LOG.isDebugEnabled()) {
         LOG.debug("Got recycled compressor");
@@ -205,6 +209,7 @@ public class CodecPool {
     }
     // if the compressor can't be reused, don't pool it.
     if (compressor.getClass().isAnnotationPresent(DoNotPool.class)) {
+      compressor.end();
       return;
     }
     compressor.reset();
@@ -225,6 +230,7 @@ public class CodecPool {
     }
     // if the decompressor can't be reused, don't pool it.
     if (decompressor.getClass().isAnnotationPresent(DoNotPool.class)) {
+      decompressor.end();
       return;
     }
     decompressor.reset();
@@ -235,7 +241,10 @@ public class CodecPool {
 
   /**
    * Return the number of leased {@link Compressor}s for this
-   * {@link CompressionCodec}
+   * {@link CompressionCodec}.
+   *
+   * @param codec codec.
+   * @return the number of leased.
    */
   public static int getLeasedCompressorsCount(CompressionCodec codec) {
     return (codec == null) ? 0 : getLeaseCount(compressorCounts,
@@ -244,7 +253,10 @@ public class CodecPool {
 
   /**
    * Return the number of leased {@link Decompressor}s for this
-   * {@link CompressionCodec}
+   * {@link CompressionCodec}.
+   *
+   * @param codec codec.
+   * @return the number of leased
    */
   public static int getLeasedDecompressorsCount(CompressionCodec codec) {
     return (codec == null) ? 0 : getLeaseCount(decompressorCounts,

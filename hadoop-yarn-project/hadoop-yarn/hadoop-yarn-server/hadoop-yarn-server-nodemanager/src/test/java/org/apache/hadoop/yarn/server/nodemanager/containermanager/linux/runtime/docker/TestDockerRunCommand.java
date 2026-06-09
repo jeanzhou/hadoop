@@ -17,13 +17,13 @@
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker;
 
 import org.apache.hadoop.util.StringUtils;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Tests the docker run command and its command
@@ -38,7 +38,7 @@ public class TestDockerRunCommand {
   private static final String IMAGE_NAME = "image_name";
   private static final String CLIENT_CONFIG_PATH = "/path/to/client.json";
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     dockerRunCommand = new DockerRunCommand(CONTAINER_NAME, USER_ID,
         IMAGE_NAME);
@@ -58,6 +58,12 @@ public class TestDockerRunCommand {
     commands.add("launch_command");
     dockerRunCommand.setOverrideCommandWithArgs(commands);
     dockerRunCommand.removeContainerOnExit();
+    dockerRunCommand.addTmpfsMount("/run");
+    String portsMapping = "127.0.0.1:8080:80,1234:1234,:2222";
+    for (String mapping:portsMapping.split(",")) {
+      dockerRunCommand.addPortsMapping(mapping);
+    }
+    dockerRunCommand.addRuntime("nvidia");
 
     assertEquals("run", StringUtils.join(",",
         dockerRunCommand.getDockerCommandWithArguments()
@@ -76,7 +82,14 @@ public class TestDockerRunCommand {
     assertEquals("launch_command", StringUtils.join(",",
         dockerRunCommand.getDockerCommandWithArguments()
             .get("launch-command")));
-    assertEquals(7, dockerRunCommand.getDockerCommandWithArguments().size());
+    assertEquals("/run", StringUtils.join(",",
+        dockerRunCommand.getDockerCommandWithArguments().get("tmpfs")));
+    assertEquals("127.0.0.1:8080:80,1234:1234,:2222", StringUtils.join(",",
+        dockerRunCommand.getDockerCommandWithArguments()
+            .get("ports-mapping")));
+    assertEquals("nvidia", StringUtils.join(",",
+        dockerRunCommand.getDockerCommandWithArguments().get("runtime")));
+    assertEquals(10, dockerRunCommand.getDockerCommandWithArguments().size());
   }
 
   @Test

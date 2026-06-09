@@ -18,6 +18,9 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -48,9 +51,9 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Validate system behavior when the am-scheduling logic 'blacklists' a node for
@@ -58,13 +61,43 @@ import org.junit.Test;
  */
 public class TestNodeBlacklistingOnAMFailures {
 
-  @Before
+  private RMApp submitAppWithAMResourceRequests(MockRM rm,
+      List<ResourceRequest> amResourceRequests) throws Exception {
+    int maxAttempts =
+        rm.getConfig().getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+            YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS);
+    MockRMAppSubmissionData data = MockRMAppSubmissionData.Builder.create()
+        .withAmResourceRequests(amResourceRequests)
+        .withAppName("app1")
+        .withUser("user")
+        .withAcls(null)
+        .withUnmanagedAM(false)
+        .withQueue(null)
+        .withMaxAppAttempts(maxAttempts)
+        .withCredentials(null)
+        .withAppType(null)
+        .withWaitForAppAcceptedState(true)
+        .withKeepContainers(false)
+        .withApplicationId(null)
+        .withAttemptFailuresValidityInterval(0)
+        .withLogAggregationContext(null)
+        .withCancelTokensWhenComplete(true)
+        .withAppPriority(amResourceRequests.get(0).getPriority())
+        .withAmLabel(amResourceRequests.get(0).getNodeLabelExpression())
+        .withApplicationTimeouts(null)
+        .withTokensConf(null)
+        .build();
+    return MockRMAppSubmitter.submit(rm, data);
+  }
+
+  @BeforeEach
   public void setup() {
     QueueMetrics.clearQueueMetrics();
     DefaultMetricsSystem.setMiniClusterMode(true);
   }
 
-  @Test(timeout = 100000)
+  @Test
+  @Timeout(value = 100)
   public void testNodeBlacklistingOnAMFailure() throws Exception {
 
     YarnConfiguration conf = new YarnConfiguration();
@@ -87,7 +120,7 @@ public class TestNodeBlacklistingOnAMFailures {
         new MockNM("127.0.0.2:2345", 8000, rm.getResourceTrackerService());
     nm2.registerNode();
 
-    RMApp app = rm.submitApp(200);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(200, rm);
 
     MockAM am1 = MockRM.launchAndRegisterAM(app, rm, nm1);
     ContainerId amContainerId =
@@ -131,10 +164,9 @@ public class TestNodeBlacklistingOnAMFailures {
       currentNode.nodeHeartbeat(true);
       rm.drainEvents();
 
-      Assert.assertEquals(
+      assertEquals(RMAppAttemptState.SCHEDULED, attempt.getAppAttemptState(),
           "AppAttemptState should still be SCHEDULED if currentNode is "
-              + "blacklisted correctly", RMAppAttemptState.SCHEDULED,
-          attempt.getAppAttemptState());
+          + "blacklisted correctly");
     }
 
     // Now try the other node
@@ -152,22 +184,21 @@ public class TestNodeBlacklistingOnAMFailures {
     nodeWhereAMRan = rmContainer.getAllocatedNode();
 
     // The other node should now receive the assignment
-    Assert.assertEquals(
-        "After blacklisting, AM should have run on the other node",
-        otherNode.getNodeId(), nodeWhereAMRan);
+    assertEquals(otherNode.getNodeId(), nodeWhereAMRan,
+        "After blacklisting, AM should have run on the other node");
 
     am2.registerAppAttempt();
     rm.waitForState(app.getApplicationId(), RMAppState.RUNNING);
 
     List<Container> allocatedContainers =
         TestAMRestart.allocateContainers(currentNode, am2, 1);
-    Assert.assertEquals(
+    assertEquals(currentNode.getNodeId(), allocatedContainers.get(0).getNodeId(),
         "Even though AM is blacklisted from the node, application can "
-            + "still allocate non-AM containers there",
-        currentNode.getNodeId(), allocatedContainers.get(0).getNodeId());
+        + "still allocate non-AM containers there");
   }
 
-  @Test(timeout = 100000)
+  @Test
+  @Timeout(value = 100)
   public void testNodeBlacklistingOnAMFailureStrictNodeLocality()
       throws Exception {
     YarnConfiguration conf = new YarnConfiguration();
@@ -215,14 +246,14 @@ public class TestNodeBlacklistingOnAMFailures {
     reqs.add(anyReq);
     reqs.add(rackReq);
     reqs.add(nodeReq);
-    RMApp app = rm.submitApp(reqs);
+    RMApp app = submitAppWithAMResourceRequests(rm, reqs);
 
     MockAM am1 = MockRM.launchAndRegisterAM(app, rm, nm2);
     ContainerId amContainerId =
         ContainerId.newContainerId(am1.getApplicationAttemptId(), 1);
     RMContainer rmContainer = scheduler.getRMContainer(amContainerId);
     NodeId nodeWhereAMRan = rmContainer.getAllocatedNode();
-    Assert.assertEquals(nm2.getNodeId(), nodeWhereAMRan);
+    assertEquals(nm2.getNodeId(), nodeWhereAMRan);
 
     // Set the exist status to INVALID so that we can verify that the system
     // automatically blacklisting the node
@@ -248,13 +279,14 @@ public class TestNodeBlacklistingOnAMFailures {
     // The second AM should be on the same node because the strict locality
     // made the eligible nodes only 1, so the blacklisting threshold kicked in
     System.out.println("AM ran on " + nodeWhereAMRan);
-    Assert.assertEquals(nm2.getNodeId(), nodeWhereAMRan);
+    assertEquals(nm2.getNodeId(), nodeWhereAMRan);
 
     am2.registerAppAttempt();
     rm.waitForState(app.getApplicationId(), RMAppState.RUNNING);
   }
 
-  @Test(timeout = 100000)
+  @Test
+  @Timeout(value = 100)
   public void testNodeBlacklistingOnAMFailureRelaxedNodeLocality()
       throws Exception {
     YarnConfiguration conf = new YarnConfiguration();
@@ -302,14 +334,14 @@ public class TestNodeBlacklistingOnAMFailures {
     reqs.add(anyReq);
     reqs.add(rackReq);
     reqs.add(nodeReq);
-    RMApp app = rm.submitApp(reqs);
+    RMApp app = submitAppWithAMResourceRequests(rm, reqs);
 
     MockAM am1 = MockRM.launchAndRegisterAM(app, rm, nm2);
     ContainerId amContainerId =
         ContainerId.newContainerId(am1.getApplicationAttemptId(), 1);
     RMContainer rmContainer = scheduler.getRMContainer(amContainerId);
     NodeId nodeWhereAMRan = rmContainer.getAllocatedNode();
-    Assert.assertEquals(nm2.getNodeId(), nodeWhereAMRan);
+    assertEquals(nm2.getNodeId(), nodeWhereAMRan);
 
     // Set the exist status to INVALID so that we can verify that the system
     // automatically blacklisting the node
@@ -339,13 +371,14 @@ public class TestNodeBlacklistingOnAMFailures {
     // The second AM should be on a different node because the relaxed locality
     // made the app schedulable on other nodes and nm2 is blacklisted
     System.out.println("AM ran on " + nodeWhereAMRan);
-    Assert.assertNotEquals(nm2.getNodeId(), nodeWhereAMRan);
+    assertNotEquals(nm2.getNodeId(), nodeWhereAMRan);
 
     am2.registerAppAttempt();
     rm.waitForState(app.getApplicationId(), RMAppState.RUNNING);
   }
 
-  @Test(timeout = 100000)
+  @Test
+  @Timeout(value = 100)
   public void testNoBlacklistingForNonSystemErrors() throws Exception {
 
     YarnConfiguration conf = new YarnConfiguration();
@@ -363,7 +396,7 @@ public class TestNodeBlacklistingOnAMFailures {
         new MockNM("127.0.0.1:1234", 8000, rm.getResourceTrackerService());
     node.registerNode();
 
-    RMApp app = rm.submitApp(200);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(200, rm);
     ApplicationId appId = app.getApplicationId();
 
     int numAppAttempts = 1;

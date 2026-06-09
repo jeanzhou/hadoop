@@ -20,7 +20,11 @@ package org.apache.hadoop.fs.contract;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
+
+import org.assertj.core.api.Assertions;
 
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -29,9 +33,11 @@ import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.RemoteIterator;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import static org.apache.hadoop.fs.contract.ContractTestUtils.*;
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 
 /**
  * Test getFileStatus and related listing operations.
@@ -50,6 +56,7 @@ public abstract class AbstractContractGetFileStatusTest extends
   private static final int TREE_FILES = 4;
   private static final int TREE_FILESIZE = 512;
 
+  @BeforeEach
   @Override
   public void setup() throws Exception {
     super.setup();
@@ -109,9 +116,11 @@ public abstract class AbstractContractGetFileStatusTest extends
   private void listFilesOnEmptyDir(boolean recursive) throws IOException {
     describe("Invoke listFiles(recursive=" + recursive + ")" +
         " on empty directories, expect nothing found");
-    Path subfolder = createDirWithEmptySubFolder();
     FileSystem fs = getFileSystem();
-    new TreeScanResults(fs.listFiles(getContract().getTestPath(), recursive))
+    Path path = getContract().getTestPath();
+    fs.delete(path, true);
+    Path subfolder = createDirWithEmptySubFolder();
+    new TreeScanResults(fs.listFiles(path, recursive))
         .assertSizeEquals("listFiles(test dir, " + recursive + ")", 0, 0, 0);
     describe("Test on empty subdirectory");
     new TreeScanResults(fs.listFiles(subfolder, recursive))
@@ -123,9 +132,11 @@ public abstract class AbstractContractGetFileStatusTest extends
   public void testListLocatedStatusEmptyDirectory() throws IOException {
     describe("Invoke listLocatedStatus() on empty directories;" +
         " expect directories to be found");
-    Path subfolder = createDirWithEmptySubFolder();
     FileSystem fs = getFileSystem();
-    new TreeScanResults(fs.listLocatedStatus(getContract().getTestPath()))
+    Path path = getContract().getTestPath();
+    fs.delete(path, true);
+    Path subfolder = createDirWithEmptySubFolder();
+    new TreeScanResults(fs.listLocatedStatus(path))
       .assertSizeEquals("listLocatedStatus(test dir)", 0, 1, 0);
     describe("Test on empty subdirectory");
     new TreeScanResults(fs.listLocatedStatus(subfolder))
@@ -141,6 +152,7 @@ public abstract class AbstractContractGetFileStatusTest extends
   public void testComplexDirActions() throws Throwable {
     TreeScanResults tree = createTestTree();
     checkListStatusStatusComplexDir(tree);
+    checkListStatusIteratorComplexDir(tree);
     checkListLocatedStatusStatusComplexDir(tree);
     checkListFilesComplexDirNonRecursive(tree);
     checkListFilesComplexDirRecursive(tree);
@@ -160,6 +172,34 @@ public abstract class AbstractContractGetFileStatusTest extends
     TreeScanResults listing = new TreeScanResults(
         fs.listStatus(tree.getBasePath()));
     listing.assertSizeEquals("listStatus()", TREE_FILES, TREE_WIDTH, 0);
+  }
+
+  /**
+   * Test {@link FileSystem#listStatusIterator(Path)} on a complex
+   * directory tree.
+   * @param tree directory tree to list.
+   * @throws Throwable
+   */
+  protected void checkListStatusIteratorComplexDir(TreeScanResults tree)
+          throws Throwable {
+    describe("Expect listStatusIterator to list all entries in top dir only");
+
+    FileSystem fs = getFileSystem();
+    TreeScanResults listing = new TreeScanResults(
+            fs.listStatusIterator(tree.getBasePath()));
+    listing.assertSizeEquals("listStatus()", TREE_FILES, TREE_WIDTH, 0);
+
+    List<FileStatus> resWithoutCheckingHasNext =
+            iteratorToListThroughNextCallsAlone(fs
+                    .listStatusIterator(tree.getBasePath()));
+
+    List<FileStatus> resWithCheckingHasNext = iteratorToList(fs
+                    .listStatusIterator(tree.getBasePath()));
+    Assertions.assertThat(resWithCheckingHasNext)
+            .describedAs("listStatusIterator() should return correct " +
+                    "results even if hasNext() calls are not made.")
+            .hasSameElementsAs(resWithoutCheckingHasNext);
+
   }
 
   /**
@@ -246,10 +286,9 @@ public abstract class AbstractContractGetFileStatusTest extends
     treeWalk.assertFieldsEquivalent("files", listing,
         treeWalk.getFiles(),
         listing.getFiles());
-    assertEquals("Size of status list through next() calls",
-        count,
-        toListThroughNextCallsAlone(
-            fs.listFiles(tree.getBasePath(), true)).size());
+    assertEquals(count, toListThroughNextCallsAlone(
+        fs.listFiles(tree.getBasePath(), true)).size(),
+        "Size of status list through next() calls");
   }
 
   @Test
@@ -273,37 +312,32 @@ public abstract class AbstractContractGetFileStatusTest extends
   }
 
   @Test
+  public void testListStatusIteratorNoDir() throws Throwable {
+    describe("test the listStatusIterator call on a path which is not " +
+        "present");
+    intercept(FileNotFoundException.class,
+        () -> getFileSystem().listStatusIterator(path("missing")));
+  }
+
+  @Test
   public void testLocatedStatusNoDir() throws Throwable {
     describe("test the LocatedStatus call on a path which is not present");
-    try {
-      RemoteIterator<LocatedFileStatus> iterator
-          = getFileSystem().listLocatedStatus(path("missing"));
-      fail("Expected an exception, got an iterator: " + iterator);
-    } catch (FileNotFoundException expected) {
-      // expected
-    }
+    intercept(FileNotFoundException.class,
+        () -> getFileSystem().listLocatedStatus(path("missing")));
   }
 
   @Test
   public void testListStatusNoDir() throws Throwable {
     describe("test the listStatus(path) call on a path which is not present");
-    try {
-      getFileSystem().listStatus(path("missing"));
-      fail("Expected an exception");
-    } catch (FileNotFoundException expected) {
-      // expected
-    }
+    intercept(FileNotFoundException.class,
+        () -> getFileSystem().listStatus(path("missing")));
   }
 
   @Test
   public void testListStatusFilteredNoDir() throws Throwable {
     describe("test the listStatus(path, filter) call on a missing path");
-    try {
-      getFileSystem().listStatus(path("missing"), ALL_PATHS);
-      fail("Expected an exception");
-    } catch (FileNotFoundException expected) {
-      // expected
-    }
+    intercept(FileNotFoundException.class,
+        () -> getFileSystem().listStatus(path("missing"), ALL_PATHS));
   }
 
   @Test
@@ -321,17 +355,56 @@ public abstract class AbstractContractGetFileStatusTest extends
   }
 
   @Test
+  public void testListStatusIteratorFile() throws Throwable {
+    describe("test the listStatusIterator(path) on a file");
+    Path f = touchf("listStItrFile");
+
+    List<FileStatus> statusList = (List<FileStatus>) iteratorToList(
+            getFileSystem().listStatusIterator(f));
+    validateListingForFile(f, statusList, false);
+
+    List<FileStatus> statusList2 =
+            (List<FileStatus>) iteratorToListThroughNextCallsAlone(
+                    getFileSystem().listStatusIterator(f));
+    validateListingForFile(f, statusList2, true);
+  }
+
+  /**
+   * Validate listing result for an input path which is file.
+   * @param f file.
+   * @param statusList list status of a file.
+   * @param nextCallAlone whether the listing generated just using
+   *                      next() calls.
+   */
+  private void validateListingForFile(Path f,
+                                      List<FileStatus> statusList,
+                                      boolean nextCallAlone) {
+    String msg = String.format("size of file list returned using %s should " +
+            "be 1", nextCallAlone ?
+            "next() calls alone" : "hasNext() and next() calls");
+    Assertions.assertThat(statusList)
+            .describedAs(msg)
+            .hasSize(1);
+    Assertions.assertThat(statusList.get(0).getPath())
+            .describedAs("path returned should match with the input path")
+            .isEqualTo(f);
+    Assertions.assertThat(statusList.get(0).isFile())
+            .describedAs("path returned should be a file")
+            .isEqualTo(true);
+  }
+
+  @Test
   public void testListFilesFile() throws Throwable {
     describe("test the listStatus(path) on a file");
     Path f = touchf("listfilesfile");
     List<LocatedFileStatus> statusList = toList(
         getFileSystem().listFiles(f, false));
-    assertEquals("size of file list returned", 1, statusList.size());
+    assertEquals(1, statusList.size(), "size of file list returned");
     assertIsNamedFile(f, statusList.get(0));
     List<LocatedFileStatus> statusList2 = toListThroughNextCallsAlone(
         getFileSystem().listFiles(f, false));
-    assertEquals("size of file list returned through next() calls",
-        1, statusList2.size());
+    assertEquals(1, statusList2.size(),
+        "size of file list returned through next() calls");
     assertIsNamedFile(f, statusList2.get(0));
   }
 
@@ -341,11 +414,11 @@ public abstract class AbstractContractGetFileStatusTest extends
     Path f = touchf("listfilesRecursive");
     List<LocatedFileStatus> statusList = toList(
         getFileSystem().listFiles(f, true));
-    assertEquals("size of file list returned", 1, statusList.size());
+    assertEquals(1, statusList.size(), "size of file list returned");
     assertIsNamedFile(f, statusList.get(0));
     List<LocatedFileStatus> statusList2 = toListThroughNextCallsAlone(
         getFileSystem().listFiles(f, true));
-    assertEquals("size of file list returned", 1, statusList2.size());
+    assertEquals(1, statusList2.size(), "size of file list returned");
   }
 
   @Test
@@ -354,12 +427,12 @@ public abstract class AbstractContractGetFileStatusTest extends
     Path f = touchf("listLocatedStatus");
     List<LocatedFileStatus> statusList = toList(
         getFileSystem().listLocatedStatus(f));
-    assertEquals("size of file list returned", 1, statusList.size());
+    assertEquals(1, statusList.size(), "size of file list returned");
     assertIsNamedFile(f, statusList.get(0));
     List<LocatedFileStatus> statusList2 = toListThroughNextCallsAlone(
         getFileSystem().listLocatedStatus(f));
-    assertEquals("size of file list returned through next() calls",
-        1, statusList2.size());
+    assertEquals(1, statusList2.size(),
+        "size of file list returned through next() calls");
   }
 
   /**
@@ -379,8 +452,8 @@ public abstract class AbstractContractGetFileStatusTest extends
    * @param fileStatus status to validate
    */
   private void assertIsNamedFile(Path f, FileStatus fileStatus) {
-    assertEquals("Wrong pathname in " + fileStatus, f, fileStatus.getPath());
-    assertTrue("Not a file: " + fileStatus, fileStatus.isFile());
+    assertEquals(f, fileStatus.getPath(), "Wrong pathname in " + fileStatus);
+    assertTrue(fileStatus.isFile(), "Not a file: " + fileStatus);
   }
 
   /**
@@ -406,7 +479,8 @@ public abstract class AbstractContractGetFileStatusTest extends
     Path path = getContract().getTestPath();
     fs.delete(path, true);
     // create a - non-qualified - Path for a subdir
-    Path subfolder = path.suffix('/' + this.methodName.getMethodName());
+    Path subfolder = path.suffix('/' + this.methodName.getMethodName()
+        + "-" + UUID.randomUUID());
     mkdirs(subfolder);
     return subfolder;
   }
@@ -442,10 +516,10 @@ public abstract class AbstractContractGetFileStatusTest extends
       count++;
       LocatedFileStatus next = results.next();
       FileStatus fileStatus = getFileSystem().getFileStatus(next.getPath());
-      assertEquals("isDirectory", fileStatus.isDirectory(), next.isDirectory());
-      assertEquals("isFile", fileStatus.isFile(), next.isFile());
-      assertEquals("getLen", fileStatus.getLen(), next.getLen());
-      assertEquals("getOwner", fileStatus.getOwner(), next.getOwner());
+      assertEquals(fileStatus.isDirectory(), next.isDirectory(), "isDirectory");
+      assertEquals(fileStatus.isFile(), next.isFile(), "isFile");
+      assertEquals(fileStatus.getLen(), next.getLen(), "getLen");
+      assertEquals(fileStatus.getOwner(), next.getOwner(), "getOwner");
     }
     return count;
   }
@@ -531,8 +605,9 @@ public abstract class AbstractContractGetFileStatusTest extends
       Path path,
       PathFilter filter) throws IOException {
     FileStatus[] result = getFileSystem().listStatus(path, filter);
-    assertEquals("length of listStatus(" + path + ", " + filter + " )",
-        expected, result.length);
+    assertEquals(expected, result.length,
+        "length of listStatus(" + path + ", " + filter + " ) " +
+        Arrays.toString(result));
     return result;
   }
 
@@ -552,8 +627,8 @@ public abstract class AbstractContractGetFileStatusTest extends
       PathFilter filter) throws IOException {
     RemoteIterator<LocatedFileStatus> it = xfs.listLocatedStatus(path, filter);
     List<LocatedFileStatus> result = toList(it);
-    assertEquals("length of listLocatedStatus(" + path + ", " + filter + " )",
-        expected, result.size());
+    assertEquals(expected, result.size(),
+        "length of listLocatedStatus(" + path + ", " + filter + " )");
     return result;
   }
 
@@ -576,8 +651,8 @@ public abstract class AbstractContractGetFileStatusTest extends
       PathFilter filter) throws IOException {
     RemoteIterator<LocatedFileStatus> it = xfs.listLocatedStatus(path, filter);
     List<LocatedFileStatus> result = toListThroughNextCallsAlone(it);
-    assertEquals("length of listLocatedStatus(" + path + ", " + filter + " )",
-        expected, result.size());
+    assertEquals(expected, result.size(),
+        "length of listLocatedStatus(" + path + ", " + filter + " )");
     return result;
   }
 

@@ -26,7 +26,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.math.BigInteger;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,10 +42,10 @@ import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.filefilter.AndFileFilter;
 import org.apache.commons.io.filefilter.DirectoryFileFilter;
 import org.apache.commons.io.filefilter.RegexFileFilter;
-import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -61,8 +61,8 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 @InterfaceStability.Unstable
 public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
 
-  static final Log LOG = LogFactory
-      .getLog(ProcfsBasedProcessTree.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(ProcfsBasedProcessTree.class);
 
   private static final String PROCFS = "/proc/";
 
@@ -264,7 +264,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         }
       }
 
-      LOG.debug(this);
+      LOG.debug("{}", this);
 
       if (smapsEnabled) {
         // Update smaps info
@@ -403,14 +403,11 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
               // memory reclaimable by killing the process
               total += info.anonymous;
 
-              if (LOG.isDebugEnabled()) {
-                LOG.debug(" total(" + olderThanAge + "): PID : " + p.getPid()
-                    + ", info : " + info.toString()
-                    + ", total : " + (total * KB_TO_BYTES));
-              }
+              LOG.debug(" total({}): PID : {}, info : {}, total : {}",
+                  olderThanAge, p.getPid(), info, (total * KB_TO_BYTES));
             }
+            LOG.debug("{}", procMemInfo);
           }
-          LOG.debug(procMemInfo);
         }
       }
     }
@@ -468,9 +465,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
   @Override
   public float getCpuUsagePercent() {
     BigInteger processTotalJiffies = getTotalProcessJiffies();
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Process " + pid + " jiffies:" + processTotalJiffies);
-    }
+    LOG.debug("Process {} jiffies:{}", pid, processTotalJiffies);
     cpuTimeTracker.updateElapsedJiffies(processTotalJiffies,
         clock.getTime());
     return cpuTimeTracker.getCpuTrackerUsagePercent();
@@ -524,7 +519,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       File pidDir = new File(procfsDir, pinfo.getPid());
       fReader = new InputStreamReader(
           new FileInputStream(
-              new File(pidDir, PROCFS_STAT_FILE)), Charset.forName("UTF-8"));
+              new File(pidDir, PROCFS_STAT_FILE)), StandardCharsets.UTF_8);
       in = new BufferedReader(fReader);
     } catch (FileNotFoundException f) {
       // The process vanished in the interim!
@@ -573,7 +568,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
    */
   @Override
   public String toString() {
-    StringBuffer pTree = new StringBuffer("[ ");
+    StringBuilder pTree = new StringBuilder("[ ");
     for (String p : processTree.keySet()) {
       pTree.append(p);
       pTree.append(" ");
@@ -584,6 +579,9 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
 /**
  * Returns boolean indicating whether pid
  * is in process tree.
+ *
+ * @param pid pid.
+ * @return if true, processTree contains pid, false, processTree does not contain pid.
  */
   public boolean contains(String pid) {
     return processTree.containsKey(pid);
@@ -717,7 +715,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         fReader = new InputStreamReader(
             new FileInputStream(
                 new File(new File(procfsDir, pid.toString()), PROCFS_CMDLINE_FILE)),
-                Charset.forName("UTF-8"));
+                StandardCharsets.UTF_8);
       } catch (FileNotFoundException f) {
         // The process vanished in the interim!
         return ret;
@@ -775,7 +773,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         return;
       }
       fReader = new InputStreamReader(
-          new FileInputStream(file), Charset.forName("UTF-8"));
+          new FileInputStream(file), StandardCharsets.UTF_8);
       in = new BufferedReader(fReader);
       ProcessSmapMemoryInfo memoryMappingInfo = null;
       List<String> lines = IOUtils.readLines(in);
@@ -793,9 +791,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
           if (memInfo.find()) {
             String key = memInfo.group(1).trim();
             String value = memInfo.group(2).replace(KB, "").trim();
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("MemInfo : " + key + " : Value  : " + value);
-            }
+            LOG.debug("MemInfo : {} : Value  : {}", key, value);
 
             if (memoryMappingInfo != null) {
               memoryMappingInfo.setMemInfo(key, value);
@@ -807,13 +803,13 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         }
       }
     } catch (FileNotFoundException f) {
-      LOG.error(f);
+      LOG.error(f.toString());
     } catch (IOException e) {
-      LOG.error(e);
+      LOG.error(e.toString());
     } catch (Throwable t) {
-      LOG.error(t);
+      LOG.error(t.toString());
     } finally {
-      IOUtils.closeQuietly(in);
+      org.apache.hadoop.io.IOUtils.closeStream(in);
     }
   }
 
@@ -941,9 +937,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       if (info == null) {
         return;
       }
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("setMemInfo : memInfo : " + info);
-      }
+      LOG.debug("setMemInfo : memInfo : {}", info);
       switch (info) {
       case SIZE:
         size = val;
@@ -979,9 +973,9 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
 
     public String toString() {
       StringBuilder sb = new StringBuilder();
-      sb.append("\t").append(this.getName()).append("\n");
-      sb.append("\t").append(MemInfo.SIZE.name + ":" + this.getSize())
-        .append(" kB\n");
+      sb.append("\t").append(this.getName()).append("\n")
+          .append("\t").append(MemInfo.SIZE.name + ":" + this.getSize())
+          .append(" kB\n");
       sb.append("\t").append(MemInfo.PSS.name + ":" + this.getPss())
         .append(" kB\n");
       sb.append("\t").append(MemInfo.RSS.name + ":" + this.getRss())
@@ -1009,9 +1003,9 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
   }
 
   /**
-   * Test the {@link ProcfsBasedProcessTree}
+   * Test the {@link ProcfsBasedProcessTree}.
    *
-   * @param args
+   * @param args the pid arg.
    */
   public static void main(String[] args) {
     if (args.length != 1) {

@@ -20,13 +20,13 @@ package org.apache.hadoop.yarn.state;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.commons.lang.StringEscapeUtils;
+import org.apache.commons.text.StringEscapeUtils;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 
 @Private
@@ -150,18 +150,19 @@ public class Graph {
   public String generateGraphViz(String indent) {
     StringBuilder sb = new StringBuilder();
     if (this.parent == null) {
-      sb.append("digraph " + name + " {\n");
-      sb.append(String.format("graph [ label=%s, fontsize=24, fontname=Helvetica];%n",
-          wrapSafeString(name)));
-      sb.append("node [fontsize=12, fontname=Helvetica];\n");
-      sb.append("edge [fontsize=9, fontcolor=blue, fontname=Arial];\n");
+      sb.append("digraph " + name + " {\n")
+          .append(String.format(
+              "graph [ label=%s, fontsize=24, fontname=Helvetica];%n",
+              wrapSafeString(name)))
+          .append("node [fontsize=12, fontname=Helvetica];\n")
+          .append("edge [fontsize=9, fontcolor=blue, fontname=Arial];\n");
     } else {
       sb.append("subgraph cluster_" + name + " {\nlabel=\"" + name + "\"\n");
     }
     for (Graph g : subgraphs) {
       String ginfo = g.generateGraphViz(indent+"  ");
-      sb.append(ginfo);
-      sb.append("\n");
+      sb.append(ginfo)
+          .append("\n");
     }
     for (Node n : nodes) {
       sb.append(String.format(
@@ -189,7 +190,7 @@ public class Graph {
 
   public void save(String filepath) throws IOException {
     try (OutputStreamWriter fout = new OutputStreamWriter(
-        new FileOutputStream(filepath), Charset.forName("UTF-8"))) {
+        new FileOutputStream(filepath), StandardCharsets.UTF_8)) {
       fout.write(generateGraphViz());
     }
   }

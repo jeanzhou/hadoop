@@ -21,28 +21,30 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.random.OsSecureRandom;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_CRYPTO_CIPHER_SUITE_KEY;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_AES_CTR_NOPADDING_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 
 public class TestCryptoStreamsWithOpensslAesCtrCryptoCodec 
     extends TestCryptoStreams {
   
-  @BeforeClass
+  @BeforeAll
   public static void init() throws Exception {
     GenericTestUtils.assumeInNativeProfile();
     Configuration conf = new Configuration();
     conf.set(HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_AES_CTR_NOPADDING_KEY,
         OpensslAesCtrCryptoCodec.class.getName());
     codec = CryptoCodec.getInstance(conf);
-    assertNotNull("Unable to instantiate codec " +
+    assertNotNull(codec, "Unable to instantiate codec " +
         OpensslAesCtrCryptoCodec.class.getName() + ", is the required "
-        + "version of OpenSSL installed?", codec);
+        + "version of OpenSSL installed?");
     assertEquals(OpensslAesCtrCryptoCodec.class.getCanonicalName(),
         codec.getClass().getCanonicalName());
   }
@@ -51,6 +53,7 @@ public class TestCryptoStreamsWithOpensslAesCtrCryptoCodec
   public void testCodecClosesRandom() throws Exception {
     GenericTestUtils.assumeInNativeProfile();
     Configuration conf = new Configuration();
+    conf.set(HADOOP_SECURITY_CRYPTO_CIPHER_SUITE_KEY, "AES/CTR/NoPadding");
     conf.set(HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_AES_CTR_NOPADDING_KEY,
         OpensslAesCtrCryptoCodec.class.getName());
     conf.set(
@@ -58,16 +61,15 @@ public class TestCryptoStreamsWithOpensslAesCtrCryptoCodec
         OsSecureRandom.class.getName());
     CryptoCodec codecWithRandom = CryptoCodec.getInstance(conf);
     assertNotNull(
-        "Unable to instantiate codec " + OpensslAesCtrCryptoCodec.class
-            .getName() + ", is the required " + "version of OpenSSL installed?",
-        codecWithRandom);
-    OsSecureRandom random =
-        (OsSecureRandom) Whitebox.getInternalState(codecWithRandom, "random");
+        codecWithRandom, "Unable to instantiate codec " + OpensslAesCtrCryptoCodec.class
+        .getName() + ", is the required " + "version of OpenSSL installed?");
+    OsSecureRandom random = (OsSecureRandom)
+            ((OpensslAesCtrCryptoCodec) codecWithRandom).getRandom();
     // trigger the OsSecureRandom to create an internal FileInputStream
     random.nextBytes(new byte[10]);
-    assertNotNull(Whitebox.getInternalState(random, "stream"));
+    assertFalse(random.isClosed());
     // verify closing the codec closes the codec's random's stream.
     codecWithRandom.close();
-    assertNull(Whitebox.getInternalState(random, "stream"));
+    assertTrue(random.isClosed());
   }
 }

@@ -42,12 +42,14 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId;
 import org.apache.hadoop.mapreduce.v2.app.speculate.LegacyTaskRuntimeEstimator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.TaskRuntimeEstimator;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestSpeculativeExecution {
 
@@ -103,7 +105,7 @@ public class TestSpeculativeExecution {
   static Path APP_JAR = new Path(TEST_ROOT_DIR, "MRAppJar.jar");
   private static Path TEST_OUT_DIR = new Path(TEST_ROOT_DIR, "test.out.dir");
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws IOException {
 
     if (!(new File(MiniMRYarnCluster.APPJAR)).exists()) {
@@ -124,7 +126,7 @@ public class TestSpeculativeExecution {
     localFs.setPermission(APP_JAR, new FsPermission("700"));
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     if (mrCluster != null) {
       mrCluster.stop();
@@ -192,6 +194,46 @@ public class TestSpeculativeExecution {
     }
   }
 
+  public static class FailOnceMapper extends
+      Mapper<Object, Text, Text, IntWritable> {
+
+    public void map(Object key, Text value, Context context)
+        throws IOException, InterruptedException {
+      TaskAttemptID taid = context.getTaskAttemptID();
+      try{
+        Thread.sleep(2000);
+      } catch(InterruptedException ie) {
+        // Ignore
+      }
+      // Fail mapper only for first attempt
+      if (taid.getId() == 0) {
+        throw new RuntimeException("Failing this mapper");
+      }
+
+      context.write(value, new IntWritable(1));
+    }
+  }
+
+  public static class FailOnceReducer extends
+      Reducer<Text, IntWritable, Text, IntWritable> {
+
+    public void reduce(Text key, Iterable<IntWritable> values,
+        Context context) throws IOException, InterruptedException {
+      TaskAttemptID taid = context.getTaskAttemptID();
+      try{
+        Thread.sleep(2000);
+      } catch(InterruptedException ie) {
+        // Ignore
+      }
+      // Fail reduce only for first attempt
+      if (taid.getId() == 0) {
+        throw new RuntimeException("Failing this reducer");
+      }
+      context.write(key, new IntWritable(0));
+    }
+  }
+
+
   @Test
   public void testSpeculativeExecution() throws Exception {
     if (!(new File(MiniMRYarnCluster.APPJAR)).exists()) {
@@ -208,15 +250,39 @@ public class TestSpeculativeExecution {
     Job job = runSpecTest(false, false);
 
     boolean succeeded = job.waitForCompletion(true);
-    Assert.assertTrue(succeeded);
-    Assert.assertEquals(JobStatus.State.SUCCEEDED, job.getJobState());
+    assertTrue(succeeded);
+    assertEquals(JobStatus.State.SUCCEEDED, job.getJobState());
     Counters counters = job.getCounters();
-    Assert.assertEquals(2, counters.findCounter(JobCounter.TOTAL_LAUNCHED_MAPS)
-            .getValue());
-    Assert.assertEquals(2, counters.findCounter(JobCounter.TOTAL_LAUNCHED_REDUCES)
-            .getValue());
-    Assert.assertEquals(0, counters.findCounter(JobCounter.NUM_FAILED_MAPS)
-            .getValue());
+    assertEquals(2, counters.findCounter(JobCounter.TOTAL_LAUNCHED_MAPS)
+        .getValue());
+    assertEquals(2, counters.findCounter(JobCounter.TOTAL_LAUNCHED_REDUCES)
+        .getValue());
+    assertEquals(0, counters.findCounter(JobCounter.NUM_FAILED_MAPS)
+        .getValue());
+
+
+    /*------------------------------------------------------------------
+     * Test that Map/Red does not speculate if MAP_SPECULATIVE and
+     * REDUCE_SPECULATIVE are both false. When map tasks fail once and time out,
+     * we shouldn't launch two simultaneous attempts. MAPREDUCE-7278
+     * -----------------------------------------------------------------
+     */
+    job = runNonSpecFailOnceTest();
+
+    succeeded = job.waitForCompletion(true);
+    assertTrue(succeeded);
+    assertEquals(JobStatus.State.SUCCEEDED, job.getJobState());
+    counters = job.getCounters();
+    // We will have 4 total since 2 map tasks fail and relaunch attempt once
+    assertEquals(4,
+        counters.findCounter(JobCounter.TOTAL_LAUNCHED_MAPS).getValue());
+    assertEquals(4,
+        counters.findCounter(JobCounter.TOTAL_LAUNCHED_REDUCES).getValue());
+    // Ensure no maps or reduces killed due to accidental speculation
+    assertEquals(0,
+        counters.findCounter(JobCounter.NUM_KILLED_MAPS).getValue());
+    assertEquals(0,
+        counters.findCounter(JobCounter.NUM_KILLED_REDUCES).getValue());
 
     /*----------------------------------------------------------------------
      * Test that Mapper speculates if MAP_SPECULATIVE is true and
@@ -226,18 +292,18 @@ public class TestSpeculativeExecution {
     job = runSpecTest(true, false);
 
     succeeded = job.waitForCompletion(true);
-    Assert.assertTrue(succeeded);
-    Assert.assertEquals(JobStatus.State.SUCCEEDED, job.getJobState());
+    assertTrue(succeeded);
+    assertEquals(JobStatus.State.SUCCEEDED, job.getJobState());
     counters = job.getCounters();
 
     // The long-running map will be killed and a new one started.
-    Assert.assertEquals(3, counters.findCounter(JobCounter.TOTAL_LAUNCHED_MAPS)
-            .getValue());
-    Assert.assertEquals(2, counters.findCounter(JobCounter.TOTAL_LAUNCHED_REDUCES)
-            .getValue());
-    Assert.assertEquals(0, counters.findCounter(JobCounter.NUM_FAILED_MAPS)
-            .getValue());
-    Assert.assertEquals(1, counters.findCounter(JobCounter.NUM_KILLED_MAPS)
+    assertEquals(3, counters.findCounter(JobCounter.TOTAL_LAUNCHED_MAPS)
+        .getValue());
+    assertEquals(2, counters.findCounter(JobCounter.TOTAL_LAUNCHED_REDUCES)
+        .getValue());
+    assertEquals(0, counters.findCounter(JobCounter.NUM_FAILED_MAPS)
+        .getValue());
+    assertEquals(1, counters.findCounter(JobCounter.NUM_KILLED_MAPS)
         .getValue());
 
     /*----------------------------------------------------------------------
@@ -248,15 +314,15 @@ public class TestSpeculativeExecution {
     job = runSpecTest(false, true);
 
     succeeded = job.waitForCompletion(true);
-    Assert.assertTrue(succeeded);
-    Assert.assertEquals(JobStatus.State.SUCCEEDED, job.getJobState());
+    assertTrue(succeeded);
+    assertEquals(JobStatus.State.SUCCEEDED, job.getJobState());
     counters = job.getCounters();
 
     // The long-running map will be killed and a new one started.
-    Assert.assertEquals(2, counters.findCounter(JobCounter.TOTAL_LAUNCHED_MAPS)
-            .getValue());
-    Assert.assertEquals(3, counters.findCounter(JobCounter.TOTAL_LAUNCHED_REDUCES)
-            .getValue());
+    assertEquals(2, counters.findCounter(JobCounter.TOTAL_LAUNCHED_MAPS)
+        .getValue());
+    assertEquals(3, counters.findCounter(JobCounter.TOTAL_LAUNCHED_REDUCES)
+        .getValue());
   }
 
   private Path createTempFile(String filename, String contents)
@@ -295,7 +361,48 @@ public class TestSpeculativeExecution {
 
     // Delete output directory if it exists.
     try {
-      localFs.delete(TEST_OUT_DIR,true);
+      localFs.delete(TEST_OUT_DIR, true);
+    } catch (IOException e) {
+      // ignore
+    }
+
+    // Creates the Job Configuration
+    job.addFileToClassPath(APP_JAR); // The AppMaster jar itself.
+    job.setMaxMapAttempts(2);
+
+    job.submit();
+
+    return job;
+  }
+
+  private Job runNonSpecFailOnceTest()
+      throws IOException, ClassNotFoundException, InterruptedException {
+
+    Path first = createTempFile("specexec_map_input1", "a\nz");
+    Path secnd = createTempFile("specexec_map_input2", "a\nz");
+
+    Configuration conf = mrCluster.getConfig();
+    conf.setBoolean(MRJobConfig.MAP_SPECULATIVE, false);
+    conf.setBoolean(MRJobConfig.REDUCE_SPECULATIVE, false);
+    // Prevent blacklisting since tasks fail once
+    conf.setBoolean(MRJobConfig.MR_AM_JOB_NODE_BLACKLISTING_ENABLE, false);
+    // Setting small task exit timeout values reproduces MAPREDUCE-7278
+    conf.setInt(MRJobConfig.TASK_EXIT_TIMEOUT, 20);
+    conf.setInt(MRJobConfig.TASK_EXIT_TIMEOUT_CHECK_INTERVAL_MS, 10);
+    Job job = Job.getInstance(conf);
+    job.setJarByClass(TestSpeculativeExecution.class);
+    job.setMapperClass(FailOnceMapper.class);
+    job.setReducerClass(FailOnceReducer.class);
+    job.setOutputKeyClass(Text.class);
+    job.setOutputValueClass(IntWritable.class);
+    job.setNumReduceTasks(2);
+    FileInputFormat.setInputPaths(job, first);
+    FileInputFormat.addInputPath(job, secnd);
+    FileOutputFormat.setOutputPath(job, TEST_OUT_DIR);
+
+    // Delete output directory if it exists.
+    try {
+      localFs.delete(TEST_OUT_DIR, true);
     } catch (IOException e) {
       // ignore
     }

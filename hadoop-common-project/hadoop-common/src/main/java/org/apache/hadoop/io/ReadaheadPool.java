@@ -29,8 +29,9 @@ import org.apache.hadoop.io.nativeio.NativeIO;
 
 import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.POSIX_FADV_WILLNEED;
 
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,7 +50,7 @@ public class ReadaheadPool {
   private static ReadaheadPool instance;
 
   /**
-   * Return the singleton instance for the current process.
+   * @return Return the singleton instance for the current process.
    */
   public static ReadaheadPool getInstance() {
     synchronized (ReadaheadPool.class) {
@@ -59,7 +60,17 @@ public class ReadaheadPool {
       return instance;
     }
   }
-  
+
+  @VisibleForTesting
+  public static void resetInstance() {
+    synchronized (ReadaheadPool.class) {
+      if (instance != null) {
+        instance.pool.shutdownNow();
+        instance = null;
+      }
+    }
+  }
+
   private ReadaheadPool() {
     pool = new ThreadPoolExecutor(POOL_SIZE, MAX_POOL_SIZE, 3L, TimeUnit.SECONDS,
         new ArrayBlockingQueue<Runnable>(CAPACITY));
@@ -80,7 +91,7 @@ public class ReadaheadPool {
    * @param readaheadLength the configured length to read ahead
    * @param maxOffsetToRead the maximum offset that will be readahead
    *        (useful if, for example, only some segment of the file is
-   *        requested by the user). Pass {@link Long.MAX_VALUE} to allow
+   *        requested by the user). Pass {@link Long#MAX_VALUE} to allow
    *        readahead to the end of the file.
    * @param lastReadahead the result returned by the previous invocation
    *        of this function on this file descriptor, or null if this is
@@ -205,8 +216,10 @@ public class ReadaheadPool {
       // It's also possible that we'll end up requesting readahead on some
       // other FD, which may be wasted work, but won't cause a problem.
       try {
-        NativeIO.POSIX.getCacheManipulator().posixFadviseIfPossible(identifier,
-            fd, off, len, POSIX_FADV_WILLNEED);
+        if (fd.valid()) {
+          NativeIO.POSIX.getCacheManipulator().posixFadviseIfPossible(
+              identifier, fd, off, len, POSIX_FADV_WILLNEED);
+        }
       } catch (IOException ioe) {
         if (canceled) {
           // no big deal - the reader canceled the request and closed

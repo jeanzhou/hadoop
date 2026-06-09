@@ -58,19 +58,24 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationAttemptIdPBImpl;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationIdPBImpl;
 import org.apache.hadoop.yarn.api.records.impl.pb.ContainerIdPBImpl;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.webapp.Controller.RequestContext;
+import org.apache.hadoop.yarn.webapp.View.ViewContext;
+import org.apache.hadoop.yarn.webapp.Controller;
 import org.apache.hadoop.yarn.webapp.Params;
 import org.apache.hadoop.yarn.webapp.View;
 import org.apache.hadoop.yarn.webapp.log.AggregatedLogsPage;
 import org.apache.hadoop.yarn.webapp.view.BlockForTest;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock.Block;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.*;
-import static org.mockito.Matchers.any;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Test some HtmlBlock classes
@@ -84,16 +89,15 @@ public class TestBlocks {
     Task task = getTask(0);
     String taskId = task.getID().toString();
 
-    Assert.assertEquals("pull links doesn't work correctly",
-        "Task failed <a href=\"/jobhistory/task/" + taskId + "\">" +
-        taskId + "</a>"
-        , HsJobBlock.addTaskLinks("Task failed " + taskId));
+    assertEquals("Task failed <a href=\"/jobhistory/task/" + taskId + "\">" + taskId + "</a>",
+        HsJobBlock.addTaskLinks("Task failed " + taskId),
+        "pull links doesn't work correctly");
 
-    Assert.assertEquals("pull links doesn't work correctly",
-        "Task failed <a href=\"/jobhistory/task/" + taskId + "\">" +
-        taskId + "</a>\n Job failed as tasks failed. failedMaps:1 failedReduces:0"
-        , HsJobBlock.addTaskLinks("Task failed " + taskId + "\n " +
-        "Job failed as tasks failed. failedMaps:1 failedReduces:0"));
+    assertEquals("Task failed <a href=\"/jobhistory/task/" + taskId + "\">" +
+        taskId + "</a>\n Job failed as tasks failed. failedMaps:1 failedReduces:0",
+        HsJobBlock.addTaskLinks("Task failed " + taskId + "\n " +
+        "Job failed as tasks failed. failedMaps:1 failedReduces:0"),
+        "pull links doesn't work correctly");
   }
 
   /**
@@ -191,7 +195,9 @@ public class TestBlocks {
     when(job.getUserName()).thenReturn("User");
     app.setJob(job);
 
-    AttemptsBlockForTest block = new AttemptsBlockForTest(app);
+    Configuration conf = new Configuration();
+    conf.setBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED, true);
+    AttemptsBlockForTest block = new AttemptsBlockForTest(app, conf);
     block.addParameter(AMParams.TASK_TYPE, "r");
 
     PrintWriter pWriter = new PrintWriter(data);
@@ -210,6 +216,27 @@ public class TestBlocks {
     assertTrue(data.toString().contains("100010"));
     assertTrue(data.toString().contains("100011"));
     assertTrue(data.toString().contains("100012"));
+    data.reset();
+    conf.setBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED, false);
+    block = new AttemptsBlockForTest(app, conf);
+    block.addParameter(AMParams.TASK_TYPE, "r");
+
+    pWriter = new PrintWriter(data);
+    html = new BlockForTest(new HtmlBlockForTest(), pWriter, 0, false);
+
+    block.render(html);
+    pWriter.flush();
+    // should be printed information about attempts
+    assertTrue(data.toString().contains("attempt_0_0001_r_000000_0"));
+    assertTrue(data.toString().contains("SUCCEEDED"));
+    assertFalse(data.toString().contains("Processed 128/128 records <p> \n"));
+    assertTrue(data.toString().contains("Processed 128\\/128 records &lt;p&gt; \\n"));
+    assertTrue(data.toString().contains(
+        "Node address:node:containerlogs:container_0_0005_01_000001:User:"));
+    assertTrue(data.toString().contains("100002"));
+    assertTrue(data.toString().contains("100010"));
+    assertTrue(data.toString().contains("100011"));
+    assertTrue(data.toString().contains("100012"));
   }
 
   /**
@@ -223,7 +250,14 @@ public class TestBlocks {
     jobs.put(job.getID(), job);
     when(ctx.getAllJobs()).thenReturn(jobs);
 
-    HsJobsBlock block = new HsJobsBlockForTest(ctx);
+    Controller.RequestContext rc = mock(Controller.RequestContext.class);
+    ViewContext view = mock(ViewContext.class);
+    HttpServletRequest req =mock(HttpServletRequest.class);
+    when(rc.getRequest()).thenReturn(req);
+    when(view.requestContext()).thenReturn(rc);
+
+    Configuration conf = new Configuration();
+    HsJobsBlock block = new HsJobsBlockForTest(conf, ctx, view);
     PrintWriter pWriter = new PrintWriter(data);
     Block html = new BlockForTest(new HtmlBlockForTest(), pWriter, 0, false);
     block.render(html);
@@ -400,8 +434,10 @@ public class TestBlocks {
   }
 
   private class HsJobsBlockForTest extends HsJobsBlock {
-    HsJobsBlockForTest(AppContext appCtx) {
-      super(appCtx);
+
+    HsJobsBlockForTest(Configuration conf, AppContext appCtx,
+        ViewContext view) {
+      super(conf, appCtx, view);
     }
 
     @Override
@@ -427,8 +463,8 @@ public class TestBlocks {
       return value == null ? defaultValue : value;
     }
 
-    public AttemptsBlockForTest(App ctx) {
-      super(ctx);
+    public AttemptsBlockForTest(App ctx, Configuration conf) {
+      super(ctx, conf);
     }
 
     @Override

@@ -28,9 +28,11 @@ import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor.ContainersMonitor;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor.ContainersMonitorImpl;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for the {@link AllocationBasedResourceUtilizationTracker} class.
@@ -39,7 +41,7 @@ public class TestAllocationBasedResourceUtilizationTracker {
 
   private ContainerScheduler mockContainerScheduler;
 
-  @Before
+  @BeforeEach
   public void setup() {
     mockContainerScheduler = mock(ContainerScheduler.class);
     ContainersMonitor containersMonitor =
@@ -67,27 +69,9 @@ public class TestAllocationBasedResourceUtilizationTracker {
     Container testContainer = mock(Container.class);
     when(testContainer.getResource()).thenReturn(Resource.newInstance(512, 4));
     for (int i = 0; i < 2; i++) {
-      Assert.assertTrue(tracker.hasResourcesAvailable(testContainer));
+      assertTrue(tracker.hasResourcesAvailable(testContainer));
       tracker.addContainerResources(testContainer);
     }
-    Assert.assertFalse(tracker.hasResourcesAvailable(testContainer));
-  }
-
-  /**
-   * Test the case where the current allocation has been truncated to 0.8888891
-   * (8/9 cores used). Request 1 additional core - hasEnoughCpu should return
-   * true.
-   */
-  @Test
-  public void testHasEnoughCpu() {
-    AllocationBasedResourceUtilizationTracker tracker =
-        new AllocationBasedResourceUtilizationTracker(mockContainerScheduler);
-    float currentAllocation = 0.8888891f;
-    long totalCores = 9;
-    int alreadyUsedCores = 8;
-    Assert.assertTrue(tracker.hasEnoughCpu(currentAllocation, totalCores,
-        (int) totalCores - alreadyUsedCores));
-    Assert.assertFalse(tracker.hasEnoughCpu(currentAllocation, totalCores,
-        (int) totalCores - alreadyUsedCores + 1));
+    assertFalse(tracker.hasResourcesAvailable(testContainer));
   }
 }

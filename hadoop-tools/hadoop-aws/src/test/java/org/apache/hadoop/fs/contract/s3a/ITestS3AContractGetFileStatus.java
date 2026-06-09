@@ -23,14 +23,16 @@ import org.apache.hadoop.fs.contract.AbstractContractGetFileStatusTest;
 import org.apache.hadoop.fs.s3a.Constants;
 import org.apache.hadoop.fs.s3a.S3ATestConstants;
 import org.apache.hadoop.fs.s3a.S3ATestUtils;
+import org.apache.hadoop.test.tags.IntegrationTest;
 
-import static org.apache.hadoop.fs.s3a.S3ATestUtils.maybeEnableS3Guard;
+import org.junit.jupiter.api.AfterEach;
 
 /**
  * S3A contract tests covering getFileStatus.
  * Some of the tests can take too long when the fault injection rate is high,
  * so the test timeout is extended.
  */
+@IntegrationTest
 public class ITestS3AContractGetFileStatus
     extends AbstractContractGetFileStatusTest {
 
@@ -39,9 +41,10 @@ public class ITestS3AContractGetFileStatus
     return new S3AContract(conf);
   }
 
+  @AfterEach
   @Override
   public void teardown() throws Exception {
-    getLog().info("FS details {}", getFileSystem());
+    getLogger().info("FS details {}", getFileSystem());
     super.teardown();
   }
 
@@ -51,8 +54,6 @@ public class ITestS3AContractGetFileStatus
     S3ATestUtils.disableFilesystemCaching(conf);
     // aggressively low page size forces tests to go multipage
     conf.setInt(Constants.MAX_PAGING_KEYS, 2);
-    // patch in S3Guard options
-    maybeEnableS3Guard(conf);
     return conf;
   }
 

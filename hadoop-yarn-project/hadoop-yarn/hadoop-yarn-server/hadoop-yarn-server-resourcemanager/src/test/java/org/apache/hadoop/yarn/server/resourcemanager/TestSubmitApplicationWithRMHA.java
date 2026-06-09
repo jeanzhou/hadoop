@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
@@ -29,13 +29,14 @@ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 
 public class TestSubmitApplicationWithRMHA extends RMHATestBase{
 
-  public static final Log LOG = LogFactory
-      .getLog(TestSubmitApplicationWithRMHA.class);
+  public static final Logger LOG = LoggerFactory
+      .getLogger(TestSubmitApplicationWithRMHA.class);
 
   @Test
   public void
@@ -53,11 +54,17 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // submit the application with previous assigned applicationId
     // to current active rm: rm2
     RMApp app1 =
-        rm2.submitApp(200, "", UserGroupInformation
-            .getCurrentUser().getShortUserName(), null, false, null,
-            configuration.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
-                YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS), null, null,
-            false, false, true, appId);
+        MockRMAppSubmitter.submit(rm2,
+            MockRMAppSubmissionData.Builder.createWithMemory(200, rm2)
+                .withAppName("")
+                .withUser(UserGroupInformation
+                    .getCurrentUser().getShortUserName())
+                .withAcls(null)
+                .withUnmanagedAM(false)
+                .withQueue(null)
+                .withWaitForAppAcceptedState(false)
+                .withApplicationId(appId)
+                .build());
 
     // verify application submission
     verifySubmitApp(rm2, app1, appId);
@@ -85,9 +92,9 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     YarnApplicationState state =
         rm.getApplicationReport(app.getApplicationId())
             .getYarnApplicationState();
-    Assert.assertTrue(state == YarnApplicationState.ACCEPTED
+    Assertions.assertTrue(state == YarnApplicationState.ACCEPTED
         || state == YarnApplicationState.SUBMITTED);
-    Assert.assertEquals(expectedAppId, app.getApplicationId());
+    Assertions.assertEquals(expectedAppId, app.getApplicationId());
   }
 
   // There are two scenarios when RM failover happens
@@ -106,7 +113,7 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
 
     // Submit Application
     // After submission, the applicationState will be saved in RMStateStore.
-    RMApp app0 = rm1.submitApp(200);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(200, rm1);
 
     // Do the failover
     explicitFailover();
@@ -118,7 +125,7 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
         rm2.getApplicationReport(app0.getApplicationId());
 
     // verify previous submission is successful.
-    Assert.assertTrue(appReport.getYarnApplicationState()
+    Assertions.assertTrue(appReport.getYarnApplicationState()
         == YarnApplicationState.ACCEPTED ||
         appReport.getYarnApplicationState()
         == YarnApplicationState.SUBMITTED);
@@ -137,12 +144,24 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // Submit Application
     // After submission, the applicationState will
     // not be saved in RMStateStore
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+        .withAppName("")
+        .withUser(UserGroupInformation
+            .getCurrentUser().getShortUserName())
+        .withAcls(null)
+        .withUnmanagedAM(false)
+        .withQueue(null)
+        .withMaxAppAttempts(configuration.getInt(
+            YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+            YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS))
+        .withCredentials(null)
+        .withAppType(null)
+        .withWaitForAppAcceptedState(false)
+        .withKeepContainers(false)
+        .build();
     RMApp app0 =
-        rm1.submitApp(200, "", UserGroupInformation
-            .getCurrentUser().getShortUserName(), null, false, null,
-            configuration.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
-                YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS), null, null,
-            false, false);
+        MockRMAppSubmitter.submit(rm1, data);
 
     // Do the failover
     explicitFailover();
@@ -153,7 +172,7 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // Expect ApplicationNotFoundException by calling getApplicationReport().
     try {
       rm2.getApplicationReport(app0.getApplicationId());
-      Assert.fail("Should get ApplicationNotFoundException here");
+      Assertions.fail("Should get ApplicationNotFoundException here");
     } catch (ApplicationNotFoundException ex) {
       // expected ApplicationNotFoundException
     }
@@ -163,11 +182,23 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // Application with previous applicationId
     // when catches the ApplicationNotFoundException
     RMApp app1 =
-        rm2.submitApp(200, "", UserGroupInformation
-            .getCurrentUser().getShortUserName(), null, false, null,
-            configuration.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
-                YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS), null, null,
-            false, false, true, app0.getApplicationId());
+        MockRMAppSubmitter.submit(rm2,
+            MockRMAppSubmissionData.Builder.createWithMemory(200, rm2)
+                .withAppName("")
+                .withUser(UserGroupInformation
+                    .getCurrentUser().getShortUserName())
+                .withAcls(null)
+                .withUnmanagedAM(false)
+                .withQueue(null)
+                .withMaxAppAttempts(configuration.getInt(
+                    YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+                    YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS))
+                .withCredentials(null)
+                .withAppType(null)
+                .withWaitForAppAcceptedState(false)
+                .withKeepContainers(false)
+                .withApplicationId(app0.getApplicationId())
+                .build());
 
     verifySubmitApp(rm2, app1, app0.getApplicationId());
   }
@@ -183,11 +214,11 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
 
     // Submit Application
     // After submission, the applicationState will be saved in RMStateStore.
-    RMApp app = rm1.submitApp(200);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(200, rm1);
 
     ApplicationReport appReport1 =
         rm1.getApplicationReport(app.getApplicationId());
-    Assert.assertTrue(appReport1.getYarnApplicationState() ==
+    Assertions.assertTrue(appReport1.getYarnApplicationState() ==
         YarnApplicationState.ACCEPTED ||
         appReport1.getYarnApplicationState() ==
         YarnApplicationState.SUBMITTED);
@@ -195,9 +226,9 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // call getApplicationReport again
     ApplicationReport appReport2 =
         rm1.getApplicationReport(app.getApplicationId());
-    Assert.assertEquals(appReport1.getApplicationId(),
+    Assertions.assertEquals(appReport1.getApplicationId(),
         appReport2.getApplicationId());
-    Assert.assertEquals(appReport1.getYarnApplicationState(),
+    Assertions.assertEquals(appReport1.getYarnApplicationState(),
         appReport2.getYarnApplicationState());
 
     // Do the failover
@@ -206,17 +237,17 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // call getApplicationReport
     ApplicationReport appReport3 =
         rm2.getApplicationReport(app.getApplicationId());
-    Assert.assertEquals(appReport1.getApplicationId(),
+    Assertions.assertEquals(appReport1.getApplicationId(),
         appReport3.getApplicationId());
-    Assert.assertEquals(appReport1.getYarnApplicationState(),
+    Assertions.assertEquals(appReport1.getYarnApplicationState(),
         appReport3.getYarnApplicationState());
 
     // call getApplicationReport again
     ApplicationReport appReport4 =
         rm2.getApplicationReport(app.getApplicationId());
-    Assert.assertEquals(appReport3.getApplicationId(),
+    Assertions.assertEquals(appReport3.getApplicationId(),
         appReport4.getApplicationId());
-    Assert.assertEquals(appReport3.getYarnApplicationState(),
+    Assertions.assertEquals(appReport3.getYarnApplicationState(),
         appReport4.getYarnApplicationState());
   }
 
@@ -224,7 +255,8 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
   // during SubmitApplication Call:
   // 1) RMStateStore already saved the ApplicationState when failover happens
   // 2) RMStateStore did not save the ApplicationState when failover happens
-  @Test (timeout = 50000)
+  @Test
+  @Timeout(value = 50)
   public void
       testHandleRMHADuringSubmitApplicationCallWithSavedApplicationState()
           throws Exception {
@@ -235,7 +267,7 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
 
     // Submit Application
     // After submission, the applicationState will be saved in RMStateStore.
-    RMApp app0 = rm1.submitApp(200);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(200, rm1);
 
     // Do the failover
     explicitFailover();
@@ -244,23 +276,35 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // before failover happens, the current active rm can load the previous
     // applicationState.
     // This RMApp should exist in the RMContext of current active RM
-    Assert.assertTrue(rm2.getRMContext().getRMApps()
+    Assertions.assertTrue(rm2.getRMContext().getRMApps()
         .containsKey(app0.getApplicationId()));
 
     // When we re-submit the application with same applicationId, it will
     // check whether this application has been exist. If yes, just simply
     // return submitApplicationResponse.
     RMApp app1 =
-        rm2.submitApp(200, "", UserGroupInformation
-            .getCurrentUser().getShortUserName(), null, false, null,
-            configuration.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
-                YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS), null, null,
-            false, false, true, app0.getApplicationId());
+        MockRMAppSubmitter.submit(rm2,
+            MockRMAppSubmissionData.Builder.createWithMemory(200, rm2)
+                .withAppName("")
+                .withUser(UserGroupInformation
+                    .getCurrentUser().getShortUserName())
+                .withAcls(null)
+                .withUnmanagedAM(false)
+                .withQueue(null)
+                .withMaxAppAttempts(configuration.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+                    YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS))
+                .withCredentials(null)
+                .withAppType(null)
+                .withWaitForAppAcceptedState(false)
+                .withKeepContainers(false)
+                .withApplicationId(app0.getApplicationId())
+                .build());
 
-    Assert.assertEquals(app1.getApplicationId(), app0.getApplicationId());
+    Assertions.assertEquals(app1.getApplicationId(), app0.getApplicationId());
   }
 
-  @Test (timeout = 50000)
+  @Test
+  @Timeout(value = 50)
   public void
       testHandleRMHADuringSubmitApplicationCallWithoutSavedApplicationState()
           throws Exception {
@@ -273,12 +317,24 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // Submit Application
     // After submission, the applicationState will
     // not be saved in RMStateStore
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+        .withAppName("")
+        .withUser(UserGroupInformation
+            .getCurrentUser().getShortUserName())
+        .withAcls(null)
+        .withUnmanagedAM(false)
+        .withQueue(null)
+        .withMaxAppAttempts(configuration.getInt(
+            YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+            YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS))
+        .withCredentials(null)
+        .withAppType(null)
+        .withWaitForAppAcceptedState(false)
+        .withKeepContainers(false)
+        .build();
     RMApp app0 =
-        rm1.submitApp(200, "", UserGroupInformation
-            .getCurrentUser().getShortUserName(), null, false, null,
-            configuration.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
-                YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS), null, null,
-            false, false);
+        MockRMAppSubmitter.submit(rm1, data);
 
     // Do the failover
     explicitFailover();
@@ -286,7 +342,7 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // When failover happens, the RMStateStore has not saved applicationState.
     // The applicationState of this RMApp is lost.
     // We should not find the RMApp in the RMContext of current active rm.
-    Assert.assertFalse(rm2.getRMContext().getRMApps()
+    Assertions.assertFalse(rm2.getRMContext().getRMApps()
         .containsKey(app0.getApplicationId()));
 
     // Submit the application with previous ApplicationId to current active RM
@@ -294,14 +350,26 @@ public class TestSubmitApplicationWithRMHA extends RMHATestBase{
     // submitApplication() when failover happens during the submission process
     // because the submitApplication api is marked as idempotent
     RMApp app1 =
-        rm2.submitApp(200, "", UserGroupInformation
-            .getCurrentUser().getShortUserName(), null, false, null,
-            configuration.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
-                YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS), null, null,
-            false, false, true, app0.getApplicationId());
+        MockRMAppSubmitter.submit(rm2,
+            MockRMAppSubmissionData.Builder.createWithMemory(200, rm2)
+                .withAppName("")
+                .withUser(UserGroupInformation
+                    .getCurrentUser().getShortUserName())
+                .withAcls(null)
+                .withUnmanagedAM(false)
+                .withQueue(null)
+                .withMaxAppAttempts(configuration.getInt(
+                    YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+                    YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS))
+                .withCredentials(null)
+                .withAppType(null)
+                .withWaitForAppAcceptedState(false)
+                .withKeepContainers(false)
+                .withApplicationId(app0.getApplicationId())
+                .build());
 
     verifySubmitApp(rm2, app1, app0.getApplicationId());
-    Assert.assertTrue(rm2.getRMContext().getRMApps()
+    Assertions.assertTrue(rm2.getRMContext().getRMApps()
         .containsKey(app0.getApplicationId()));
   }
 }

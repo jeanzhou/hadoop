@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.scheduler;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -87,11 +87,11 @@ public final class DistributedScheduler extends AbstractRequestInterceptor {
 
   public void init(AMRMProxyApplicationContext applicationContext) {
     super.init(applicationContext);
-    initLocal(applicationContext.getNMCotext().getNodeStatusUpdater()
+    initLocal(applicationContext.getNMContext().getNodeStatusUpdater()
         .getRMIdentifier(),
         applicationContext.getApplicationAttemptId(),
-        applicationContext.getNMCotext().getContainerAllocator(),
-        applicationContext.getNMCotext().getNMTokenSecretManager(),
+        applicationContext.getNMContext().getContainerAllocator(),
+        applicationContext.getNMContext().getNMTokenSecretManager(),
         applicationContext.getUser());
   }
 
@@ -237,10 +237,8 @@ public final class DistributedScheduler extends AbstractRequestInterceptor {
     request.setAllocatedContainers(allocatedContainers);
     request.getAllocateRequest().setAskList(partitionedAsks.getGuaranteed());
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Forwarding allocate request to the" +
+    LOG.debug("Forwarding allocate request to the" +
           "Distributed Scheduler Service on YARN RM");
-    }
 
     DistributedSchedulingAllocateResponse dsResp =
         getNextInterceptor().allocateForDistributedScheduling(request);

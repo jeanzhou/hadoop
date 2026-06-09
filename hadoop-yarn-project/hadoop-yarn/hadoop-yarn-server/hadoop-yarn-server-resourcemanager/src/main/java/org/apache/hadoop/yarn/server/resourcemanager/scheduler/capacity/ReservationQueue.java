@@ -33,15 +33,16 @@ import org.slf4j.LoggerFactory;
  *
  */
 public class ReservationQueue extends AbstractAutoCreatedLeafQueue {
-
-  private static final Logger LOG = LoggerFactory
-      .getLogger(ReservationQueue.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ReservationQueue.class);
 
   private PlanQueue parent;
 
-  public ReservationQueue(CapacitySchedulerContext cs, String queueName,
+  public ReservationQueue(CapacitySchedulerQueueContext queueContext, String queueName,
       PlanQueue parent) throws IOException {
-    super(cs, queueName, parent, null);
+    super(queueContext, queueName, parent, null);
+    super.setupQueueConfigs(queueContext.getClusterResource());
+
     // the following parameters are common to all reservation in the plan
     updateQuotas(parent.getUserLimitForReservation(),
         parent.getUserLimitFactor(),
@@ -53,8 +54,8 @@ public class ReservationQueue extends AbstractAutoCreatedLeafQueue {
   @Override
   public void reinitialize(CSQueue newlyParsedQueue,
       Resource clusterResource) throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       // Sanity check
       if (!(newlyParsedQueue instanceof ReservationQueue) || !newlyParsedQueue
           .getQueuePath().equals(getQueuePath())) {
@@ -75,7 +76,11 @@ public class ReservationQueue extends AbstractAutoCreatedLeafQueue {
     }
   }
 
-  private void updateQuotas(int userLimit, float userLimitFactor,
+  public void initializeEntitlements() throws SchedulerDynamicEditException {
+    setEntitlement(new QueueEntitlement(1.0f, 1.0f));
+  }
+
+  private void updateQuotas(float userLimit, float userLimitFactor,
       int maxAppsForReservation, int maxAppsPerUserForReservation) {
     setUserLimit(userLimit);
     setUserLimitFactor(userLimitFactor);
@@ -84,8 +89,7 @@ public class ReservationQueue extends AbstractAutoCreatedLeafQueue {
   }
 
   @Override
-  protected void setupConfigurableCapacities(CapacitySchedulerConfiguration
-      configuration) {
-    super.setupConfigurableCapacities(queueCapacities);
+  protected void setupConfigurableCapacities() {
+    super.updateAbsoluteCapacities();
   }
 }

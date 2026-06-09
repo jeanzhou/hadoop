@@ -18,15 +18,18 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerExecutionException;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerRuntime;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerRuntimeConstants;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test container runtime delegation.
@@ -37,7 +40,7 @@ public class TestDelegatingLinuxContainerRuntime {
   private Configuration conf;
   private Map<String, String> env = new HashMap<>();
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     delegatingLinuxContainerRuntime = new DelegatingLinuxContainerRuntime();
     conf = new Configuration();
@@ -52,24 +55,24 @@ public class TestDelegatingLinuxContainerRuntime {
         YarnConfiguration.LINUX_CONTAINER_RUNTIME_ALLOWED_RUNTIMES));
     delegatingLinuxContainerRuntime.initialize(conf, null);
     assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT));
+        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT.name()));
     assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DOCKER));
+        LinuxContainerRuntimeConstants.RuntimeType.DOCKER.name()));
     assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX));
+        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX.name()));
   }
 
   @Test
   public void testIsRuntimeAllowedDocker() throws Exception {
     conf.set(YarnConfiguration.LINUX_CONTAINER_RUNTIME_ALLOWED_RUNTIMES,
-        "docker");
+        ContainerRuntimeConstants.CONTAINER_RUNTIME_DOCKER);
     delegatingLinuxContainerRuntime.initialize(conf, null);
     assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DOCKER));
+        LinuxContainerRuntimeConstants.RuntimeType.DOCKER.name()));
     assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT));
+        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT.name()));
     assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX));
+        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX.name()));
   }
 
   @Test
@@ -78,11 +81,11 @@ public class TestDelegatingLinuxContainerRuntime {
         "javasandbox");
     delegatingLinuxContainerRuntime.initialize(conf, null);
     assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX));
+        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX.name()));
     assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT));
+        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT.name()));
     assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DOCKER));
+        LinuxContainerRuntimeConstants.RuntimeType.DOCKER.name()));
   }
 
   @Test
@@ -91,11 +94,11 @@ public class TestDelegatingLinuxContainerRuntime {
         "docker,javasandbox");
     delegatingLinuxContainerRuntime.initialize(conf, null);
     assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DOCKER));
+        LinuxContainerRuntimeConstants.RuntimeType.DOCKER.name()));
     assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX));
+        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX.name()));
     assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT));
+        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT.name()));
   }
 
   @Test
@@ -104,11 +107,38 @@ public class TestDelegatingLinuxContainerRuntime {
         "default,docker,javasandbox");
     delegatingLinuxContainerRuntime.initialize(conf, null);
     assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT));
+        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT.name()));
     assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.DOCKER));
+        LinuxContainerRuntimeConstants.RuntimeType.DOCKER.name()));
     assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed(
-        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX));
+        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX.name()));
+  }
+
+  @Test
+  public void testInitializeMissingRuntimeClass() throws Exception {
+    conf.set(YarnConfiguration.LINUX_CONTAINER_RUNTIME_ALLOWED_RUNTIMES,
+        "mock");
+    try {
+      delegatingLinuxContainerRuntime.initialize(conf, null);
+      fail("initialize should fail");
+    } catch (ContainerExecutionException e) {
+      assert(e.getMessage().contains("Invalid runtime set"));
+    }
+  }
+  @Test
+  public void testIsRuntimeAllowedMock() throws Exception {
+    conf.set(YarnConfiguration.LINUX_CONTAINER_RUNTIME_ALLOWED_RUNTIMES,
+        "mock");
+    conf.set(String.format(YarnConfiguration.LINUX_CONTAINER_RUNTIME_CLASS_FMT,
+        "mock"), MockLinuxContainerRuntime.class.getName());
+    delegatingLinuxContainerRuntime.initialize(conf, null);
+    assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
+        LinuxContainerRuntimeConstants.RuntimeType.DEFAULT.name()));
+    assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
+        LinuxContainerRuntimeConstants.RuntimeType.DOCKER.name()));
+    assertFalse(delegatingLinuxContainerRuntime.isRuntimeAllowed(
+        LinuxContainerRuntimeConstants.RuntimeType.JAVASANDBOX.name()));
+    assertTrue(delegatingLinuxContainerRuntime.isRuntimeAllowed("mock"));
   }
 
   @Test
@@ -125,7 +155,8 @@ public class TestDelegatingLinuxContainerRuntime {
   @Test
   public void testJavaSandboxNotAllowedButPermissiveDockerRequested()
       throws Exception {
-    env.put(ContainerRuntimeConstants.ENV_CONTAINER_TYPE, "docker");
+    env.put(ContainerRuntimeConstants.ENV_CONTAINER_TYPE,
+        ContainerRuntimeConstants.CONTAINER_RUNTIME_DOCKER);
     conf.set(YarnConfiguration.LINUX_CONTAINER_RUNTIME_ALLOWED_RUNTIMES,
         "default,docker");
     conf.set(YarnConfiguration.YARN_CONTAINER_SANDBOX, "permissive");
@@ -133,5 +164,18 @@ public class TestDelegatingLinuxContainerRuntime {
     ContainerRuntime runtime =
         delegatingLinuxContainerRuntime.pickContainerRuntime(env);
     assertTrue(runtime instanceof DockerLinuxContainerRuntime);
+  }
+
+  @Test
+  public void testMockRuntimeSelected() throws Exception {
+    env.put(ContainerRuntimeConstants.ENV_CONTAINER_TYPE, "mock");
+    conf.set(String.format(YarnConfiguration.LINUX_CONTAINER_RUNTIME_CLASS_FMT,
+        "mock"), MockLinuxContainerRuntime.class.getName());
+    conf.set(YarnConfiguration.LINUX_CONTAINER_RUNTIME_ALLOWED_RUNTIMES,
+        "mock");
+    delegatingLinuxContainerRuntime.initialize(conf, null);
+    ContainerRuntime runtime =
+        delegatingLinuxContainerRuntime.pickContainerRuntime(env);
+    assertTrue(runtime instanceof MockLinuxContainerRuntime);
   }
 }

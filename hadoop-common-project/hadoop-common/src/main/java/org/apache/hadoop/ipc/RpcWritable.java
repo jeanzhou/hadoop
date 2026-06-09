@@ -29,11 +29,18 @@ import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Writable;
 
-import com.google.protobuf.CodedInputStream;
-import com.google.protobuf.CodedOutputStream;
-import com.google.protobuf.Message;
+import org.apache.hadoop.thirdparty.protobuf.CodedInputStream;
+import org.apache.hadoop.thirdparty.protobuf.CodedOutputStream;
+import org.apache.hadoop.thirdparty.protobuf.Message;
 
-// note anything marked public is solely for access by SaslRpcClient
+/**
+ * Marshalling support, for hadoop shaded protobuf and legacy
+ * protobuf 2.5.
+ * It originally supported hadoop Writables for the WritableRPCEngine;
+ * that is no removed. All that is retained is the name.
+ * Anything marked public is solely for access by SaslRpcClient
+ */
+// note
 @InterfaceAudience.Private
 public abstract class RpcWritable implements Writable {
 
@@ -41,7 +48,11 @@ public abstract class RpcWritable implements Writable {
     if (o instanceof RpcWritable) {
       return (RpcWritable)o;
     } else if (o instanceof Message) {
+      // hadoop shaded protobuf
       return new ProtobufWrapper((Message)o);
+    } else if (ProtobufWrapperLegacy.isUnshadedProtobufMessage(o)) {
+      // unshaded protobuf
+      return new ProtobufWrapperLegacy(o);
     } else if (o instanceof Writable) {
       return new WritableWrapper((Writable)o);
     }
@@ -62,7 +73,7 @@ public abstract class RpcWritable implements Writable {
   abstract void writeTo(ResponseBuffer out) throws IOException;
   abstract <T> T readFrom(ByteBuffer bb) throws IOException;
 
-  // adapter for Writables.
+  // adapter for Writables. Used for RPC_BUILTIN calls.
   static class WritableWrapper extends RpcWritable {
     private final Writable writable;
 
@@ -106,7 +117,7 @@ public abstract class RpcWritable implements Writable {
     @Override
     void writeTo(ResponseBuffer out) throws IOException {
       int length = message.getSerializedSize();
-      length += CodedOutputStream.computeRawVarint32Size(length);
+      length += CodedOutputStream.computeUInt32SizeNoTag(length);
       out.ensureCapacity(length);
       message.writeDelimitedTo(out);
     }

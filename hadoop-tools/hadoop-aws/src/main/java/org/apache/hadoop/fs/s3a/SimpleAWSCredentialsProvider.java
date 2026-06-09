@@ -18,70 +18,80 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import com.amazonaws.auth.AWSCredentials;
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.auth.BasicAWSCredentials;
-import org.apache.commons.lang.StringUtils;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+
+import org.apache.hadoop.classification.VisibleForTesting;
+
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.security.ProviderUtils;
+import org.apache.hadoop.fs.s3a.auth.NoAwsCredentialsException;
+import org.apache.hadoop.fs.s3native.S3xLoginHelper;
 
 import java.io.IOException;
 import java.net.URI;
 
-import static org.apache.hadoop.fs.s3a.Constants.ACCESS_KEY;
-import static org.apache.hadoop.fs.s3a.Constants.SECRET_KEY;
+import static org.apache.hadoop.fs.s3a.S3AUtils.getAWSAccessKeys;
 
 /**
  * Support simple credentials for authenticating with AWS.
- * Keys generated in URLs are not supported.
  *
  * Please note that users may reference this class name from configuration
  * property fs.s3a.aws.credentials.provider.  Therefore, changing the class name
  * would be a backward-incompatible change.
+ *
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable
-public class SimpleAWSCredentialsProvider implements AWSCredentialsProvider {
+public class SimpleAWSCredentialsProvider implements AwsCredentialsProvider {
 
   public static final String NAME
       = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider";
-  private String accessKey;
-  private String secretKey;
-  private IOException lookupIOE;
+  private final String accessKey;
+  private final String secretKey;
 
-  public SimpleAWSCredentialsProvider(URI uri, Configuration conf) {
-    try {
-      String bucket = uri != null ? uri.getHost() : "";
-      Configuration c = ProviderUtils.excludeIncompatibleCredentialProviders(
-          conf, S3AFileSystem.class);
-      this.accessKey = S3AUtils.lookupPassword(bucket, c, ACCESS_KEY, null);
-      this.secretKey = S3AUtils.lookupPassword(bucket, c, SECRET_KEY, null);
-    } catch (IOException e) {
-      lookupIOE = e;
-    }
+  /**
+   * Build the credentials from a filesystem URI and configuration.
+   * @param uri FS URI
+   * @param conf configuration containing secrets/references to.
+   * @throws IOException failure
+   */
+  public SimpleAWSCredentialsProvider(final URI uri, final Configuration conf)
+      throws IOException {
+    this(getAWSAccessKeys(uri, conf));
   }
 
-  public AWSCredentials getCredentials() {
-    if (lookupIOE != null) {
-      // propagate any initialization problem
-      throw new CredentialInitializationException(lookupIOE.toString(),
-          lookupIOE);
-    }
-    if (!StringUtils.isEmpty(accessKey) && !StringUtils.isEmpty(secretKey)) {
-      return new BasicAWSCredentials(accessKey, secretKey);
-    }
-    throw new CredentialInitializationException(
-        "Access key or secret key is unset");
+  /**
+   * Instantiate from a login tuple.
+   * For testing, hence package-scoped.
+   * @param login login secrets
+   * @throws IOException failure
+   */
+  @VisibleForTesting
+  SimpleAWSCredentialsProvider(final S3xLoginHelper.Login login)
+      throws IOException {
+    this.accessKey = login.getUser();
+    this.secretKey = login.getPassword();
   }
 
   @Override
-  public void refresh() {}
+  public AwsCredentials resolveCredentials() {
+    if (!StringUtils.isEmpty(accessKey) && !StringUtils.isEmpty(secretKey)) {
+      return AwsBasicCredentials.create(accessKey, secretKey);
+    }
+    throw new NoAwsCredentialsException("SimpleAWSCredentialsProvider",
+        "No AWS credentials in the Hadoop configuration");
+  }
 
   @Override
   public String toString() {
-    return getClass().getSimpleName();
+    return "SimpleAWSCredentialsProvider{" +
+        "accessKey.empty=" + accessKey.isEmpty() +
+        ", secretKey.empty=" + secretKey.isEmpty() +
+        '}';
   }
 
 }

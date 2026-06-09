@@ -36,20 +36,44 @@ public final class RMWSConsts {
   /** Path for {@code RMWebServiceProtocol#getClusterInfo}. */
   public static final String INFO = "/info";
 
+  /** Path for {@code RMWebServiceProtocol#getClusterUserInfo}. */
+  public static final String CLUSTER_USER_INFO = "/userinfo";
+
   /** Path for {@code RMWebServiceProtocol#getClusterMetricsInfo}. */
   public static final String METRICS = "/metrics";
 
   /** Path for {@code RMWebServiceProtocol#getSchedulerInfo}. */
   public static final String SCHEDULER = "/scheduler";
 
+  /** Path for {@code RMWebServices#updateSchedulerConfiguration}. */
+  public static final String SCHEDULER_CONF = "/scheduler-conf";
+
+  /** Path for {@code RMWebServices#formatSchedulerConfiguration}. */
+  public static final String FORMAT_SCHEDULER_CONF = "/scheduler-conf/format";
+
+  /** Path for {@code RMWebServices#getSchedulerConfigurationVersion}. */
+  public static final String SCHEDULER_CONF_VERSION = "/scheduler-conf/version";
+
   /** Path for {@code RMWebServiceProtocol#dumpSchedulerLogs}. */
   public static final String SCHEDULER_LOGS = "/scheduler/logs";
+
+  /** Path for {@code RMWebServiceProtocol#getSchedulerOverview}. */
+  public static final String SCHEDULER_OVERVIEW = "/scheduler-overview";
+
+  /**
+   * Path for {@code RMWebServiceProtocol#validateAndGetSchedulerConfiguration}.
+   */
+  public static final String SCHEDULER_CONF_VALIDATE
+          = "/scheduler-conf/validate";
 
   /** Path for {@code RMWebServiceProtocol#getNodes}. */
   public static final String NODES = "/nodes";
 
   /** Path for {@code RMWebServiceProtocol#getNode}. */
   public static final String NODES_NODEID = "/nodes/{nodeId}";
+
+  /** Path for {@code RMWebServiceProtocol#updateNodeResource}. */
+  public static final String NODE_RESOURCE = "/nodes/{nodeId}/resource";
 
   /**
    * Path for {@code RMWebServiceProtocol#getApps} and
@@ -60,9 +84,13 @@ public final class RMWSConsts {
   /** Path for {@code RMWebServiceProtocol#getActivities}. */
   public static final String SCHEDULER_ACTIVITIES = "/scheduler/activities";
 
+  /** Path for {@code RMWebServiceProtocol#getBulkActivities}. */
+  public static final String SCHEDULER_BULK_ACTIVITIES =
+      "/scheduler/bulk-activities";
+
   /** Path for {@code RMWebServiceProtocol#getAppActivities}. */
   public static final String SCHEDULER_APP_ACTIVITIES =
-      "/scheduler/app-activities";
+      "/scheduler/app-activities/{appid}";
 
   /** Path for {@code RMWebServiceProtocol#getAppStatistics}. */
   public static final String APP_STATISTICS = "/appstatistics";
@@ -98,10 +126,13 @@ public final class RMWSConsts {
   /** Path for {@code RMWebServiceProtocol#getClusterNodeLabels}. */
   public static final String GET_NODE_LABELS = "/get-node-labels";
 
+  /** Path for {@code RMWebServiceProtocol#getRMNodeLabels}. */
+  public static final String GET_RM_NODE_LABELS = "/get-rm-node-labels";
+
   /** Path for {@code RMWebServiceProtocol#addToClusterNodeLabels}. */
   public static final String ADD_NODE_LABELS = "/add-node-labels";
 
-  /** Path for {@code RMWebServiceProtocol#removeFromCluserNodeLabels}. */
+  /** Path for {@code RMWebServiceProtocol#removeFromClusterNodeLabels}. */
   public static final String REMOVE_NODE_LABELS = "/remove-node-labels";
 
   /** Path for {@code RMWebServiceProtocol#getLabelsOnNode}. */
@@ -180,6 +211,12 @@ public final class RMWSConsts {
   public static final String CHECK_USER_ACCESS_TO_QUEUE =
       "/queues/{queue}/access";
 
+  /**
+   * Path for {@code RMWebServiceProtocol#signalContainer}.
+   */
+  public static final String SIGNAL_TO_CONTAINER =
+      "/containers/{containerid}/signal/{command}";
+
   // ----------------QueryParams for RMWebServiceProtocol----------------
 
   public static final String TIME = "time";
@@ -217,9 +254,35 @@ public final class RMWSConsts {
   public static final String DESELECTS = "deSelects";
   public static final String CONTAINERS = "containers";
   public static final String QUEUE_ACL_TYPE = "queue-acl-type";
+  public static final String REQUEST_PRIORITIES = "requestPriorities";
+  public static final String ALLOCATION_REQUEST_IDS = "allocationRequestIds";
+  public static final String GROUP_BY = "groupBy";
+  public static final String SIGNAL = "signal";
+  public static final String COMMAND = "command";
+  public static final String ACTIONS = "actions";
+  public static final String SUMMARIZE = "summarize";
+  public static final String NAME = "name";
+  public static final String ACTIVITIES_COUNT = "activitiesCount";
 
   private RMWSConsts() {
     // not called
   }
 
+  /**
+   * Defines the groupBy types of activities, currently only support
+   * DIAGNOSTIC with which user can query aggregated activities
+   * grouped by allocation state and diagnostic.
+   */
+  public enum ActivitiesGroupBy {
+    DIAGNOSTIC
+  }
+
+  /**
+   * Defines the required action of app activities:
+   * REFRESH means to turn on activities recording for the required app,
+   * GET means the required app activities should be involved in response.
+   */
+  public enum AppActivitiesRequiredAction {
+    REFRESH, GET
+  }
 }

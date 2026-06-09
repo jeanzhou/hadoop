@@ -25,7 +25,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FutureDataInputStreamBuilder;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.Seekable;
 import org.apache.hadoop.io.BytesWritable;
@@ -36,8 +36,11 @@ import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.io.compress.CompressionInputStream;
 import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.util.functional.FutureIO;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -89,9 +92,13 @@ public class FixedLengthRecordReader
       numBytesToSkip = recordLength - partialRecordLength;
     }
 
-    // open the file and seek to the start of the split
-    final FileSystem fs = file.getFileSystem(job);
-    fileIn = fs.open(file);
+    // open the file
+    final FutureDataInputStreamBuilder builder =
+        file.getFileSystem(job).openFile(file);
+    FutureIO.propagateOptions(builder, job,
+        MRJobConfig.INPUT_FILE_OPTION_PREFIX,
+        MRJobConfig.INPUT_FILE_MANDATORY_PREFIX);
+    fileIn = FutureIO.awaitFuture(builder.build());
 
     CompressionCodec codec = new CompressionCodecFactory(job).getCodec(file);
     if (null != codec) {

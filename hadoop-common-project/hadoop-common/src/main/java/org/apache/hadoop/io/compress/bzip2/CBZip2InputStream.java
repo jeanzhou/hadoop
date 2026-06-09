@@ -27,6 +27,7 @@ import java.io.BufferedInputStream;
 import java.io.InputStream;
 import java.io.IOException;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.io.compress.SplittableCompressionCodec.READ_MODE;
 
 
@@ -37,13 +38,13 @@ import org.apache.hadoop.io.compress.SplittableCompressionCodec.READ_MODE;
  * <p>
  * The decompression requires large amounts of memory. Thus you should call the
  * {@link #close() close()} method as soon as possible, to force
- * <tt>CBZip2InputStream</tt> to release the allocated memory. See
+ * <code>CBZip2InputStream</code> to release the allocated memory. See
  * {@link CBZip2OutputStream CBZip2OutputStream} for information about memory
  * usage.
  * </p>
  *
  * <p>
- * <tt>CBZip2InputStream</tt> reads bytes from the compressed source stream via
+ * <code>CBZip2InputStream</code> reads bytes from the compressed source stream via
  * the single byte {@link java.io.InputStream#read() read()} method exclusively.
  * Thus you should consider to use a buffered source stream.
  * </p>
@@ -152,6 +153,7 @@ public class CBZip2InputStream extends InputStream implements BZip2Constants {
   * This method reports the processed bytes so far. Please note that this
   * statistic is only updated on block boundaries and only when the stream is
   * initiated in BYBLOCK mode.
+  * @return ProcessedByteCount.
   */
   public long getProcessedByteCount() {
     return reportedBytesReadFromCompressedStream;
@@ -200,20 +202,18 @@ public class CBZip2InputStream extends InputStream implements BZip2Constants {
   }
 
   /**
-  * This method tries to find the marker (passed to it as the first parameter)
-  * in the stream.  It can find bit patterns of length <= 63 bits.  Specifically
-  * this method is used in CBZip2InputStream to find the end of block (EOB)
-  * delimiter in the stream, starting from the current position of the stream.
-  * If marker is found, the stream position will be at the byte containing
-  * the starting bit of the marker.
-  *
-  * @param marker  The bit pattern to be found in the stream
-  * @param markerBitLength  No of bits in the marker
-  * @return true if the marker was found otherwise false
-  *
-  * @throws IOException
-  * @throws IllegalArgumentException  if marketBitLength is greater than 63
-  */
+   * This method tries to find the marker (passed to it as the first parameter)
+   * in the stream. It can find bit patterns of length &lt;= 63 bits.
+   * Specifically this method is used in CBZip2InputStream to find the end of
+   * block (EOB) delimiter in the stream, starting from the current position
+   * of the stream. If marker is found, the stream position will be at the
+   * byte containing the starting bit of the marker.
+   * @param marker The bit pattern to be found in the stream
+   * @param markerBitLength No of bits in the marker
+   * @return true if the marker was found otherwise false
+   * @throws IOException raised on errors performing I/O.
+   * @throws IllegalArgumentException if marketBitLength is greater than 63
+   */
   public boolean skipToNextMarker(long marker, int markerBitLength)
       throws IOException, IllegalArgumentException {
     try {
@@ -279,16 +279,17 @@ public class CBZip2InputStream extends InputStream implements BZip2Constants {
   * specified stream.
   *
   * <p>
-  * Although BZip2 headers are marked with the magic <tt>"Bz"</tt> this
+  * Although BZip2 headers are marked with the magic <code>"Bz"</code> this
   * constructor expects the next byte in the stream to be the first one after
   * the magic. Thus callers have to skip the first two bytes. Otherwise this
   * constructor will throw an exception.
   * </p>
-  *
+  * @param in in.
+  * @param readMode READ_MODE.
   * @throws IOException
   *             if the stream content is malformed or an I/O error occurs.
   * @throws NullPointerException
-  *             if <tt>in == null</tt>
+  *             if <code>in == null</code>
   */
   public CBZip2InputStream(final InputStream in, READ_MODE readMode)
       throws IOException {
@@ -312,11 +313,22 @@ public class CBZip2InputStream extends InputStream implements BZip2Constants {
   }
     } else if (readMode == READ_MODE.BYBLOCK) {
       this.currentState = STATE.NO_PROCESS_STATE;
-      skipResult = this.skipToNextMarker(CBZip2InputStream.BLOCK_DELIMITER,DELIMITER_BIT_LENGTH);
+      skipResult = skipToNextBlockMarker();
       if(!skipDecompression){
         changeStateToProcessABlock();
       }
     }
+  }
+
+  /**
+   * Skips bytes in the stream until the start marker of a block is reached
+   * or end of stream is reached. Used for testing purposes to identify the
+   * start offsets of blocks.
+   */
+  @VisibleForTesting
+  boolean skipToNextBlockMarker() throws IOException {
+    return skipToNextMarker(
+        CBZip2InputStream.BLOCK_DELIMITER, DELIMITER_BIT_LENGTH);
   }
 
   /**
@@ -328,7 +340,7 @@ public class CBZip2InputStream extends InputStream implements BZip2Constants {
    *
    * @return long Number of bytes between current stream position and the
    * next BZip2 block start marker.
- * @throws IOException
+ * @throws IOException raised on errors performing I/O.
    *
    */
   public static long numberOfBytesTillNextMarker(final InputStream in) throws IOException{
@@ -428,7 +440,7 @@ public class CBZip2InputStream extends InputStream implements BZip2Constants {
       //report 'end of block' or 'end of stream'
       result = b;
 
-      skipResult = this.skipToNextMarker(CBZip2InputStream.BLOCK_DELIMITER, DELIMITER_BIT_LENGTH);
+      skipResult = skipToNextBlockMarker();
 
       changeStateToProcessABlock();
     }

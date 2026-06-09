@@ -17,7 +17,6 @@
  */
 package org.apache.hadoop.hdfs;
 
-import com.google.common.collect.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
 import org.apache.hadoop.fs.*;
@@ -33,13 +32,15 @@ import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.DataOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.security.NoSuchAlgorithmException;
@@ -57,7 +58,12 @@ import static org.apache.hadoop.fs.permission.FsAction.ALL;
 import static org.apache.hadoop.fs.permission.FsAction.NONE;
 import static org.apache.hadoop.fs.permission.FsAction.READ_EXECUTE;
 import static org.apache.hadoop.hdfs.server.namenode.AclTestHelpers.aclEntry;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test after enable Erasure Coding on cluster, exercise Java API make sure they
@@ -70,7 +76,7 @@ public class TestErasureCodingExerciseAPIs {
   private DistributedFileSystem fs;
   private HdfsAdmin dfsAdmin;
   private FileSystemTestWrapper fsWrapper;
-  private static final int BLOCK_SIZE = 1 << 14; // 16k
+  private static final int BLOCK_SIZE = 1 << 20; // 1MB
   private ErasureCodingPolicy ecPolicy;
 
   private static ErasureCodingPolicy getEcPolicy() {
@@ -81,7 +87,7 @@ public class TestErasureCodingExerciseAPIs {
       LoggerFactory.getLogger(TestErasureCodingExerciseAPIs.class);
 
 
-  @Before
+  @BeforeEach
   public void setupCluster() throws IOException {
     ecPolicy = getEcPolicy();
     conf = new HdfsConfiguration();
@@ -91,8 +97,10 @@ public class TestErasureCodingExerciseAPIs {
     // Set up java key store
     String testRootDir = Paths.get(new FileSystemTestHelper().getTestRootDir())
         .toString();
+    Path targetFile = new Path(new File(testRootDir).getAbsolutePath(),
+        "test.jks");
     String keyProviderURI = JavaKeyStoreProvider.SCHEME_NAME + "://file"
-        + new Path(testRootDir, "test.jks").toUri();
+        + targetFile.toUri();
     conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
         keyProviderURI);
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY,
@@ -249,8 +257,7 @@ public class TestErasureCodingExerciseAPIs {
     AclStatus as = fs.getAclStatus(p);
 
     for (AclEntry entry : aclSpec) {
-      assertTrue(String.format("as: %s, entry: %s", as, entry),
-          as.getEntries().contains(entry));
+      assertTrue(as.getEntries().contains(entry), String.format("as: %s, entry: %s", as, entry));
     }
     List<AclEntry> maclSpec = Lists.newArrayList(
         aclEntry(ACCESS, USER, "bar", READ_EXECUTE),
@@ -259,8 +266,7 @@ public class TestErasureCodingExerciseAPIs {
 
     as = fs.getAclStatus(p);
     for (AclEntry entry : maclSpec) {
-      assertTrue(String.format("as: %s, entry: %s", as, entry),
-          as.getEntries().contains(entry));
+      assertTrue(as.getEntries().contains(entry), String.format("as: %s, entry: %s", as, entry));
     }
 
     fs.removeAclEntries(p, maclSpec);
@@ -536,7 +542,7 @@ public class TestErasureCodingExerciseAPIs {
     }
   }
 
-  @After
+  @AfterEach
   public void shutdownCluster() {
     if (cluster != null) {
       cluster.shutdown();

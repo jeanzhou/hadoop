@@ -30,12 +30,12 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIP
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYSTORE_RESOURCE_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_WEB_AUTHENTICATION_KERBEROS_PRINCIPAL_KEY;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.util.Properties;
 
-import org.apache.commons.lang.RandomStringUtils;
+import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.http.HttpConfig;
@@ -44,8 +44,8 @@ import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 
 public abstract class SaslDataTransferTestCase {
 
@@ -75,7 +75,7 @@ public abstract class SaslDataTransferTestCase {
     return hdfsKeytab;
   }
 
-  @BeforeClass
+  @BeforeAll
   public static void initKdc() throws Exception {
     baseDir = GenericTestUtils
         .getTestDir(SaslDataTransferTestCase.class.getSimpleName());
@@ -100,7 +100,7 @@ public abstract class SaslDataTransferTestCase {
     spnegoPrincipal = "HTTP/localhost@" + kdc.getRealm();
   }
 
-  @AfterClass
+  @AfterAll
   public static void shutdownKdc() throws Exception {
     if (kdc != null) {
       kdc.stop();

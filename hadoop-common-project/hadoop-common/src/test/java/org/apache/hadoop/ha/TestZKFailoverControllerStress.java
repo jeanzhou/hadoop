@@ -23,9 +23,11 @@ import java.util.Random;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.util.Time;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.zookeeper.server.ServerCnxn;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
@@ -44,14 +46,14 @@ public class TestZKFailoverControllerStress extends ClientBaseWithFixes {
   private Configuration conf;
   private MiniZKFCCluster cluster;
 
-  @Before
+  @BeforeEach
   public void setupConfAndServices() throws Exception {
     conf = new Configuration();
     conf.set(ZKFailoverController.ZK_QUORUM_KEY, hostPort);
     this.cluster = new MiniZKFCCluster(conf, getServer(serverFactory));
   }
   
-  @After
+  @AfterEach
   public void stopCluster() throws Exception {
     if (cluster != null) {
       cluster.stop();
@@ -62,7 +64,8 @@ public class TestZKFailoverControllerStress extends ClientBaseWithFixes {
    * Simply fail back and forth between two services for the
    * configured amount of time, via expiring their ZK sessions.
    */
-  @Test(timeout=(STRESS_RUNTIME_SECS + EXTRA_TIMEOUT_SECS) * 1000)
+  @Test
+  @Timeout(STRESS_RUNTIME_SECS + EXTRA_TIMEOUT_SECS)
   public void testExpireBackAndForth() throws Exception {
     cluster.start();
     long st = Time.now();
@@ -88,7 +91,8 @@ public class TestZKFailoverControllerStress extends ClientBaseWithFixes {
    * we just do random expirations and expect neither one to ever
    * generate fatal exceptions.
    */
-  @Test(timeout=(STRESS_RUNTIME_SECS + EXTRA_TIMEOUT_SECS) * 1000)
+  @Test
+  @Timeout(STRESS_RUNTIME_SECS + EXTRA_TIMEOUT_SECS)
   public void testRandomExpirations() throws Exception {
     cluster.start();
     long st = Time.now();
@@ -115,7 +119,8 @@ public class TestZKFailoverControllerStress extends ClientBaseWithFixes {
    * cluster. Meanwhile, causes ZK to disconnect clients every
    * 50ms, to trigger the retry code and failures to become active.
    */
-  @Test(timeout=(STRESS_RUNTIME_SECS + EXTRA_TIMEOUT_SECS) * 1000)
+  @Test
+  @Timeout(STRESS_RUNTIME_SECS + EXTRA_TIMEOUT_SECS)
   public void testRandomHealthAndDisconnects() throws Exception {
     long runFor = STRESS_RUNTIME_SECS * 1000;
     Mockito.doAnswer(new RandomlyThrow(0))
@@ -127,11 +132,11 @@ public class TestZKFailoverControllerStress extends ClientBaseWithFixes {
     // Mockito errors if the HM calls the proxy in the middle of
     // setting up the mock.
     cluster.start();
-    
+
     long st = Time.now();
     while (Time.now() - st < runFor) {
       cluster.getTestContext().checkException();
-      serverFactory.closeAll();
+      serverFactory.closeAll(ServerCnxn.DisconnectReason.SERVER_SHUTDOWN);
       Thread.sleep(50);
     }
   }

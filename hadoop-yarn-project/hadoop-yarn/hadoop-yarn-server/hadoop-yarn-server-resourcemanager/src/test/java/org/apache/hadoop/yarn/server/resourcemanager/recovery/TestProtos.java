@@ -18,9 +18,17 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.AllocateResponsePBImpl;
+import org.apache.hadoop.yarn.api.records.NMToken;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProto;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.AllocateResponseProto;
+import org.junit.jupiter.api.Test;
 
 /**
  * Simple test to verify the protos generated are valid
@@ -31,6 +39,18 @@ public class TestProtos {
   public void testProtoCanBePrinted() throws Exception {
     EpochProto proto = EpochProto.newBuilder().setEpoch(100).build();
     String protoString = proto.toString();
-    Assert.assertNotNull(protoString);
+    assertNotNull(protoString);
+  }
+
+  @Test
+  public void testProtoAllocateResponse() {
+    AllocateResponseProto proto = AllocateResponseProto.getDefaultInstance();
+    AllocateResponsePBImpl alloc = new AllocateResponsePBImpl(proto);
+    List<NMToken> nmTokens = new ArrayList<NMToken>();
+    try {
+      alloc.setNMTokens(nmTokens);
+    } catch (Exception ex) {
+      fail();
+    }
   }
 }

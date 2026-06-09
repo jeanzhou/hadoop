@@ -18,10 +18,16 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.junit.Assert;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.yarn.api.records.QueueACL;
 
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
@@ -37,13 +43,26 @@ import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
-import org.apache.hadoop.yarn.server.utils.BuilderUtils;
-import org.junit.After;
-import org.junit.Test;
+import org.apache.hadoop.yarn.util.resource.Resources;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 public abstract class QueueACLsTestBase extends ACLsTestBase {
 
-  @After
+  protected static final String QUEUED = "D";
+  protected static final String QUEUED1 = "D1";
+  private static final String ALL_ACL = "*";
+  private static final String NONE_ACL = " ";
+
+
+  abstract public String getQueueD();
+
+  abstract public String getQueueD1();
+
+  abstract public void updateConfigWithDAndD1Queues(String rootAcl,
+      String queueDAcl, String queueD1Acl) throws IOException;
+
+  @AfterEach
   public void tearDown() {
     if (resourceManager != null) {
       resourceManager.stop();
@@ -75,6 +94,134 @@ public abstract class QueueACLsTestBase extends ACLsTestBase {
 
   }
 
+  /**
+   * Test for the case when the following submit application
+   * and administer queue ACLs are defined:
+   * root: (none)
+   *    D: * (all)
+   *      D1: * (all)
+   * Expected result: the user will have access only to D and D1 queues.
+   * @throws IOException
+   */
+  @Test
+  public void testQueueAclRestrictedRootACL() throws IOException {
+    updateConfigWithDAndD1Queues(NONE_ACL, ALL_ACL, ALL_ACL);
+    checkAccess(false, true, true);
+  }
+
+  /**
+   * Test for the case when the following submit application
+   * and administer queue ACLs are defined:
+   * root: (none)
+   *    D:  (none)
+   *      D1:  (none)
+   * Expected result: the user will have to none of the queues.
+   * @throws IOException
+   */
+  @Test
+  public void testQueueAclNoAccess() throws IOException {
+    updateConfigWithDAndD1Queues(NONE_ACL, NONE_ACL, NONE_ACL);
+    checkAccess(false, false, false);
+  }
+
+  /**
+   * Test for the case when the following submit application
+   * and administer queue ACLs are defined:
+   * root: (none)
+   *    D: * (all)
+   *      D1:  (none)
+   * Expected result: access to D1 will be permitted by root.D,
+   * so the user will be able to access queues D and D1.
+   * @throws IOException
+   */
+  @Test
+  public void testQueueAclRestrictedRootAndD1() throws IOException {
+    updateConfigWithDAndD1Queues(NONE_ACL, ALL_ACL, NONE_ACL);
+    checkAccess(false, true, true);
+  }
+
+  /**
+   * Test for the case when the following submit application
+   * and administer queue ACLs are defined:
+   * root: (none)
+   *    D:  (none)
+   *      D1:  (all)
+   * Expected result: only queue D1 can be accessed.
+   * @throws IOException
+   */
+  @Test
+  public void testQueueAclRestrictedRootAndD() throws IOException {
+    updateConfigWithDAndD1Queues(NONE_ACL, NONE_ACL, ALL_ACL);
+    checkAccess(false, false, true);
+  }
+
+  /**
+   * Test for the case when the following submit application
+   * and administer queue ACLs are defined:
+   * root: * (all)
+   *    D:  (none)
+   *      D1: * (all)
+   * Expected result: access to D will be permitted from the root queue,
+   * so the user will be able to access queues root, D and D1.
+   * @throws IOException
+   */
+  @Test
+  public void testQueueAclRestrictedD() throws IOException {
+    updateConfigWithDAndD1Queues(ALL_ACL, NONE_ACL, ALL_ACL);
+    checkAccess(true, true, true);
+  }
+
+  /**
+   * Test for the case when the following submit application
+   * and administer queue ACLs are defined:
+   * root: * (all)
+   *    D: * (all)
+   *      D1:  (none)
+   * Expected result: access to D1 will be permitted from queue D,
+   * so the user will be able to access queues root, D and D1.
+   * @throws IOException
+   */
+  @Test
+  public void testQueueAclRestrictedD1() throws IOException {
+    updateConfigWithDAndD1Queues(ALL_ACL, ALL_ACL, NONE_ACL);
+    checkAccess(true, true, true);
+  }
+
+  /**
+   * Test for the case when no ACLs are defined, so the default values are used
+   * Expected result: The default ACLs for the root queue is "*"(all) and for
+   * the other queues are " " (none), so the user will have access to all the
+   * queues because they will have permissions from the root.
+   *
+   * @throws IOException
+   */
+  @Test
+  public void testQueueAclDefaultValues() throws IOException {
+    updateConfigWithDAndD1Queues(null, null, null);
+    checkAccess(true, true, true);
+  }
+
+  private void checkAccess(boolean rootAccess, boolean dAccess,
+          boolean d1Access)throws IOException {
+    checkAccess(rootAccess, "root");
+    checkAccess(dAccess, getQueueD());
+    checkAccess(d1Access, getQueueD1());
+  }
+
+
+  private void checkAccess(boolean access, String queueName)
+      throws IOException {
+    UserGroupInformation user = UserGroupInformation.getCurrentUser();
+
+    String failureMsg = "Wrong %s access to %s queue";
+    assertEquals(access, resourceManager.getResourceScheduler()
+        .checkAccess(user, QueueACL.ADMINISTER_QUEUE, queueName),
+        String.format(failureMsg, QueueACL.ADMINISTER_QUEUE, queueName));
+    assertEquals(access, resourceManager.getResourceScheduler()
+        .checkAccess(user, QueueACL.SUBMIT_APPLICATIONS, queueName),
+        String.format(failureMsg, QueueACL.SUBMIT_APPLICATIONS, queueName));
+  }
+
   private void verifyGetClientAMToken(String submitter, String queueAdmin,
       String queueName, boolean setupACLs) throws Exception {
     ApplicationId applicationId =
@@ -90,7 +237,7 @@ public abstract class QueueACLsTestBase extends ACLsTestBase {
     GetApplicationReportResponse adMinUserGetReport =
         adMinUserClient.getApplicationReport(appReportRequest);
 
-    Assert.assertEquals(submitterGetReport.getApplicationReport()
+    assertEquals(submitterGetReport.getApplicationReport()
       .getClientToAMToken(), adMinUserGetReport.getApplicationReport()
       .getClientToAMToken());
   }
@@ -109,12 +256,12 @@ public abstract class QueueACLsTestBase extends ACLsTestBase {
     // Kill app as the killer
     try {
       killerClient.forceKillApplication(finishAppRequest);
-      Assert.fail("App killing by the enemy should fail!!");
+      fail("App killing by the enemy should fail!!");
     } catch (YarnException e) {
       LOG.info("Got exception while killing app as the enemy", e);
-      Assert.assertTrue(e.getMessage().contains(
-        "User " + killer + " cannot perform operation MODIFY_APP on "
-            + applicationId));
+      assertTrue(e.getMessage().contains(
+          "User " + killer + " cannot perform operation MODIFY_APP on "
+          + applicationId));
     }
 
     getRMClientForUser(submitter).forceKillApplication(finishAppRequest);
@@ -145,7 +292,7 @@ public abstract class QueueACLsTestBase extends ACLsTestBase {
     ApplicationId applicationId =
         submitterClient.getNewApplication(newAppRequest).getApplicationId();
 
-    Resource resource = BuilderUtils.newResource(1024, 1);
+    Resource resource = Resources.createResource(1024);
     Map<ApplicationAccessType, String> acls = createACLs(submitter, setupACLs);
     ContainerLaunchContext amContainerSpec =
         ContainerLaunchContext.newInstance(null, null, null, null, null, acls);

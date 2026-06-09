@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import java.io.IOException;
 import java.util.List;
 
@@ -28,12 +30,15 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmissionData;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
 import org.apache.hadoop.yarn.server.resourcemanager.ParameterizedSchedulerTestBase;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairSchedulerConfiguration;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,8 +53,8 @@ public class TestSchedulingWithAllocationRequestId
       LoggerFactory.getLogger(TestSchedulingWithAllocationRequestId.class);
   private static final int GB = 1024;
 
-  public TestSchedulingWithAllocationRequestId(SchedulerType type) throws IOException {
-    super(type);
+  public void initTestSchedulingWithAllocationRequestId(SchedulerType type) throws IOException {
+    initParameterizedSchedulerTestBase(type);
   }
 
   @Override
@@ -63,8 +68,11 @@ public class TestSchedulingWithAllocationRequestId
     return conf;
   }
 
-  @Test (timeout = 10000)
-  public void testMultipleAllocationRequestIds() throws Exception {
+  @Timeout(10)
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("getParameters")
+  public void testMultipleAllocationRequestIds(SchedulerType type) throws Exception {
+    initParameterizedSchedulerTestBase(type);
     YarnConfiguration conf = getConf();
     MockRM rm = new MockRM(conf);
     try {
@@ -72,7 +80,7 @@ public class TestSchedulingWithAllocationRequestId
 
       MockNM nm1 = rm.registerNode("127.0.0.1:1234", 4 * GB);
       MockNM nm2 = rm.registerNode("127.0.0.2:5678", 4 * GB);
-      RMApp app1 = rm.submitApp(2048);
+      RMApp app1 = MockRMAppSubmitter.submitWithMemory(2048, rm);
       // kick the scheduling
       nm1.nodeHeartbeat(true);
       RMAppAttempt attempt1 = app1.getCurrentAppAttempt();
@@ -88,13 +96,13 @@ public class TestSchedulingWithAllocationRequestId
       // check if request id 10 is satisfied
       AllocateResponse allocResponse = waitForAllocResponse(rm, am1, nm1, 1);
       List<Container> allocated = allocResponse.getAllocatedContainers();
-      Assert.assertEquals(1, allocated.size());
+      assertEquals(1, allocated.size());
       checkAllocatedContainer(allocated.get(0), 2 * GB, nm1.getNodeId(), 10);
 
       // check now if request id 20 is satisfied
       allocResponse = waitForAllocResponse(rm, am1, nm2, 2);
       allocated = allocResponse.getAllocatedContainers();
-      Assert.assertEquals(2, allocated.size());
+      assertEquals(2, allocated.size());
       for (Container container : allocated) {
         checkAllocatedContainer(container, 2 * GB, nm2.getNodeId(), 20);
       }
@@ -105,8 +113,11 @@ public class TestSchedulingWithAllocationRequestId
     }
   }
 
-  @Test (timeout = 10000)
-  public void testMultipleAllocationRequestDiffPriority() throws Exception {
+  @Timeout(10)
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("getParameters")
+  public void testMultipleAllocationRequestDiffPriority(SchedulerType type) throws Exception {
+    initTestSchedulingWithAllocationRequestId(type);
     YarnConfiguration conf = getConf();
     MockRM rm = new MockRM(conf);
     try {
@@ -114,7 +125,7 @@ public class TestSchedulingWithAllocationRequestId
 
       MockNM nm1 = rm.registerNode("127.0.0.1:1234", 4 * GB);
       MockNM nm2 = rm.registerNode("127.0.0.2:5678", 4 * GB);
-      RMApp app1 = rm.submitApp(2048);
+      RMApp app1 = MockRMAppSubmitter.submitWithMemory(2048, rm);
       // kick the scheduling
       nm1.nodeHeartbeat(true);
       RMAppAttempt attempt1 = app1.getCurrentAppAttempt();
@@ -130,7 +141,7 @@ public class TestSchedulingWithAllocationRequestId
       // check if request id 20 is satisfied first
       AllocateResponse allocResponse = waitForAllocResponse(rm, am1, nm2, 2);
       List<Container> allocated = allocResponse.getAllocatedContainers();
-      Assert.assertEquals(2, allocated.size());
+      assertEquals(2, allocated.size());
       for (Container container : allocated) {
         checkAllocatedContainer(container, 2 * GB, nm2.getNodeId(), 20);
       }
@@ -138,7 +149,7 @@ public class TestSchedulingWithAllocationRequestId
       // check now if request id 10 is satisfied
       allocResponse = waitForAllocResponse(rm, am1, nm1, 1);
       allocated = allocResponse.getAllocatedContainers();
-      Assert.assertEquals(1, allocated.size());
+      assertEquals(1, allocated.size());
       checkAllocatedContainer(allocated.get(0), 2 * GB, nm1.getNodeId(), 10);
     } finally {
       if (rm != null) {
@@ -149,14 +160,17 @@ public class TestSchedulingWithAllocationRequestId
 
   private void checkAllocatedContainer(Container allocated, int memory,
       NodeId nodeId, long allocationRequestId) {
-    Assert.assertEquals(memory, allocated.getResource().getMemorySize());
-    Assert.assertEquals(nodeId, allocated.getNodeId());
-    Assert.assertEquals(allocationRequestId,
+    assertEquals(memory, allocated.getResource().getMemorySize());
+    assertEquals(nodeId, allocated.getNodeId());
+    assertEquals(allocationRequestId,
         allocated.getAllocationRequestId());
   }
 
-  @Test (timeout = 10000)
-  public void testMultipleAppsWithAllocationReqId() throws Exception {
+  @Timeout(10)
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("getParameters")
+  public void testMultipleAppsWithAllocationReqId(SchedulerType type) throws Exception {
+    initTestSchedulingWithAllocationRequestId(type);
     YarnConfiguration conf = getConf();
     MockRM rm = new MockRM(conf);
     try {
@@ -175,7 +189,12 @@ public class TestSchedulingWithAllocationRequestId
       nm2.registerNode();
 
       // submit 1st app
-      RMApp app1 = rm.submitApp(1 * GB, "user_0", "a1");
+      MockRMAppSubmissionData data1 =
+          MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm)
+              .withAppName("user_0")
+              .withUser("a1")
+              .build();
+      RMApp app1 = MockRMAppSubmitter.submit(rm, data1);
       MockAM am1 = MockRM.launchAndRegisterAM(app1, rm, nm1);
 
       // Submit app1 RR with allocationReqId = 5
@@ -186,11 +205,16 @@ public class TestSchedulingWithAllocationRequestId
       // wait for container to be allocated.
       AllocateResponse allocResponse = waitForAllocResponse(rm, am1, nm1, 1);
       List<Container> allocated = allocResponse.getAllocatedContainers();
-      Assert.assertEquals(1, allocated.size());
+      assertEquals(1, allocated.size());
       checkAllocatedContainer(allocated.get(0), 1 * GB, nm1.getNodeId(), 5L);
 
       // Submit another application
-      RMApp app2 = rm.submitApp(1 * GB, "user_1", "a2");
+      MockRMAppSubmissionData data =
+          MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm)
+              .withAppName("user_1")
+              .withUser("a2")
+              .build();
+      RMApp app2 = MockRMAppSubmitter.submit(rm, data);
       MockAM am2 = MockRM.launchAndRegisterAM(app2, rm, nm2);
 
       // Submit app2 RR with allocationReqId = 5
@@ -200,7 +224,7 @@ public class TestSchedulingWithAllocationRequestId
       // wait for container to be allocated.
       allocResponse = waitForAllocResponse(rm, am2, nm2, 1);
       allocated = allocResponse.getAllocatedContainers();
-      Assert.assertEquals(1, allocated.size());
+      assertEquals(1, allocated.size());
       checkAllocatedContainer(allocated.get(0), 2 * GB, nm2.getNodeId(), 5L);
 
       // Now submit app2 RR with allocationReqId = 10
@@ -210,7 +234,7 @@ public class TestSchedulingWithAllocationRequestId
       // wait for container to be allocated.
       allocResponse = waitForAllocResponse(rm, am2, nm1, 1);
       allocated = allocResponse.getAllocatedContainers();
-      Assert.assertEquals(1, allocated.size());
+      assertEquals(1, allocated.size());
       checkAllocatedContainer(allocated.get(0), 3 * GB, nm1.getNodeId(), 10L);
 
       // Now submit app1 RR with allocationReqId = 10
@@ -220,7 +244,7 @@ public class TestSchedulingWithAllocationRequestId
       // wait for container to be allocated.
       allocResponse = waitForAllocResponse(rm, am1, nm2, 1);
       allocated = allocResponse.getAllocatedContainers();
-      Assert.assertEquals(1, allocated.size());
+      assertEquals(1, allocated.size());
       checkAllocatedContainer(allocated.get(0), 4 * GB, nm2.getNodeId(), 10L);
     } finally {
       if (rm != null) {

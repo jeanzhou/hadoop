@@ -24,9 +24,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.ChecksumFileSystem;
@@ -37,7 +36,7 @@ import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
-import org.apache.log4j.Level;
+import org.slf4j.event.Level;
 
 /**
  * This class benchmarks the performance of the local file system, raw local
@@ -172,10 +171,8 @@ public class BenchmarkThroughput extends Configured implements Tool {
   @Override
   public int run(String[] args) throws IOException {
     // silence the minidfs cluster
-    Log hadoopLog = LogFactory.getLog("org");
-    if (hadoopLog instanceof Log4JLogger) {
-      GenericTestUtils.setLogLevel(hadoopLog, Level.WARN);
-    }
+    Logger hadoopLog = LoggerFactory.getLogger("org");
+    GenericTestUtils.setLogLevel(hadoopLog, Level.WARN);
     int reps = 1;
     if (args.length == 1) {
       try {
@@ -190,7 +187,7 @@ public class BenchmarkThroughput extends Configured implements Tool {
     }
     Configuration conf = getConf();
     // the size of the file to write
-    long SIZE = conf.getLong("dfsthroughput.file.size",
+    long fileSize = conf.getLong("dfsthroughput.file.size",
         10L * 1024 * 1024 * 1024);
     BUFFER_SIZE = conf.getInt("dfsthroughput.buffer.size", 4 * 1024);
 
@@ -206,9 +203,9 @@ public class BenchmarkThroughput extends Configured implements Tool {
     ChecksumFileSystem checkedLocal = FileSystem.getLocal(conf);
     FileSystem rawLocal = checkedLocal.getRawFileSystem();
     for(int i=0; i < reps; ++i) {
-      writeAndReadLocalFile("local", conf, SIZE);
-      writeAndReadFile(rawLocal, "raw", conf, SIZE);
-      writeAndReadFile(checkedLocal, "checked", conf, SIZE);
+      writeAndReadLocalFile("local", conf, fileSize);
+      writeAndReadFile(rawLocal, "raw", conf, fileSize);
+      writeAndReadFile(checkedLocal, "checked", conf, fileSize);
     }
     MiniDFSCluster cluster = null;
     try {
@@ -217,7 +214,7 @@ public class BenchmarkThroughput extends Configured implements Tool {
       cluster.waitActive();
       FileSystem dfs = cluster.getFileSystem();
       for(int i=0; i < reps; ++i) {
-        writeAndReadFile(dfs, "dfs", conf, SIZE);
+        writeAndReadFile(dfs, "dfs", conf, fileSize);
       }
     } finally {
       if (cluster != null) {

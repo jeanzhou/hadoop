@@ -19,13 +19,15 @@ package org.apache.hadoop.hdfs;
 
 import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
@@ -33,8 +35,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -52,19 +54,20 @@ import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataStorage;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.FsDatasetTestUtils.MaterializedReplica;
 import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
-import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
-import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.GenericTestUtils.DelayAnswer;
 import org.apache.hadoop.util.Time;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
 
 /**
@@ -78,8 +81,8 @@ public class TestReplication {
     "/d1/r1", "/d1/r1", "/d1/r2", "/d1/r2", "/d1/r2", "/d2/r3", "/d2/r3"
   };
   private static final int numDatanodes = racks.length;
-  private static final Log LOG = LogFactory.getLog(
-                                       "org.apache.hadoop.hdfs.TestReplication");
+  private static final Logger LOG = LoggerFactory.getLogger(
+                                       TestReplication.class);
   
   /* check if there are at least two nodes are on the same rack */
   private void checkFile(FileSystem fileSys, Path name, int repl)
@@ -155,6 +158,67 @@ public class TestReplication {
     assertTrue(!fileSys.exists(name));
   }
 
+  private static class CorruptFileSimulatedFSDataset
+      extends SimulatedFSDataset {
+    /**
+     * Simulated input and output streams.
+     *
+     */
+    static private class CorruptFileSimulatedInputStream
+        extends java.io.InputStream {
+      private InputStream inputStream;
+
+      CorruptFileSimulatedInputStream(InputStream is) {
+        inputStream = is;
+      }
+
+      @Override
+      public int read() throws IOException {
+        int ret = inputStream.read();
+        if (ret > 0) {
+          throw new IOException("Input/output error");
+        }
+        return ret;
+      }
+
+      @Override
+      public int read(byte[] b) throws IOException {
+        int ret = inputStream.read(b);
+        if (ret > 0) {
+          throw new IOException("Input/output error");
+        }
+        return ret;
+      }
+    }
+
+    CorruptFileSimulatedFSDataset(DataNode datanode, DataStorage storage,
+        Configuration conf) {
+      super(storage, conf);
+    }
+
+    @Override
+    public synchronized InputStream getBlockInputStream(ExtendedBlock b,
+        long seekOffset) throws IOException {
+      InputStream result = super.getBlockInputStream(b);
+      IOUtils.skipFully(result, seekOffset);
+      return new CorruptFileSimulatedInputStream(result);
+    }
+
+    static class Factory
+        extends FsDatasetSpi.Factory<CorruptFileSimulatedFSDataset> {
+      @Override
+      public CorruptFileSimulatedFSDataset newInstance(DataNode datanode,
+          DataStorage storage, Configuration conf) throws IOException {
+        return new CorruptFileSimulatedFSDataset(datanode, storage, conf);
+      }
+
+      @Override
+      public boolean isSimulated() {
+        return true;
+      }
+    }
+  }
+
   private void testBadBlockReportOnTransfer(
       boolean corruptBlockByDeletingBlockFile) throws Exception {
     Configuration conf = new HdfsConfiguration();
@@ -182,7 +246,7 @@ public class TestReplication {
             cluster.corruptBlockOnDataNodesByDeletingBlockFile(block) :
               cluster.corruptBlockOnDataNodes(block);       
 
-    assertEquals("Corrupted too few blocks", replFactor, blockFilesCorrupted); 
+    assertEquals(replFactor, blockFilesCorrupted, "Corrupted too few blocks");
 
     // Increase replication factor, this should invoke transfer request
     // Receiving datanode fails on checksum and reports it to namenode
@@ -204,6 +268,54 @@ public class TestReplication {
     replicaCount = blocks.get(0).getLocations().length;
     assertTrue(replicaCount == 1);
     cluster.shutdown();
+  }
+
+  @Test
+  @Timeout(value = 30)
+  public void testBadBlockReportOnTransferCorruptFile() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    conf.set(DFSConfigKeys.DFS_DATANODE_FSDATASET_FACTORY_KEY,
+        CorruptFileSimulatedFSDataset.Factory.class.getName());
+    // Disable BlockScanner to trigger reportBadBlocks
+    conf.setLong(DFSConfigKeys.DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, -1L);
+    FileSystem fs;
+    int replicaCount = 0;
+    short replFactor = 1;
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    cluster.waitActive();
+    try {
+      fs = cluster.getFileSystem();
+      final DFSClient dfsClient = new DFSClient(
+          new InetSocketAddress("localhost", cluster.getNameNodePort()), conf);
+
+      // Create file with replication factor of 1
+      Path file1 = new Path("/tmp/testBadBlockReportOnTransfer/file1");
+      DFSTestUtil.createFile(fs, file1, 1024, replFactor, 0);
+      DFSTestUtil.waitReplication(fs, file1, replFactor);
+
+      // Increase replication factor, this should invoke transfer request
+      // Receiving datanode fails on checksum and reports it to namenode
+      replFactor = 2;
+      fs.setReplication(file1, replFactor);
+
+      // Now get block details and check if the block is corrupt
+      GenericTestUtils.waitFor(() -> {
+        try {
+          return dfsClient.getNamenode()
+              .getBlockLocations(file1.toString(), 0, Long.MAX_VALUE).get(0)
+              .isCorrupt();
+        } catch (IOException ie) {
+          return false;
+        }
+      }, 1000, 15000);
+      replicaCount = dfsClient.getNamenode()
+          .getBlockLocations(file1.toString(), 0, Long.MAX_VALUE).get(0)
+          .getLocations().length;
+      assertEquals(1, replicaCount, "replication should not success");
+    } finally {
+      cluster.shutdown();
+    }
   }
 
   /* 
@@ -228,8 +340,6 @@ public class TestReplication {
    */
   public void runReplication(boolean simulated) throws IOException {
     Configuration conf = new HdfsConfiguration();
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
-        false);
     if (simulated) {
       SimulatedFSDataset.setFactory(conf);
     }
@@ -243,7 +353,7 @@ public class TestReplication {
     DFSClient client = new DFSClient(addr, conf);
     
     DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
-    assertEquals("Number of Datanodes ", numDatanodes, info.length);
+    assertEquals(numDatanodes, info.length, "Number of Datanodes ");
     FileSystem fileSys = cluster.getFileSystem();
     try {
       Path file1 = new Path("/smallblocktest.dat");
@@ -503,7 +613,8 @@ public class TestReplication {
    * Simulate rbw blocks by creating dummy copies, then a DN restart to detect
    * those corrupted blocks asap.
    */
-  @Test(timeout=30000)
+  @Test
+  @Timeout(value = 30)
   public void testReplicationWhenBlockCorruption() throws Exception {
     MiniDFSCluster cluster = null;
     try {
@@ -549,7 +660,8 @@ public class TestReplication {
    * the NameNode doesn't consider the block under-replicated too
    * aggressively. It is a regression test for HDFS-1172.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testNoExtraReplicationWhenBlockReceivedIsLate()
       throws Exception {
     LOG.info("Test block replication when blockReceived is late" );
@@ -576,9 +688,9 @@ public class TestReplication {
           InternalDataNodeTestUtils.spyOnBposToNN(dn, nn);
       DelayAnswer delayer = new GenericTestUtils.DelayAnswer(LOG);
       Mockito.doAnswer(delayer).when(spy).blockReceivedAndDeleted(
-          Mockito.<DatanodeRegistration>anyObject(),
+          any(),
           Mockito.anyString(),
-          Mockito.<StorageReceivedDeletedBlocks[]>anyObject());
+          any());
 
       FileSystem fs = cluster.getFileSystem();
       // Create and close a small file with two blocks
@@ -628,7 +740,8 @@ public class TestReplication {
    * in the middle of that file are properly re-replicated if they
    * become corrupt.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testReplicationWhileUnderConstruction()
       throws Exception {
     LOG.info("Test block replication in under construction" );

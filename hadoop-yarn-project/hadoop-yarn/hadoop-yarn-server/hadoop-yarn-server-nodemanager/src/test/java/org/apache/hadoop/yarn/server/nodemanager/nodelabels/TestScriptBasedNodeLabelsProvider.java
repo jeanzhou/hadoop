@@ -32,10 +32,15 @@ import org.apache.hadoop.service.ServiceStateException;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.nodelabels.NodeLabelTestBase;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestScriptBasedNodeLabelsProvider extends NodeLabelTestBase {
 
@@ -48,13 +53,13 @@ public class TestScriptBasedNodeLabelsProvider extends NodeLabelTestBase {
 
   private ScriptBasedNodeLabelsProvider nodeLabelsProvider;
 
-  @Before
+  @BeforeEach
   public void setup() {
     testRootDir.mkdirs();
     nodeLabelsProvider = new ScriptBasedNodeLabelsProvider();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (testRootDir.exists()) {
       FileContext.getLocalFSFileContext()
@@ -88,7 +93,7 @@ public class TestScriptBasedNodeLabelsProvider extends NodeLabelTestBase {
       pw.flush();
     } catch (Exception e) {
       e.printStackTrace();
-      Assert.fail();
+      fail();
     } finally {
       if (null != pw) {
         pw.close();
@@ -131,9 +136,9 @@ public class TestScriptBasedNodeLabelsProvider extends NodeLabelTestBase {
     writeNodeLabelsScriptFile("", true);
     nodeLabelsProvider.init(getConfForNodeLabelScript());
     nodeLabelsProvider.start();
-    Assert
-        .assertNotNull("Node Label Script runner should be started when script"
-            + " is executable", nodeLabelsProvider.getTimerTask());
+    assertNotNull(nodeLabelsProvider.getTimerTask(),
+        "Node Label Script runner should be started when script"
+        + " is executable");
     nodeLabelsProvider.stop();
   }
 
@@ -141,29 +146,30 @@ public class TestScriptBasedNodeLabelsProvider extends NodeLabelTestBase {
       ScriptBasedNodeLabelsProvider nodeLabelsProvider) {
     try {
       nodeLabelsProvider.init(new Configuration());
-      Assert.fail(message);
+      fail(message);
     } catch (ServiceStateException ex) {
-      Assert.assertEquals("IOException was expected", IOException.class,
-          ex.getCause().getClass());
+      assertEquals(IOException.class,
+          ex.getCause().getClass(), "IOException was expected");
     }
   }
 
   @Test
   public void testConfigForNoTimer() throws Exception {
     Configuration conf = getConfForNodeLabelScript();
-    conf.setLong(YarnConfiguration.NM_NODE_LABELS_PROVIDER_FETCH_INTERVAL_MS,
-        AbstractNodeLabelsProvider.DISABLE_NODE_LABELS_PROVIDER_FETCH_TIMER);
+    conf.setLong(YarnConfiguration
+            .NM_NODE_LABELS_PROVIDER_FETCH_INTERVAL_MS,
+        AbstractNodeDescriptorsProvider
+            .DISABLE_NODE_DESCRIPTORS_PROVIDER_FETCH_TIMER);
     String normalScript = "echo NODE_PARTITION:X86";
     writeNodeLabelsScriptFile(normalScript, true);
     nodeLabelsProvider.init(conf);
     nodeLabelsProvider.start();
-    Assert.assertNull(
-        "Timer is not expected to be created when interval is configured as -1",
-        nodeLabelsProvider.nodeLabelsScheduler);
+    assertNull(nodeLabelsProvider.getScheduler(),
+        "Timer is not expected to be created when interval is configured as -1");
     // Ensure that even though timer is not run script is run at least once so
     // that NM registers/updates Labels with RM
     assertNLCollectionEquals(toNodeLabelSet("X86"),
-        nodeLabelsProvider.getNodeLabels());
+        nodeLabelsProvider.getDescriptors());
   }
 
   @Test
@@ -182,28 +188,27 @@ public class TestScriptBasedNodeLabelsProvider extends NodeLabelTestBase {
     Thread.sleep(500l);
     TimerTask timerTask = nodeLabelsProvider.getTimerTask();
     timerTask.run();
-    Assert.assertNull(
+    assertNull(nodeLabelsProvider.getDescriptors(),
         "Node Label Script runner should return null when script doesnt "
-            + "give any Labels output",
-        nodeLabelsProvider.getNodeLabels());
+        + "give any Labels output");
 
     writeNodeLabelsScriptFile(normalScript, true);
     timerTask.run();
     assertNLCollectionEquals(toNodeLabelSet("Windows"),
-        nodeLabelsProvider.getNodeLabels());
+        nodeLabelsProvider.getDescriptors());
 
     // multiple lines with partition tag then the last line's partition info
     // needs to be taken.
     writeNodeLabelsScriptFile(scrptWithMultipleLinesHavingNodeLabels, true);
     timerTask.run();
     assertNLCollectionEquals(toNodeLabelSet("JDK1_6"),
-        nodeLabelsProvider.getNodeLabels());
+        nodeLabelsProvider.getDescriptors());
 
     // timeout script.
     writeNodeLabelsScriptFile(timeOutScript, true);
     timerTask.run();
 
-    Assert.assertNotEquals("Node Labels should not be set after timeout ",
-        toNodeLabelSet("ALL"), nodeLabelsProvider.getNodeLabels());
+    assertNotEquals(toNodeLabelSet("ALL"), nodeLabelsProvider.getDescriptors(),
+        "Node Labels should not be set after timeout ");
   }
 }

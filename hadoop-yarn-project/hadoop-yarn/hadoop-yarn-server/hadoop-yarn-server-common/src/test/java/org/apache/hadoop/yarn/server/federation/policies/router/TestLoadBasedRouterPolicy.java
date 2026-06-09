@@ -17,19 +17,33 @@
 
 package org.apache.hadoop.yarn.server.federation.policies.router;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.hadoop.util.Time;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
+import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+import org.apache.hadoop.yarn.api.records.Priority;
+import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.server.federation.policies.ConfigurableFederationPolicy;
 import org.apache.hadoop.yarn.server.federation.policies.dao.WeightedPolicyInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterId;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterIdInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterState;
+import org.apache.hadoop.yarn.server.federation.store.records.ReservationHomeSubCluster;
 import org.apache.hadoop.yarn.server.federation.utils.FederationPoliciesTestUtil;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.yarn.server.federation.utils.FederationStateStoreFacade;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.when;
 
 /**
  * Simple test class for the {@link LoadBasedRouterPolicy}. Test that the load
@@ -37,19 +51,21 @@ import org.junit.Test;
  */
 public class TestLoadBasedRouterPolicy extends BaseRouterPoliciesTest {
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     setPolicy(new LoadBasedRouterPolicy());
     setPolicyInfo(new WeightedPolicyInfo());
     Map<SubClusterIdInfo, Float> routerWeights = new HashMap<>();
     Map<SubClusterIdInfo, Float> amrmWeights = new HashMap<>();
 
+    long now = Time.now();
+
     // simulate 20 active subclusters
     for (int i = 0; i < 20; i++) {
       SubClusterIdInfo sc = new SubClusterIdInfo(String.format("sc%02d", i));
-      SubClusterInfo federationSubClusterInfo =
-          SubClusterInfo.newInstance(sc.toId(), null, null, null, null, -1,
-              SubClusterState.SC_RUNNING, -1, generateClusterMetricsInfo(i));
+      SubClusterInfo federationSubClusterInfo = SubClusterInfo.newInstance(
+          sc.toId(), "dns1:80", "dns1:81", "dns1:82", "dns1:83",
+          now - 1000, SubClusterState.SC_RUNNING, now - 2000, generateClusterMetricsInfo(i));
       getActiveSubclusters().put(sc.toId(), federationSubClusterInfo);
       float weight = getRand().nextInt(2);
       if (i == 5) {
@@ -65,12 +81,11 @@ public class TestLoadBasedRouterPolicy extends BaseRouterPoliciesTest {
     getPolicyInfo().setRouterPolicyWeights(routerWeights);
     getPolicyInfo().setAMRMPolicyWeights(amrmWeights);
 
-    FederationPoliciesTestUtil.initializePolicyContext(getPolicy(),
-        getPolicyInfo(), getActiveSubclusters());
-
+    // initialize policy with context
+    setupContext();
   }
 
-  private String generateClusterMetricsInfo(int id) {
+  public String generateClusterMetricsInfo(int id) {
 
     long mem = 1024 * getRand().nextInt(277 * 100 - 1);
     // plant a best cluster
@@ -100,7 +115,87 @@ public class TestLoadBasedRouterPolicy extends BaseRouterPoliciesTest {
         .getHomeSubcluster(getApplicationSubmissionContext(), null);
 
     // check the "planted" best cluster is chosen
-    Assert.assertEquals("sc05", chosen.getId());
+    assertEquals("sc05", chosen.getId());
   }
 
+  @Test
+  public void testIfNoSubclustersWithWeightOne() throws Exception {
+    setPolicy(new LoadBasedRouterPolicy());
+    setPolicyInfo(new WeightedPolicyInfo());
+    Map<SubClusterIdInfo, Float> routerWeights = new HashMap<>();
+    Map<SubClusterIdInfo, Float> amrmWeights = new HashMap<>();
+    // update subcluster with weight 0
+    SubClusterIdInfo sc = new SubClusterIdInfo(String.format("sc%02d", 0));
+    SubClusterInfo federationSubClusterInfo = SubClusterInfo.newInstance(
+        sc.toId(), null, null, null, null, -1, SubClusterState.SC_RUNNING, -1,
+        generateClusterMetricsInfo(0));
+    getActiveSubclusters().clear();
+    getActiveSubclusters().put(sc.toId(), federationSubClusterInfo);
+    routerWeights.put(sc, 0.0f);
+    amrmWeights.put(sc, 0.0f);
+    getPolicyInfo().setRouterPolicyWeights(routerWeights);
+    getPolicyInfo().setAMRMPolicyWeights(amrmWeights);
+
+
+    ConfigurableFederationPolicy policy = getPolicy();
+    FederationPoliciesTestUtil.initializePolicyContext(policy,
+        getPolicyInfo(), getActiveSubclusters());
+
+    LambdaTestUtils.intercept(YarnException.class, "Zero Active Subcluster with weight 1.",
+        () ->  ((FederationRouterPolicy) policy).
+        getHomeSubcluster(getApplicationSubmissionContext(), null));
+  }
+
+  @Test
+  public void testUpdateReservation() throws YarnException {
+    long now = Time.now();
+    ReservationSubmissionRequest resReq = getReservationSubmissionRequest();
+    when(resReq.getQueue()).thenReturn("queue1");
+    when(resReq.getReservationId()).thenReturn(ReservationId.newInstance(now, 1));
+
+    // first we invoke a reservation placement
+    FederationRouterPolicy routerPolicy = (FederationRouterPolicy) getPolicy();
+    SubClusterId chosen = routerPolicy.getReservationHomeSubcluster(resReq);
+
+    // add this to the store
+    FederationStateStoreFacade facade =
+        getFederationPolicyContext().getFederationStateStoreFacade();
+    ReservationHomeSubCluster subCluster =
+        ReservationHomeSubCluster.newInstance(resReq.getReservationId(), chosen);
+    facade.addReservationHomeSubCluster(subCluster);
+
+    // get all activeSubClusters
+    Map<SubClusterId, SubClusterInfo> activeSubClusters = getActiveSubclusters();
+
+    // Update ReservationHomeSubCluster
+    // Cannot be randomly selected, SubCluster with Weight >= 1.0 needs to be selected
+    WeightedPolicyInfo weightedPolicyInfo = this.getPolicyInfo();
+    Map<SubClusterIdInfo, Float> routerPolicyWeights = weightedPolicyInfo.getRouterPolicyWeights();
+
+    List<SubClusterId> subClusterIds = new ArrayList<>();
+    for (Map.Entry<SubClusterIdInfo, Float> entry : routerPolicyWeights.entrySet()) {
+      SubClusterIdInfo subClusterIdInfo = entry.getKey();
+      Float subClusterWeight = entry.getValue();
+      if (subClusterWeight >= 1.0) {
+        subClusterIds.add(subClusterIdInfo.toId());
+      }
+    }
+
+    SubClusterId chosen2 = subClusterIds.get(this.getRand().nextInt(subClusterIds.size()));
+    ReservationHomeSubCluster subCluster2 =
+        ReservationHomeSubCluster.newInstance(resReq.getReservationId(), chosen2);
+    facade.updateReservationHomeSubCluster(subCluster2);
+
+    // route an application that uses this app
+    ApplicationSubmissionContext applicationSubmissionContext =
+        ApplicationSubmissionContext.newInstance(
+            ApplicationId.newInstance(now, 1), "app1", "queue1", Priority.newInstance(1),
+                null, false, false, 1, null, null, false);
+
+    applicationSubmissionContext.setReservationID(resReq.getReservationId());
+    SubClusterId chosen3 = routerPolicy.getHomeSubcluster(
+        applicationSubmissionContext, new ArrayList<>());
+
+    assertEquals(chosen2, chosen3);
+  }
 }

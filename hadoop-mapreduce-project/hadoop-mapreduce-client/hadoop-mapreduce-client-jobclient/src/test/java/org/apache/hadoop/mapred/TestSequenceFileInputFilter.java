@@ -25,12 +25,13 @@ import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
 import org.slf4j.Logger;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Random;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestSequenceFileInputFilter {
   private static final Logger LOG = FileInputFormat.LOG;
@@ -147,7 +148,7 @@ public class TestSequenceFileInputFilter {
       int expectedCount = length/1000;
       if (expectedCount*1000!=length)
         expectedCount++;
-      assertEquals(count, expectedCount);
+      assertThat(count).isEqualTo(expectedCount);
     }
       
     // clean up

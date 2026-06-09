@@ -25,7 +25,7 @@ import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.net.NetUtils;
@@ -37,6 +37,8 @@ import org.apache.hadoop.yarn.api.ContainerManagementProtocolPB;
 import org.apache.hadoop.yarn.api.protocolrecords.CommitResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
@@ -81,8 +83,12 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.ReportNewCollectorInfoR
 import org.apache.hadoop.yarn.server.api.protocolrecords.ReportNewCollectorInfoResponse;
 import org.apache.hadoop.yarn.server.api.records.AppCollectorData;
 import org.apache.hadoop.yarn.util.Records;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestRPC {
 
@@ -134,9 +140,9 @@ public class TestRPC {
     try {
       proxy.getNewApplication(Records
           .newRecord(GetNewApplicationRequest.class));
-      Assert.fail("Excepted RPC call to fail with unknown method.");
+      fail("Excepted RPC call to fail with unknown method.");
     } catch (YarnException e) {
-      Assert.assertTrue(e.getMessage().matches(
+      assertTrue(e.getMessage().matches(
           "Unknown method getNewApplication called on.*"
               + "org.apache.hadoop.yarn.proto.ApplicationClientProtocol"
               + "\\$ApplicationClientProtocolService\\$BlockingInterface "
@@ -169,9 +175,9 @@ public class TestRPC {
     try {
       unknownProxy.getNewApplication(Records
           .newRecord(GetNewApplicationRequest.class));
-      Assert.fail("Excepted RPC call to fail with unknown method.");
+      fail("Excepted RPC call to fail with unknown method.");
     } catch (YarnException e) {
-      Assert.assertTrue(e.getMessage().matches(
+      assertTrue(e.getMessage().matches(
           "Unknown method getNewApplication called on.*"
               + "org.apache.hadoop.yarn.proto.ApplicationClientProtocol"
               + "\\$ApplicationClientProtocolService\\$BlockingInterface "
@@ -193,7 +199,7 @@ public class TestRPC {
               DEFAULT_APP_ID, DEFAULT_COLLECTOR_ADDR, null);
       proxy.reportNewCollectorInfo(request);
     } catch (YarnException e) {
-      Assert.fail("RPC call failured is not expected here.");
+      fail("RPC call failured is not expected here.");
     }
 
     try {
@@ -202,7 +208,7 @@ public class TestRPC {
               DEFAULT_APP_ID, DEFAULT_COLLECTOR_ADDR, DEFAULT_COLLECTOR_TOKEN);
       proxy.reportNewCollectorInfo(request);
     } catch (YarnException e) {
-      Assert.fail("RPC call failured is not expected here.");
+      fail("RPC call failured is not expected here.");
     }
 
     // Verify empty request get YarnException back (by design in
@@ -210,9 +216,9 @@ public class TestRPC {
     try {
       proxy.reportNewCollectorInfo(Records
           .newRecord(ReportNewCollectorInfoRequest.class));
-      Assert.fail("Excepted RPC call to fail with YarnException.");
+      fail("Excepted RPC call to fail with YarnException.");
     } catch (YarnException e) {
-      Assert.assertTrue(e.getMessage().contains(ILLEGAL_NUMBER_MESSAGE));
+      assertTrue(e.getMessage().contains(ILLEGAL_NUMBER_MESSAGE));
     }
 
     // Verify request with a valid app ID
@@ -222,12 +228,12 @@ public class TestRPC {
               ApplicationId.newInstance(0, 1));
       GetTimelineCollectorContextResponse response =
           proxy.getTimelineCollectorContext(request);
-      Assert.assertEquals("test_user_id", response.getUserId());
-      Assert.assertEquals("test_flow_name", response.getFlowName());
-      Assert.assertEquals("test_flow_version", response.getFlowVersion());
-      Assert.assertEquals(12345678L, response.getFlowRunId());
+      assertEquals("test_user_id", response.getUserId());
+      assertEquals("test_flow_name", response.getFlowName());
+      assertEquals("test_flow_version", response.getFlowVersion());
+      assertEquals(12345678L, response.getFlowRunId());
     } catch (YarnException | IOException e) {
-      Assert.fail("RPC call failured is not expected here.");
+      fail("RPC call failured is not expected here.");
     }
 
     // Verify request with an invalid app ID
@@ -236,10 +242,10 @@ public class TestRPC {
           GetTimelineCollectorContextRequest.newInstance(
               ApplicationId.newInstance(0, 2));
       proxy.getTimelineCollectorContext(request);
-      Assert.fail("RPC call failured is expected here.");
+      fail("RPC call failured is expected here.");
     } catch (YarnException | IOException e) {
-      Assert.assertTrue(e instanceof  YarnException);
-      Assert.assertTrue(e.getMessage().contains(
+      assertTrue(e instanceof  YarnException);
+      assertTrue(e.getMessage().contains(
           "The application is not found."));
     }
     server.stop();
@@ -260,7 +266,7 @@ public class TestRPC {
             new DummyContainerManager(), addr, conf, null, 1);
     server.start();
     RPC.setProtocolEngine(conf, ContainerManagementProtocolPB.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     ContainerManagementProtocol proxy = (ContainerManagementProtocol)
         rpc.getProxy(ContainerManagementProtocol.class,
             NetUtils.getConnectAddress(server), conf);
@@ -307,17 +313,17 @@ public class TestRPC {
       proxy.stopContainers(stopRequest);
     } catch (YarnException e) {
       exception = true;
-      Assert.assertTrue(e.getMessage().contains(EXCEPTION_MSG));
-      Assert.assertTrue(e.getMessage().contains(EXCEPTION_CAUSE));
+      assertTrue(e.getMessage().contains(EXCEPTION_MSG));
+      assertTrue(e.getMessage().contains(EXCEPTION_CAUSE));
       System.out.println("Test Exception is " + e.getMessage());
     } catch (Exception ex) {
       ex.printStackTrace();
     } finally {
       server.stop();
     }
-    Assert.assertTrue(exception);
-    Assert.assertNotNull(statuses.get(0));
-    Assert.assertEquals(ContainerState.RUNNING, statuses.get(0).getState());
+    assertTrue(exception);
+    assertNotNull(statuses.get(0));
+    assertEquals(ContainerState.RUNNING, statuses.get(0).getState());
   }
 
   public class DummyContainerManager implements ContainerManagementProtocol {
@@ -420,6 +426,13 @@ public class TestRPC {
         request) throws YarnException, IOException {
       return null;
     }
+
+    @Override
+    public GetLocalizationStatusesResponse getLocalizationStatuses(
+        GetLocalizationStatusesRequest request) throws YarnException,
+        IOException {
+      return null;
+    }
   }
 
   public static ContainerTokenIdentifier newContainerTokenIdentifier(
@@ -459,11 +472,11 @@ public class TestRPC {
       if (appCollectors.size() == 1) {
         // check default appID and collectorAddr
         AppCollectorData appCollector = appCollectors.get(0);
-        Assert.assertEquals(appCollector.getApplicationId(),
+        assertEquals(appCollector.getApplicationId(),
             DEFAULT_APP_ID);
-        Assert.assertEquals(appCollector.getCollectorAddr(),
+        assertEquals(appCollector.getCollectorAddr(),
             DEFAULT_COLLECTOR_ADDR);
-        Assert.assertTrue(appCollector.getCollectorToken() == null ||
+        assertTrue(appCollector.getCollectorToken() == null ||
             appCollector.getCollectorToken().equals(DEFAULT_COLLECTOR_TOKEN));
       } else {
         throw new YarnException(ILLEGAL_NUMBER_MESSAGE);

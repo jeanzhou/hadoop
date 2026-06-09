@@ -37,19 +37,23 @@ public abstract class YarnCLI extends Configured implements Tool {
   public static final String MOVE_TO_QUEUE_CMD = "movetoqueue";
   public static final String HELP_CMD = "help";
   public static final String SIGNAL_CMD = "signal";
+  public static final String OPTION_SUBCLUSTERID = "subClusterId";
   protected PrintStream sysout;
   protected PrintStream syserr;
   protected YarnClient client;
 
   public YarnCLI() {
     super(new YarnConfiguration());
-    client = createYarnClient();
-    client.init(getConf());
-    client.start();
   }
 
   protected YarnClient createYarnClient() {
     return YarnClient.createYarnClient();
+  }
+
+  protected void createAndStartYarnClient() {
+    client = createYarnClient();
+    client.init(getConf());
+    client.start();
   }
 
   public void setSysOutPrintStream(PrintStream sysout) {
@@ -69,6 +73,10 @@ public abstract class YarnCLI extends Configured implements Tool {
   }
 
   public void stop() {
-    this.client.stop();
+    // this.client may be null when it is called before
+    // invoking `createAndStartYarnClient`
+    if (this.client != null) {
+      this.client.stop();
+    }
   }
 }

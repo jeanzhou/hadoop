@@ -22,18 +22,23 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Shell;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Set;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /**
  * This test class checks basic operations with {@link HarFileSystem} including
@@ -114,14 +119,14 @@ public class TestHarFileSystemBasics {
     final FSDataOutputStream fsdos = localFileSystem.create(masterIndexPath);
     try {
       String versionString = version + "\n";
-      fsdos.write(versionString.getBytes("UTF-8"));
+      fsdos.write(versionString.getBytes(StandardCharsets.UTF_8));
       fsdos.flush();
     } finally {
       fsdos.close();
     }
   }
 
-  @Before
+  @BeforeEach
   public void before() throws Exception {
     final File rootDirIoFile = new File(rootPath.toUri().getPath());
     rootDirIoFile.mkdirs();
@@ -134,7 +139,7 @@ public class TestHarFileSystemBasics {
     harFileSystem = createHarFileSystem(conf);
   }
 
-  @After
+  @AfterEach
   public void after() throws Exception {
     // close Har FS:
     final FileSystem harFS = harFileSystem;
@@ -243,7 +248,7 @@ public class TestHarFileSystemBasics {
     // test.har has the following contents:
     //   dir1/1.txt
     //   dir1/2.txt
-    Set<String> expectedFileNames = new HashSet<String>();
+    Set<String> expectedFileNames = new HashSet<>();
     expectedFileNames.add("1.txt");
     expectedFileNames.add("2.txt");
 
@@ -252,11 +257,11 @@ public class TestHarFileSystemBasics {
     RemoteIterator<LocatedFileStatus> fileList = hfs.listLocatedStatus(path);
     while (fileList.hasNext()) {
       String fileName = fileList.next().getPath().getName();
-      assertTrue(fileName + " not in expected files list", expectedFileNames.contains(fileName));
+      assertTrue(expectedFileNames.contains(fileName), fileName + " not in expected files list");
       expectedFileNames.remove(fileName);
     }
-    assertEquals("Didn't find all of the expected file names: " + expectedFileNames,
-                 0, expectedFileNames.size());
+    assertEquals(0, expectedFileNames.size(),
+        "Didn't find all of the expected file names: " + expectedFileNames);
   }
 
   @Test
@@ -269,10 +274,9 @@ public class TestHarFileSystemBasics {
         + harPath.toUri().getPath().toString();
     Path path = new Path(harPathWithUserinfo);
     Path qualifiedPath = path.getFileSystem(conf).makeQualified(path);
-    assertTrue(String.format(
-        "The qualified path (%s) did not match the expected path (%s).",
-        qualifiedPath.toString(), harPathWithUserinfo),
-        qualifiedPath.toString().equals(harPathWithUserinfo));
+    assertTrue(qualifiedPath.toString().equals(harPathWithUserinfo),
+        String.format("The qualified path (%s) did not match the expected path (%s).",
+        qualifiedPath.toString(), harPathWithUserinfo));
   }
 
   // ========== Negative:
@@ -287,7 +291,7 @@ public class TestHarFileSystemBasics {
     final URI uri = new URI("har://" + harPath.toString());
     try {
       hfs.initialize(uri, new Configuration());
-      Assert.fail("Exception expected.");
+      fail("Exception expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
@@ -298,7 +302,7 @@ public class TestHarFileSystemBasics {
     final HarFileSystem hfs = new HarFileSystem(localFileSystem);
     try {
       int version = hfs.getHarVersion();
-      Assert.fail("Exception expected, but got a Har version " + version + ".");
+      fail("Exception expected, but got a Har version " + version + ".");
     } catch (IOException ioe) {
       // ok, expected.
     }
@@ -322,7 +326,7 @@ public class TestHarFileSystemBasics {
     final URI uri = new URI("har://" + harPath.toString());
     try {
       hfs.initialize(uri, new Configuration());
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
@@ -336,28 +340,28 @@ public class TestHarFileSystemBasics {
     try {
       harFileSystem.create(fooPath, new FsPermission("+rwx"), true, 1024,
           (short) 88, 1024, null);
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
 
     try {
       harFileSystem.setReplication(fooPath, (short) 55);
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
 
     try {
       harFileSystem.delete(fooPath, true);
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
 
     try {
       harFileSystem.mkdirs(fooPath, new FsPermission("+rwx"));
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
@@ -365,35 +369,35 @@ public class TestHarFileSystemBasics {
     final Path indexPath = new Path(harPath, "_index");
     try {
       harFileSystem.copyFromLocalFile(false, indexPath, fooPath);
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
 
     try {
       harFileSystem.startLocalOutput(fooPath, indexPath);
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
 
     try {
       harFileSystem.completeLocalOutput(fooPath, indexPath);
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
 
     try {
       harFileSystem.setOwner(fooPath, "user", "group");
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
 
     try {
       harFileSystem.setPermission(fooPath, new FsPermission("+x"));
-      Assert.fail("IOException expected.");
+      fail("IOException expected.");
     } catch (IOException ioe) {
       // ok, expected.
     }
@@ -402,7 +406,7 @@ public class TestHarFileSystemBasics {
   @Test
   public void testHarFsWithoutAuthority() throws Exception {
     final URI uri = harFileSystem.getUri();
-    Assert.assertNull("har uri authority not null: " + uri, uri.getAuthority());
+    assertNull(uri.getAuthority(), "har uri authority not null: " + uri);
     FileContext.getFileContext(uri, conf);
   }
 

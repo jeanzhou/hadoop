@@ -19,8 +19,9 @@
 package org.apache.hadoop.hdfs.web;
 
 import static org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod.KERBEROS;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import java.io.IOException;
@@ -38,6 +39,7 @@ import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.WebHdfs;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenSecretManager;
@@ -55,20 +57,21 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestWebHdfsUrl {
   // NOTE: port is never used 
   final URI uri = URI.create(WebHdfsConstants.WEBHDFS_SCHEME + "://" + "127.0.0.1:0");
 
-  @Before
+  @BeforeEach
   public void resetUGI() {
     UserGroupInformation.setConfiguration(new Configuration());
   }
   
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testEncodedPathUrl() throws IOException, URISyntaxException{
     Configuration conf = new Configuration();
 
@@ -76,15 +79,16 @@ public class TestWebHdfsUrl {
         uri, conf);
 
     // Construct a file path that contains percentage-encoded string
-    String pathName = "/hdtest010%2C60020%2C1371000602151.1371058984668";
+    String pathName = "/hdtest010%2C60020%2C1371000602151.1371058984668+";
     Path fsPath = new Path(pathName);
     URL encodedPathUrl = webhdfs.toUrl(PutOpParam.Op.CREATE, fsPath);
     // We should get back the original file path after cycling back and decoding
-    Assert.assertEquals(WebHdfsFileSystem.PATH_PREFIX + pathName,
+    assertEquals(WebHdfsFileSystem.PATH_PREFIX + pathName,
         encodedPathUrl.toURI().getPath());
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSimpleAuthParamsInUrl() throws IOException {
     Configuration conf = new Configuration();
 
@@ -105,7 +109,8 @@ public class TestWebHdfsUrl {
         fileStatusUrl);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSimpleProxyAuthParamsInUrl() throws IOException {
     Configuration conf = new Configuration();
 
@@ -128,7 +133,8 @@ public class TestWebHdfsUrl {
         fileStatusUrl);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSecureAuthParamsInUrl() throws IOException {
     Configuration conf = new Configuration();
     // fake turning on security so api thinks it should use tokens
@@ -144,37 +150,47 @@ public class TestWebHdfsUrl {
     Path fsPath = new Path("/");
     String tokenString = webhdfs.getDelegationToken().encodeToUrlString();
 
+    String userParam = new UserParam(ugi.getShortUserName()).toString();
+
     // send user
     URL getTokenUrl = webhdfs.toUrl(GetOpParam.Op.GETDELEGATIONTOKEN, fsPath);
+    assertTrue(getTokenUrl.toString().indexOf(userParam) == -1,
+        "secure webhdfs SHOULD NOT use user.name parameter");
     checkQueryParams(
         new String[]{
             GetOpParam.Op.GETDELEGATIONTOKEN.toQueryString(),
-            new UserParam(ugi.getShortUserName()).toString()
         },
         getTokenUrl);
+
+
 
     // send user
     URL renewTokenUrl = webhdfs.toUrl(PutOpParam.Op.RENEWDELEGATIONTOKEN,
         fsPath, new TokenArgumentParam(tokenString));
+    assertTrue(renewTokenUrl.toString().indexOf(userParam) == -1,
+        "secure webhdfs SHOULD NOT use user.name parameter");
     checkQueryParams(
         new String[]{
             PutOpParam.Op.RENEWDELEGATIONTOKEN.toQueryString(),
-            new UserParam(ugi.getShortUserName()).toString(),
             new TokenArgumentParam(tokenString).toString(),
         },
         renewTokenUrl);
 
+
+
     // send token
     URL cancelTokenUrl = webhdfs.toUrl(PutOpParam.Op.CANCELDELEGATIONTOKEN,
         fsPath, new TokenArgumentParam(tokenString));
+    assertTrue(cancelTokenUrl.toString().indexOf(userParam) == -1,
+        "secure webhdfs SHOULD NOT use user.name parameter");
     checkQueryParams(
         new String[]{
             PutOpParam.Op.CANCELDELEGATIONTOKEN.toQueryString(),
-            new UserParam(ugi.getShortUserName()).toString(),
             new TokenArgumentParam(tokenString).toString(),
         },
         cancelTokenUrl);
-    
+
+
     // send token
     URL fileStatusUrl = webhdfs.toUrl(GetOpParam.Op.GETFILESTATUS, fsPath);
     checkQueryParams(
@@ -190,13 +206,15 @@ public class TestWebHdfsUrl {
     // send user
     cancelTokenUrl = webhdfs.toUrl(PutOpParam.Op.CANCELDELEGATIONTOKEN,
         fsPath, new TokenArgumentParam(tokenString));
+    assertTrue(cancelTokenUrl.toString().indexOf(userParam) == -1,
+        "secure webhdfs SHOULD NOT use user.name parameter");
     checkQueryParams(
         new String[]{
             PutOpParam.Op.CANCELDELEGATIONTOKEN.toQueryString(),
-            new UserParam(ugi.getShortUserName()).toString(),
             new TokenArgumentParam(tokenString).toString(),
         },
         cancelTokenUrl);
+
 
     // send user
     fileStatusUrl = webhdfs.toUrl(GetOpParam.Op.GETFILESTATUS, fsPath);
@@ -208,7 +226,8 @@ public class TestWebHdfsUrl {
         fileStatusUrl);    
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSecureProxyAuthParamsInUrl() throws IOException {
     Configuration conf = new Configuration();
     // fake turning on security so api thinks it should use tokens
@@ -225,40 +244,50 @@ public class TestWebHdfsUrl {
     Path fsPath = new Path("/");
     String tokenString = webhdfs.getDelegationToken().encodeToUrlString();
 
+    String userParam = new UserParam(ugi.getRealUser().
+        getShortUserName()).toString();
+
     // send real+effective
     URL getTokenUrl = webhdfs.toUrl(GetOpParam.Op.GETDELEGATIONTOKEN, fsPath);
+    assertTrue(getTokenUrl.toString().indexOf(userParam) == -1,
+        "secure webhdfs SHOULD NOT use user.name parameter");
     checkQueryParams(
         new String[]{
             GetOpParam.Op.GETDELEGATIONTOKEN.toQueryString(),
-            new UserParam(ugi.getRealUser().getShortUserName()).toString(),
             new DoAsParam(ugi.getShortUserName()).toString()
         },
         getTokenUrl);
 
+
+
     // send real+effective
     URL renewTokenUrl = webhdfs.toUrl(PutOpParam.Op.RENEWDELEGATIONTOKEN,
         fsPath, new TokenArgumentParam(tokenString));
+    assertTrue(renewTokenUrl.toString().indexOf(userParam) == -1,
+        "secure webhdfs SHOULD NOT use user.name parameter");
     checkQueryParams(
         new String[]{
             PutOpParam.Op.RENEWDELEGATIONTOKEN.toQueryString(),
-            new UserParam(ugi.getRealUser().getShortUserName()).toString(),
             new DoAsParam(ugi.getShortUserName()).toString(),
             new TokenArgumentParam(tokenString).toString(),
         },
         renewTokenUrl);
 
+
     // send token
     URL cancelTokenUrl = webhdfs.toUrl(PutOpParam.Op.CANCELDELEGATIONTOKEN,
         fsPath, new TokenArgumentParam(tokenString));
+    assertTrue(cancelTokenUrl.toString().indexOf(userParam) == -1,
+        "secure webhdfs SHOULD NOT use user.name parameter");
     checkQueryParams(
         new String[]{
             PutOpParam.Op.CANCELDELEGATIONTOKEN.toQueryString(),
-            new UserParam(ugi.getRealUser().getShortUserName()).toString(),
             new DoAsParam(ugi.getShortUserName()).toString(),
             new TokenArgumentParam(tokenString).toString(),
         },
         cancelTokenUrl);
-    
+
+
     // send token
     URL fileStatusUrl = webhdfs.toUrl(GetOpParam.Op.GETFILESTATUS, fsPath);
     checkQueryParams(
@@ -274,15 +303,17 @@ public class TestWebHdfsUrl {
     // send real+effective
     cancelTokenUrl = webhdfs.toUrl(PutOpParam.Op.CANCELDELEGATIONTOKEN,
         fsPath, new TokenArgumentParam(tokenString));
+    assertTrue(cancelTokenUrl.toString().indexOf(userParam) == -1,
+        "secure webhdfs SHOULD NOT use user.name parameter");
     checkQueryParams(
         new String[]{
             PutOpParam.Op.CANCELDELEGATIONTOKEN.toQueryString(),
-            new UserParam(ugi.getRealUser().getShortUserName()).toString(),
             new DoAsParam(ugi.getShortUserName()).toString(),
             new TokenArgumentParam(tokenString).toString()
         },
         cancelTokenUrl);
-    
+
+
     // send real+effective
     fileStatusUrl = webhdfs.toUrl(GetOpParam.Op.GETFILESTATUS, fsPath);
     checkQueryParams(
@@ -293,7 +324,8 @@ public class TestWebHdfsUrl {
         fileStatusUrl);    
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testCheckAccessUrl() throws IOException {
     Configuration conf = new Configuration();
 
@@ -315,7 +347,8 @@ public class TestWebHdfsUrl {
         checkAccessUrl);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testBatchedListingUrl() throws Exception {
     Configuration conf = new Configuration();
 
@@ -395,7 +428,7 @@ public class TestWebHdfsUrl {
 
       //get file status and check that it was written properly.
       final FileStatus s1 = fs.getFileStatus(file1);
-      assertEquals("Write failed for file " + file1, length, s1.getLen());
+      assertEquals(length, s1.getLen(), "Write failed for file " + file1);
 
       boolean found = false;
       RemoteIterator<LocatedFileStatus> statusRemoteIterator =
@@ -408,10 +441,104 @@ public class TestWebHdfsUrl {
           found = true;
         }
       }
-      assertFalse("Could not find file with special character", !found);
+      assertFalse(!found, "Could not find file with special character");
     } finally {
       cluster.shutdown();
     }
   }
 
+  private static final String BACKWARD_COMPATIBLE_SPECIAL_CHARACTER_FILENAME =
+          "specialFile ?\"\\()[]_-=&,{}#'`~!@$^*|<>.+%";
+
+  @Test
+  public void testWebHdfsBackwardCompatibleSpecialCharacterFile()
+          throws Exception {
+    UserGroupInformation ugi =
+            UserGroupInformation.createRemoteUser("test-user");
+    ugi.setAuthenticationMethod(KERBEROS);
+    UserGroupInformation.setLoginUser(ugi);
+
+    final Configuration conf = WebHdfsTestUtil.createConf();
+    final Path dir = new Path("/testWebHdfsSpecialCharacterFile");
+
+    final short numDatanodes = 1;
+    final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+            .numDataNodes(numDatanodes)
+            .build();
+    try {
+      cluster.waitActive();
+      final FileSystem fs = WebHdfsTestUtil
+              .getWebHdfsFileSystem(conf, WebHdfs.SCHEME);
+
+      //create a file
+      final long length = 1L << 10;
+      final Path file1 = new Path(dir,
+              BACKWARD_COMPATIBLE_SPECIAL_CHARACTER_FILENAME);
+
+      DFSTestUtil.createFile(fs, file1, length, numDatanodes, 20120406L);
+
+      //get file status and check that it was written properly.
+      final FileStatus s1 = fs.getFileStatus(file1);
+      assertEquals(length, s1.getLen(), "Write failed for file " + file1);
+
+      boolean found = false;
+      RemoteIterator<LocatedFileStatus> statusRemoteIterator =
+              fs.listFiles(dir, false);
+      while (statusRemoteIterator.hasNext()) {
+        LocatedFileStatus locatedFileStatus = statusRemoteIterator.next();
+        if (locatedFileStatus.isFile() &&
+                BACKWARD_COMPATIBLE_SPECIAL_CHARACTER_FILENAME
+                        .equals(locatedFileStatus.getPath().getName())) {
+          found = true;
+        }
+      }
+      assertFalse(!found, "Could not find file with special character");
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
+  @Test
+  public void testWebHdfsUrlEncoding() throws Exception {
+    final WebHdfsFileSystem fs =
+        (WebHdfsFileSystem) FileSystem.get(uri, WebHdfsTestUtil.createConf());
+
+    // characters which should not be urlencoded.
+    final String unreserved = "_-!.~'()*";
+    final String punct = ",:$&=";
+    String path = "/testWebHdfsUrlEncoding" + unreserved + punct;
+    URL url =
+        WebHdfsTestUtil.toUrl(fs, GetOpParam.Op.LISTSTATUS, new Path(path));
+    WebHdfsTestUtil.LOG.info(url.getPath());
+    assertEquals(WebHdfsFileSystem.PATH_PREFIX + path, url.getPath());
+  }
+
+  @Test
+  public void testWebHdfsPathWithSemicolon() throws Exception {
+    try (MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(WebHdfsTestUtil.createConf())
+            .numDataNodes(1)
+            .build()) {
+      cluster.waitActive();
+
+      // regression test for HDFS-14423.
+      final Path semicolon = new Path("/a;b");
+      final Path plus = new Path("/a+b");
+      final Path percent = new Path("/a%b");
+
+      final WebHdfsFileSystem webhdfs = WebHdfsTestUtil.getWebHdfsFileSystem(
+          cluster.getConfiguration(0), WebHdfs.SCHEME);
+      webhdfs.create(semicolon).close();
+      webhdfs.create(plus).close();
+      webhdfs.create(percent).close();
+
+      final DistributedFileSystem dfs = cluster.getFileSystem();
+      assertEquals(semicolon.getName(),
+          dfs.getFileStatus(semicolon).getPath().getName());
+      assertEquals(plus.getName(),
+          dfs.getFileStatus(plus).getPath().getName());
+      assertEquals(percent.getName(),
+          dfs.getFileStatus(percent).getPath().getName());
+    }
+  }
 }

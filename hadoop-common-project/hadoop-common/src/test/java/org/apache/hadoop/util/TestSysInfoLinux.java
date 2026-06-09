@@ -23,13 +23,11 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.util.Random;
 
-import org.apache.commons.io.IOUtils;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
  * A JUnit test to test {@link SysInfoLinux}
@@ -160,6 +158,36 @@ public class TestSysInfoLinux {
     "DirectMap4k:        4096 kB\n" +
     "DirectMap2M:     2027520 kB\n" +
     "DirectMap1G:    132120576 kB\n";
+
+  static final String MEMINFO_FORMAT3 =
+    "MemTotal:      %d kB\n" +
+    "MemFree:         %s kB\n" +
+    "Buffers:        138244 kB\n" +
+    "Cached:         947780 kB\n" +
+    "SwapCached:     142880 kB\n" +
+    "Active:        3229888 kB\n" +
+    "Inactive:       %d kB\n" +
+    "SwapTotal:     %d kB\n" +
+    "SwapFree:      %s kB\n" +
+    "Dirty:          122012 kB\n" +
+    "Writeback:           0 kB\n" +
+    "AnonPages:     2710792 kB\n" +
+    "Mapped:          24740 kB\n" +
+    "Slab:           132528 kB\n" +
+    "SReclaimable:   105096 kB\n" +
+    "SUnreclaim:      27432 kB\n" +
+    "PageTables:      11448 kB\n" +
+    "NFS_Unstable:        0 kB\n" +
+    "Bounce:              0 kB\n" +
+    "CommitLimit:   4125904 kB\n" +
+    "Committed_AS:  4143556 kB\n" +
+    "VmallocTotal: 34359738367 kB\n" +
+    "VmallocUsed:      1632 kB\n" +
+    "VmallocChunk: 34359736375 kB\n" +
+    "HugePages_Total:     %d\n" +
+    "HugePages_Free:      0\n" +
+    "HugePages_Rsvd:      0\n" +
+    "Hugepagesize:     2048 kB";
 
   static final String CPUINFO_FORMAT =
     "processor : %s\n" +
@@ -384,6 +412,36 @@ public class TestSysInfoLinux {
                           (nrHugePages * 2048) + swapTotal));
   }
 
+  /**
+   * Test parsing /proc/meminfo
+   * @throws IOException
+   */
+  @Test
+  public void parsingProcMemFileWithBadValues() throws IOException {
+    long memTotal = 4058864L;
+    long memFree = 0L;  // bad value should return 0
+    long inactive = 567732L;
+    long swapTotal = 2096472L;
+    long swapFree = 0L; // bad value should return 0
+    int nrHugePages = 10;
+    String badFreeValue = "18446744073709551596";
+    File tempFile = new File(FAKE_MEMFILE);
+    tempFile.deleteOnExit();
+    FileWriter fWriter = new FileWriter(FAKE_MEMFILE);
+    fWriter.write(String.format(MEMINFO_FORMAT3,
+        memTotal, badFreeValue, inactive, swapTotal, badFreeValue, nrHugePages));
+
+    fWriter.close();
+    assertEquals(plugin.getAvailablePhysicalMemorySize(),
+        1024L * (memFree + inactive));
+    assertEquals(plugin.getAvailableVirtualMemorySize(),
+        1024L * (memFree + inactive + swapFree));
+    assertEquals(plugin.getPhysicalMemorySize(),
+        1024L * (memTotal - (nrHugePages * 2048)));
+    assertEquals(plugin.getVirtualMemorySize(),
+        1024L * (memTotal - (nrHugePages * 2048) + swapTotal));
+  }
+
   @Test
   public void testCoreCounts() throws IOException {
 
@@ -461,12 +519,9 @@ public class TestSysInfoLinux {
 
   private void writeFakeCPUInfoFile(String content) throws IOException {
     File tempFile = new File(FAKE_CPUFILE);
-    FileWriter fWriter = new FileWriter(FAKE_CPUFILE);
-    tempFile.deleteOnExit();
-    try {
+    try (FileWriter fWriter = new FileWriter(FAKE_CPUFILE)) {
+      tempFile.deleteOnExit();
       fWriter.write(content);
-    } finally {
-      IOUtils.closeQuietly(fWriter);
     }
   }
 

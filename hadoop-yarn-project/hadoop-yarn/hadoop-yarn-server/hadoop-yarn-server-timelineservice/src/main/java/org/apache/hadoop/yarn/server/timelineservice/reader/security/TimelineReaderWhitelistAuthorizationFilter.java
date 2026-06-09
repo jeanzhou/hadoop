@@ -27,15 +27,13 @@ import javax.servlet.ServletException;
 import javax.servlet.ServletRequest;
 import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
-import javax.ws.rs.core.Response;
-import javax.ws.rs.core.Response.Status;
+import javax.servlet.http.HttpServletResponse;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.webapp.ForbiddenException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.server.timelineservice.reader.TimelineReaderWebServicesUtils;
@@ -64,9 +62,12 @@ public class TimelineReaderWhitelistAuthorizationFilter implements Filter {
   @Override
   public void doFilter(ServletRequest request, ServletResponse response,
       FilterChain chain) throws IOException, ServletException {
+    HttpServletRequest httpRequest = (HttpServletRequest) request;
+    HttpServletResponse httpResponse = (HttpServletResponse) response;
+
     if (isWhitelistReadAuthEnabled) {
       UserGroupInformation callerUGI = TimelineReaderWebServicesUtils
-          .getCallerUserGroupInformation((HttpServletRequest) request, true);
+          .getUser(httpRequest);
       if (callerUGI == null) {
         String msg = "Unable to obtain user name, user not authenticated";
         throw new AuthorizationException(msg);
@@ -76,9 +77,8 @@ public class TimelineReaderWhitelistAuthorizationFilter implements Filter {
         String userName = callerUGI.getShortUserName();
         String msg = "User " + userName
             + " is not allowed to read TimelineService V2 data.";
-        Response.status(Status.FORBIDDEN).entity(msg).build();
-        throw new ForbiddenException("user " + userName
-            + " is not allowed to read TimelineService V2 data");
+        httpResponse.sendError(HttpServletResponse.SC_FORBIDDEN, msg);
+        return;
       }
     }
     if (chain != null) {
@@ -105,9 +105,9 @@ public class TimelineReaderWhitelistAuthorizationFilter implements Filter {
         listAllowedUsers =
             YarnConfiguration.DEFAULT_TIMELINE_SERVICE_READ_ALLOWED_USERS;
       }
-      LOG.info("listAllowedUsers=" + listAllowedUsers);
+      LOG.info("listAllowedUsers={}", listAllowedUsers);
       allowedUsersAclList = new AccessControlList(listAllowedUsers);
-      LOG.info("allowedUsersAclList=" + allowedUsersAclList.getUsers());
+      LOG.info("allowedUsersAclList={}", allowedUsersAclList.getUsers());
       // also allow admins
       String adminAclListStr =
           conf.getInitParameter(YarnConfiguration.YARN_ADMIN_ACL);
@@ -117,7 +117,7 @@ public class TimelineReaderWhitelistAuthorizationFilter implements Filter {
         LOG.info("adminAclList not set, hence setting it to \"\"");
       }
       adminAclList = new AccessControlList(adminAclListStr);
-      LOG.info("adminAclList=" + adminAclList.getUsers());
+      LOG.info("adminAclList={}", adminAclList.getUsers());
     }
   }
 }

@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.tools;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -35,7 +35,7 @@ import java.util.ArrayList;
  * listing-file by "globbing" all specified source paths (wild-cards and all.)
  */
 public class GlobbedCopyListing extends CopyListing {
-  private static final Log LOG = LogFactory.getLog(GlobbedCopyListing.class);
+  private static final Logger LOG = LoggerFactory.getLogger(GlobbedCopyListing.class);
 
   private final CopyListing simpleListing;
   /**
@@ -61,7 +61,7 @@ public class GlobbedCopyListing extends CopyListing {
    * @param pathToListingFile The location at which the copy-listing file
    *                           is to be created.
    * @param context The distcp context with associated input options.
-   * @throws IOException
+   * @throws IOException if unable to construct the fileList
    */
   @Override
   public void doBuildListing(Path pathToListingFile, DistCpContext context)

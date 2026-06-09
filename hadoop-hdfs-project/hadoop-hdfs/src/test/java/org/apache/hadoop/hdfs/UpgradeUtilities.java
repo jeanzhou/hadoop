@@ -51,9 +51,9 @@ import org.apache.hadoop.hdfs.server.namenode.NNStorage;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 
-import com.google.common.base.Preconditions;
-import com.google.common.io.Files;
-import com.google.common.primitives.Bytes;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.io.Files;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Bytes;
 
 /**
  * This class defines a number of static helper methods used by the
@@ -194,10 +194,10 @@ public class UpgradeUtilities {
    */
   public static Configuration initializeStorageStateConf(int numDirs,
                                                          Configuration conf) {
-    StringBuffer nameNodeDirs =
-      new StringBuffer(new File(TEST_ROOT_DIR, "name1").toString());
-    StringBuffer dataNodeDirs =
-      new StringBuffer(new File(TEST_ROOT_DIR, "data1").toString());
+    StringBuilder nameNodeDirs =
+        new StringBuilder(new File(TEST_ROOT_DIR, "name1").toString());
+    StringBuilder dataNodeDirs =
+        new StringBuilder(new File(TEST_ROOT_DIR, "data1").toString());
     for (int i = 2; i <= numDirs; i++) {
       nameNodeDirs.append("," + new File(TEST_ROOT_DIR, "name"+i));
       dataNodeDirs.append("," + new File(TEST_ROOT_DIR, "data"+i));

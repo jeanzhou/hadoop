@@ -31,6 +31,7 @@ import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.viewfs.ViewFileSystemOverloadScheme;
 import org.apache.hadoop.hdfs.DFSInotifyEventInputStream;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
@@ -66,9 +67,8 @@ import java.util.EnumSet;
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class HdfsAdmin {
-
-  private DistributedFileSystem dfs;
-  private static final FsPermission TRASH_PERMISSION = new FsPermission(
+  final private DistributedFileSystem dfs;
+  public static final FsPermission TRASH_PERMISSION = new FsPermission(
       FsAction.ALL, FsAction.ALL, FsAction.ALL, true);
 
   /**
@@ -80,6 +80,10 @@ public class HdfsAdmin {
    */
   public HdfsAdmin(URI uri, Configuration conf) throws IOException {
     FileSystem fs = FileSystem.get(uri, conf);
+    if ((fs instanceof ViewFileSystemOverloadScheme)) {
+      fs = ((ViewFileSystemOverloadScheme) fs)
+          .getRawFileSystem(new Path(FileSystem.getDefaultUri(conf)), conf);
+    }
     if (!(fs instanceof DistributedFileSystem)) {
       throw new IllegalArgumentException("'" + uri + "' is not an HDFS URI.");
     } else {
@@ -165,6 +169,20 @@ public class HdfsAdmin {
    */
   public void allowSnapshot(Path path) throws IOException {
     dfs.allowSnapshot(path);
+    if (dfs.isSnapshotTrashRootEnabled()) {
+      dfs.provisionSnapshotTrash(path, TRASH_PERMISSION);
+    }
+  }
+
+  /**
+   * Provision a trash directory for a given snapshottable directory.
+   * @param path the root of the snapshottable directory
+   * @return Path of the provisioned trash root
+   * @throws IOException if the trash directory can not be created.
+   */
+  public Path provisionSnapshotTrash(Path path)
+      throws IOException {
+    return dfs.provisionSnapshotTrash(path, TRASH_PERMISSION);
   }
 
   /**
@@ -360,10 +378,10 @@ public class HdfsAdmin {
    * Returns a RemoteIterator which can be used to list the encryption zones
    * in HDFS. For large numbers of encryption zones, the iterator will fetch
    * the list of zones in a number of small batches.
-   * <p/>
+   * <p>
    * Since the list is fetched in batches, it does not represent a
    * consistent snapshot of the entire list of encryption zones.
-   * <p/>
+   * <p>
    * This method can only be called by HDFS superusers.
    */
   public RemoteIterator<EncryptionZone> listEncryptionZones()
@@ -418,7 +436,7 @@ public class HdfsAdmin {
    * for information on stream usage.
    * See {@link org.apache.hadoop.hdfs.inotify.Event}
    * for information on the available events.
-   * <p/>
+   * <p>
    * Inotify users may want to tune the following HDFS parameters to
    * ensure that enough extra HDFS edits are saved to support inotify clients
    * that fall behind the current state of the namespace while reading events.
@@ -438,7 +456,7 @@ public class HdfsAdmin {
    * dfs.namenode.checkpoint.txns
    * dfs.namenode.num.checkpoints.retained
    * dfs.ha.log-roll.period
-   * <p/>
+   * <p>
    * It is recommended that local journaling be configured
    * (dfs.namenode.edits.dir) for inotify (in addition to a shared journal)
    * so that edit transfers from the shared journal can be avoided.
@@ -533,6 +551,16 @@ public class HdfsAdmin {
   }
 
   /**
+   * Set the source path to the specified storage policy.
+   *
+   * @param path The source path referring to either a directory or a file.
+   * @throws IOException
+   */
+  public void satisfyStoragePolicy(final Path path) throws IOException {
+    dfs.satisfyStoragePolicy(path);
+  }
+
+  /**
    * Get the Erasure coding policies supported.
    *
    * @throws IOException
@@ -605,15 +633,21 @@ public class HdfsAdmin {
    * Returns a RemoteIterator which can be used to list all open files
    * currently managed by the NameNode. For large numbers of open files,
    * iterator will fetch the list in batches of configured size.
-   * <p/>
+   * <p>
    * Since the list is fetched in batches, it does not represent a
    * consistent snapshot of the all open files.
-   * <p/>
+   * <p>
    * This method can only be called by HDFS superusers.
    */
   @Deprecated
   public RemoteIterator<OpenFileEntry> listOpenFiles() throws IOException {
     return dfs.listOpenFiles();
+  }
+
+  @Deprecated
+  public RemoteIterator<OpenFileEntry> listOpenFiles(
+      EnumSet<OpenFilesType> openFilesTypes) throws IOException {
+    return dfs.listOpenFiles(openFilesTypes);
   }
 
   public RemoteIterator<OpenFileEntry> listOpenFiles(

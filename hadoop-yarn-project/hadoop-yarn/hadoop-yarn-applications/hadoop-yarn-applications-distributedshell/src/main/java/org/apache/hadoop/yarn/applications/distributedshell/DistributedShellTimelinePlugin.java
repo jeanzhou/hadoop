@@ -23,7 +23,6 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntityGroupId;
 import org.apache.hadoop.yarn.server.timeline.NameValuePair;
 import org.apache.hadoop.yarn.server.timeline.TimelineEntityGroupPlugin;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -52,7 +51,7 @@ public class DistributedShellTimelinePlugin extends TimelineEntityGroupPlugin {
   @Override
   public Set<TimelineEntityGroupId> getTimelineEntityGroupId(String entityId,
       String entityType) {
-    if (ApplicationMaster.DSEntity.DS_CONTAINER.toString().equals(entityId)) {
+    if (ApplicationMaster.DSEntity.DS_CONTAINER.toString().equals(entityType)) {
       ContainerId containerId = ContainerId.fromString(entityId);
       ApplicationId appId = containerId.getApplicationAttemptId()
           .getApplicationId();

@@ -47,7 +47,6 @@ import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.SequenceFile;
-import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.util.ReflectionUtils;
@@ -105,7 +104,8 @@ class Display extends FsCommand {
     }
 
     protected InputStream getInputStream(PathData item) throws IOException {
-      return item.fs.open(item.path);
+      // Always do sequential reads;
+      return item.openForSequentialIO();
     }
   }
   
@@ -175,7 +175,7 @@ class Display extends FsCommand {
   
   public static class Checksum extends Display {
     public static final String NAME = "checksum";
-    public static final String USAGE = "<src> ...";
+    public static final String USAGE = "[-v] <src> ...";
     public static final String DESCRIPTION =
       "Dump checksum information for files that match the file " +
       "pattern <src> to stdout. Note that this requires a round-trip " +
@@ -184,6 +184,16 @@ class Display extends FsCommand {
       "file depends on its content, block size and the checksum " +
       "algorithm and parameters used for creating the file.";
 
+    private boolean displayBlockSize;
+
+    @Override
+    protected void processOptions(LinkedList<String> args)
+        throws IOException {
+      CommandFormat cf = new CommandFormat(1, Integer.MAX_VALUE, "v");
+      cf.parse(args);
+      displayBlockSize = cf.getOpt("v");
+    }
+
     @Override
     protected void processPath(PathData item) throws IOException {
       if (item.stat.isDirectory()) {
@@ -191,35 +201,34 @@ class Display extends FsCommand {
       }
 
       FileChecksum checksum = item.fs.getFileChecksum(item.path);
-      if (checksum == null) {
-        out.printf("%s\tNONE\t%n", item.toString());
+      String outputChecksum = checksum == null ? "NONE" :
+          String.format("%s\t%s", checksum.getAlgorithmName(), StringUtils
+              .byteToHexString(checksum.getBytes(), 0, checksum.getLength()));
+      if (displayBlockSize) {
+        FileStatus fileStatus = item.fs.getFileStatus(item.path);
+        out.printf("%s\t%s\tBlockSize=%s%n", item.toString(), outputChecksum,
+            fileStatus != null ? fileStatus.getBlockSize() : "NONE");
       } else {
-        String checksumString = StringUtils.byteToHexString(
-            checksum.getBytes(), 0, checksum.getLength());
-        out.printf("%s\t%s\t%s%n",
-            item.toString(), checksum.getAlgorithmName(),
-            checksumString);
+        out.printf("%s\t%s%n", item.toString(), outputChecksum);
       }
     }
   }
 
   protected class TextRecordInputStream extends InputStream {
-    SequenceFile.Reader r;
-    Writable key;
-    Writable val;
+    private final SequenceFile.Reader r;
+    private Object key;
+    private Object val;
 
-    DataInputBuffer inbuf;
-    DataOutputBuffer outbuf;
+    private final DataInputBuffer inbuf;
+    private final DataOutputBuffer outbuf;
 
     public TextRecordInputStream(FileStatus f) throws IOException {
       final Path fpath = f.getPath();
       final Configuration lconf = getConf();
       r = new SequenceFile.Reader(lconf, 
           SequenceFile.Reader.file(fpath));
-      key = ReflectionUtils.newInstance(
-          r.getKeyClass().asSubclass(Writable.class), lconf);
-      val = ReflectionUtils.newInstance(
-          r.getValueClass().asSubclass(Writable.class), lconf);
+      key = ReflectionUtils.newInstance(r.getKeyClass(), lconf);
+      val = ReflectionUtils.newInstance(r.getValueClass(), lconf);
       inbuf = new DataInputBuffer();
       outbuf = new DataOutputBuffer();
     }
@@ -228,26 +237,66 @@ class Display extends FsCommand {
     public int read() throws IOException {
       int ret;
       if (null == inbuf || -1 == (ret = inbuf.read())) {
-        if (!r.next(key, val)) {
-          return -1;
+        if (!readNextFromSequenceFile()) {
+          ret = -1;
+        } else {
+          ret = inbuf.read();
         }
-        byte[] tmp = key.toString().getBytes(StandardCharsets.UTF_8);
-        outbuf.write(tmp, 0, tmp.length);
-        outbuf.write('\t');
-        tmp = val.toString().getBytes(StandardCharsets.UTF_8);
-        outbuf.write(tmp, 0, tmp.length);
-        outbuf.write('\n');
-        inbuf.reset(outbuf.getData(), outbuf.getLength());
-        outbuf.reset();
-        ret = inbuf.read();
       }
       return ret;
+    }
+
+    @Override
+    public int read(byte[] dest, int destPos, int destLen) throws IOException {
+      validateInputStreamReadArguments(dest, destPos, destLen);
+
+      if (destLen == 0) {
+        return 0;
+      }
+
+      int bytesRead = 0;
+      while (destLen > 0) {
+        // Attempt to copy buffered data.
+        int copyLen = inbuf.read(dest, destPos, destLen);
+        if (-1 == copyLen) {
+          // There was no buffered data.
+          if (!readNextFromSequenceFile()) {
+            // There is also no data remaining in the file.
+            break;
+          }
+          // Reattempt copy now that we have buffered data.
+          copyLen = inbuf.read(dest, destPos, destLen);
+        }
+        bytesRead += copyLen;
+        destPos += copyLen;
+        destLen -= copyLen;
+      }
+
+      return bytesRead > 0 ? bytesRead : -1;
     }
 
     @Override
     public void close() throws IOException {
       r.close();
       super.close();
+    }
+
+    private boolean readNextFromSequenceFile() throws IOException {
+      key = r.next(key);
+      if (key == null) {
+        return false;
+      } else {
+        val = r.getCurrentValue(val);
+      }
+      byte[] tmp = key.toString().getBytes(StandardCharsets.UTF_8);
+      outbuf.write(tmp, 0, tmp.length);
+      outbuf.write('\t');
+      tmp = val.toString().getBytes(StandardCharsets.UTF_8);
+      outbuf.write(tmp, 0, tmp.length);
+      outbuf.write('\n');
+      inbuf.reset(outbuf.getData(), outbuf.getLength());
+      outbuf.reset();
+      return true;
     }
   }
 
@@ -258,10 +307,11 @@ class Display extends FsCommand {
   protected static class AvroFileInputStream extends InputStream {
     private int pos;
     private byte[] buffer;
-    private ByteArrayOutputStream output;
-    private FileReader<?> fileReader;
-    private DatumWriter<Object> writer;
-    private JsonEncoder encoder;
+    private final ByteArrayOutputStream output;
+    private final FileReader<?> fileReader;
+    private final DatumWriter<Object> writer;
+    private final JsonEncoder encoder;
+    private final byte[] finalSeparator;
 
     public AvroFileInputStream(FileStatus status) throws IOException {
       pos = 0;
@@ -274,6 +324,7 @@ class Display extends FsCommand {
       writer = new GenericDatumWriter<Object>(schema);
       output = new ByteArrayOutputStream();
       encoder = EncoderFactory.get().jsonEncoder(schema, output);
+      finalSeparator = System.getProperty("line.separator").getBytes(StandardCharsets.UTF_8);
     }
 
     /**
@@ -281,24 +332,88 @@ class Display extends FsCommand {
      */
     @Override
     public int read() throws IOException {
+      if (buffer == null) {
+        return -1;
+      }
+
       if (pos < buffer.length) {
         return buffer[pos++];
       }
+
       if (!fileReader.hasNext()) {
+        // Unset buffer to signal EOF on future calls.
+        buffer = null;
         return -1;
       }
+
       writer.write(fileReader.next(), encoder);
       encoder.flush();
+
       if (!fileReader.hasNext()) {
-        // Write a new line after the last Avro record.
-        output.write(System.getProperty("line.separator")
-                         .getBytes(StandardCharsets.UTF_8));
-        output.flush();
+        if (buffer.length > 0) {
+          // Write a new line after the last Avro record.
+          output.write(finalSeparator);
+          output.flush();
+        }
       }
+
+      swapBuffer();
+      return read();
+    }
+
+    @Override
+    public int read(byte[] dest, int destPos, int destLen) throws IOException {
+      validateInputStreamReadArguments(dest, destPos, destLen);
+
+      if (destLen == 0) {
+        return 0;
+      }
+
+      if (buffer == null) {
+        return -1;
+      }
+
+      int bytesRead = 0;
+      while (destLen > 0 && buffer != null) {
+        if (pos < buffer.length) {
+          // We have buffered data available, either from the Avro file or the final separator.
+          int copyLen = Math.min(buffer.length - pos, destLen);
+          System.arraycopy(buffer, pos, dest, destPos, copyLen);
+          pos += copyLen;
+          bytesRead += copyLen;
+          destPos += copyLen;
+          destLen -= copyLen;
+        } else if (buffer == finalSeparator) {
+          // There is no buffered data, and the last buffer processed was the final separator.
+          // Unset buffer to signal EOF on future calls.
+          buffer = null;
+        } else if (!fileReader.hasNext()) {
+          if (buffer.length > 0) {
+            // There is no data remaining in the file. Get ready to write the final separator on
+            // the next iteration.
+            buffer = finalSeparator;
+            pos = 0;
+          } else {
+            // We never read data into the buffer. This must be an empty file.
+            // Immediate EOF, no separator needed.
+            buffer = null;
+            return -1;
+          }
+        } else {
+          // Read the next data from the file into the buffer.
+          writer.write(fileReader.next(), encoder);
+          encoder.flush();
+          swapBuffer();
+        }
+      }
+
+      return bytesRead;
+    }
+
+    private void swapBuffer() {
       pos = 0;
       buffer = output.toByteArray();
       output.reset();
-      return read();
     }
 
     /**
@@ -309,6 +424,16 @@ class Display extends FsCommand {
       fileReader.close();
       output.close();
       super.close();
+    }
+  }
+
+  private static void validateInputStreamReadArguments(byte[] dest, int destPos, int destLen)
+      throws IOException {
+    if (dest == null) {
+      throw new NullPointerException("null destination buffer");
+    } else if (destPos < 0 || destLen < 0 || destLen > dest.length - destPos) {
+      throw new IndexOutOfBoundsException(String.format(
+          "invalid destination buffer range: destPos = %d, destLen = %d", destPos, destLen));
     }
   }
 }

@@ -20,32 +20,23 @@ package org.apache.hadoop.hdfs.server.datanode.checker;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
-import org.apache.hadoop.hdfs.LogVerificationAppender;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
+import org.apache.hadoop.test.TestName;
 import org.apache.hadoop.util.FakeTimer;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
-import org.apache.log4j.spi.LoggingEvent;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import static org.mockito.Matchers.anyObject;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
-import org.mockito.invocation.InvocationOnMock;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.mockito.stubbing.Answer;
 import org.slf4j.LoggerFactory;
 
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -56,7 +47,8 @@ public class TestDatasetVolumeCheckerTimeout {
   public static final org.slf4j.Logger LOG =
       LoggerFactory.getLogger(TestDatasetVolumeCheckerTimeout.class);
 
-  @Rule
+  @SuppressWarnings("checkstyle:VisibilityModifier")
+  @RegisterExtension
   public TestName testName = new TestName();
 
   static Configuration conf;
@@ -80,21 +72,19 @@ public class TestDatasetVolumeCheckerTimeout {
     when(volume.obtainReference()).thenReturn(reference);
     when(volume.getStorageLocation()).thenReturn(location);
 
-    when(volume.check(anyObject())).thenAnswer(new Answer<VolumeCheckResult>() {
-      @Override
-      public VolumeCheckResult answer(
-          InvocationOnMock invocationOnMock) throws Throwable {
+    when(volume.check(any())).thenAnswer(
+        (Answer<VolumeCheckResult>) invocationOnMock -> {
         // Wait for the disk check to timeout and then release lock.
         lock.lock();
         lock.unlock();
         return VolumeCheckResult.HEALTHY;
-      }
-    });
+      });
 
     return volume;
   }
 
-  @Test (timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testDiskCheckTimeout() throws Exception {
     LOG.info("Executing {}", testName.getMethodName());
     final FsVolumeSpi volume = makeSlowVolume();
@@ -116,9 +106,9 @@ public class TestDatasetVolumeCheckerTimeout {
 
             // Assert that the disk check registers a failed volume due to
             // timeout
-            assertThat(healthyVolumes.size(), is(0));
-            assertThat(failedVolumes.size(), is(1));
-          }
+            assertThat(healthyVolumes.size()).isEqualTo(0);
+            assertThat(failedVolumes.size()).isEqualTo(1);
+            }
         });
 
     // Wait for the callback
@@ -128,7 +118,7 @@ public class TestDatasetVolumeCheckerTimeout {
     lock.unlock();
 
     // Ensure that the check was invoked only once.
-    verify(volume, times(1)).check(anyObject());
-    assertThat(numCallbackInvocations.get(), is(1L));
+    verify(volume, times(1)).check(any());
+    assertThat(numCallbackInvocations.get()).isEqualTo(1L);
   }
 }

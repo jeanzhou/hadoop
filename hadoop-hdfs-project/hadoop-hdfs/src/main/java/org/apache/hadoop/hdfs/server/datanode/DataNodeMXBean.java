@@ -104,10 +104,14 @@ public interface DataNodeMXBean {
   public String getClusterId();
 
   /**
-   * Returns an estimate of the number of Datanode threads
-   * actively transferring blocks.
+   * Returns the number of active xceivers.
    */
   public int getXceiverCount();
+
+  /**
+   * Returns the number of Datanode threads actively transferring blocks.
+   */
+  int getActiveTransferThreadCount();
 
   /**
    * Returns an estimate of the number of data replication/reconstruction tasks
@@ -146,4 +150,18 @@ public interface DataNodeMXBean {
    * @return list of slow disks
    */
   String getSlowDisks();
+
+  /**
+   * Gets if security is enabled.
+   *
+   * @return true, if security is enabled.
+   */
+  boolean isSecurityEnabled();
+
+  /**
+   * Get the start time of the DataNode.
+   *
+   * @return Start time of the DataNode.
+   */
+  long getDNStartedTimeInMillis();
 }

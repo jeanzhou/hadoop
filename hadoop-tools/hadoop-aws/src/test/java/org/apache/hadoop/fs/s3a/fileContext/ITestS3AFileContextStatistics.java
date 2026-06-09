@@ -14,46 +14,67 @@
 package org.apache.hadoop.fs.s3a.fileContext;
 
 import java.net.URI;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FCStatisticsBaseTest;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.s3a.S3ATestUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
+import org.apache.hadoop.fs.s3a.auth.STSClientFactory;
+import org.apache.hadoop.test.tags.IntegrationTest;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * S3a implementation of FCStatisticsBaseTest.
  */
+@IntegrationTest
 public class ITestS3AFileContextStatistics extends FCStatisticsBaseTest {
 
-  @Before
+  private static final Logger LOG =
+      LoggerFactory.getLogger(STSClientFactory.class);
+
+  private Path testRootPath;
+  private Configuration conf;
+
+  @BeforeEach
   public void setUp() throws Exception {
-    Configuration conf = new Configuration();
+    conf = new Configuration();
     fc = S3ATestUtils.createTestFileContext(conf);
-    fc.mkdir(fileContextTestHelper.getTestRootPath(fc, "test"),
+    testRootPath = fileContextTestHelper.getTestRootPath(fc, "test");
+    fc.mkdir(testRootPath,
         FileContext.DEFAULT_PERM, true);
     FileContext.clearStatistics();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
-    if (fc != null) {
-      fc.delete(fileContextTestHelper.getTestRootPath(fc, "test"), true);
-    }
+    S3ATestUtils.callQuietly(LOG,
+        () -> fc != null && fc.delete(testRootPath, true));
   }
 
   @Override
   protected void verifyReadBytes(FileSystem.Statistics stats) {
     // one blockSize for read, one for pread
-    Assert.assertEquals(2 * blockSize, stats.getBytesRead());
+    assertEquals(2 * blockSize, stats.getBytesRead());
   }
 
+  /**
+   * A method to verify the bytes written.
+   * @param stats Filesystem statistics.
+   */
   @Override
   protected void verifyWrittenBytes(FileSystem.Statistics stats) {
     //No extra bytes are written
-    Assert.assertEquals(blockSize, stats.getBytesWritten());
+    assertEquals(blockSize,
+        stats.getBytesWritten(), "Mismatch in bytes written");
   }
 
   @Override

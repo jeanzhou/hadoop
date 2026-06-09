@@ -24,6 +24,7 @@ import org.apache.hadoop.mapreduce.v2.api.records.TaskType;
 import org.apache.hadoop.mapreduce.v2.app.job.Task;
 import org.apache.hadoop.mapreduce.v2.app.job.TaskAttempt;
 import org.apache.hadoop.mapreduce.v2.app.webapp.App;
+import org.apache.hadoop.mapreduce.v2.app.webapp.dao.MapTaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.ReduceTaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskInfo;
@@ -122,14 +123,14 @@ public class HsTasksBlock extends HtmlBlock {
       long sortFinishTime = -1;
       long attemptFinishTime = -1;
       long elapsedShuffleTime = -1;
-      long elapsedSortTime = -1;;
+      long elapsedSortTime = -1;
       long elapsedReduceTime = -1;
       long attemptElapsed = -1;
       TaskAttempt successful = info.getSuccessful();
       if(successful != null) {
         TaskAttemptInfo ta;
         if(type == TaskType.REDUCE) {
-          ReduceTaskAttemptInfo rta = new ReduceTaskAttemptInfo(successful, type);
+          ReduceTaskAttemptInfo rta = new ReduceTaskAttemptInfo(successful);
           shuffleFinishTime = rta.getShuffleFinishTime();
           sortFinishTime = rta.getMergeFinishTime();
           elapsedShuffleTime = rta.getElapsedShuffleTime();
@@ -137,7 +138,7 @@ public class HsTasksBlock extends HtmlBlock {
           elapsedReduceTime = rta.getElapsedReduceTime();
           ta = rta;
         } else {
-          ta = new TaskAttemptInfo(successful, type, false);
+          ta = new MapTaskAttemptInfo(successful, false);
         }
         attemptStartTime = ta.getStartTime();
         attemptFinishTime = ta.getFinishTime();

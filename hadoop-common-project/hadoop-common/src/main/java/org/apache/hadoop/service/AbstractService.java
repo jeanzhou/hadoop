@@ -20,6 +20,7 @@ package org.apache.hadoop.service;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,7 +30,7 @@ import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -240,7 +241,7 @@ public abstract class AbstractService implements Service {
 
   /**
    * Relay to {@link #stop()}
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   @Override
   public final void close() throws IOException {
@@ -254,7 +255,7 @@ public abstract class AbstractService implements Service {
    * @param exception the exception
    */
   protected final void noteFailure(Exception exception) {
-    LOG.debug("noteFailure {}" + exception);
+    LOG.debug("noteFailure", exception);
     if (exception == null) {
       //make sure failure logic doesn't itself cause problems
       return;
@@ -306,7 +307,7 @@ public abstract class AbstractService implements Service {
    * a new configuration instance, and if so, updates the base class value
    * @param conf configuration
    * @throws Exception on a failure -these will be caught,
-   * possibly wrapped, and wil; trigger a service stop
+   * possibly wrapped, and will trigger a service stop
    */
   protected void serviceInit(Configuration conf) throws Exception {
     if (conf != config) {
@@ -426,7 +427,7 @@ public abstract class AbstractService implements Service {
 
   @Override
   public synchronized List<LifecycleEvent> getLifecycleHistory() {
-    return new ArrayList<LifecycleEvent>(lifecycleHistory);
+    return Collections.unmodifiableList(new ArrayList<>(lifecycleHistory));
   }
 
   /**
@@ -483,8 +484,7 @@ public abstract class AbstractService implements Service {
   @Override
   public Map<String, String> getBlockers() {
     synchronized (blockerMap) {
-      Map<String, String> map = new HashMap<String, String>(blockerMap);
-      return map;
+      return Collections.unmodifiableMap(new HashMap<>(blockerMap));
     }
   }
 }

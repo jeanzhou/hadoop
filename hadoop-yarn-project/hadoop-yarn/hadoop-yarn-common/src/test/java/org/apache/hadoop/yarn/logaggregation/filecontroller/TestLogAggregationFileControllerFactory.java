@@ -18,17 +18,23 @@
 
 package org.apache.hadoop.yarn.logaggregation.filecontroller;
 
-import static org.junit.Assert.*;
-
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.Writer;
-import java.util.LinkedList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
@@ -38,105 +44,188 @@ import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat.LogKey;
 import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat.LogValue;
 import org.apache.hadoop.yarn.logaggregation.ContainerLogMeta;
 import org.apache.hadoop.yarn.logaggregation.ContainerLogsRequest;
-import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileController;
-import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileControllerContext;
-import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileControllerFactory;
+import org.apache.hadoop.yarn.logaggregation.filecontroller.ifile.LogAggregationIndexedFileController;
 import org.apache.hadoop.yarn.logaggregation.filecontroller.tfile.LogAggregationTFileController;
 import org.apache.hadoop.yarn.webapp.View.ViewContext;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock.Block;
-import org.junit.Test;
+
+import static org.apache.hadoop.yarn.conf.YarnConfiguration.LOG_AGGREGATION_FILE_FORMATS;
+import static org.apache.hadoop.yarn.logaggregation.LogAggregationTestUtils.REMOTE_LOG_ROOT;
+import static org.apache.hadoop.yarn.logaggregation.LogAggregationTestUtils.enableFileControllers;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test LogAggregationFileControllerFactory.
- *
  */
-public class TestLogAggregationFileControllerFactory {
+public class TestLogAggregationFileControllerFactory extends Configured {
+  private static final Logger LOG = LoggerFactory.getLogger(
+      TestLogAggregationFileControllerFactory.class);
 
-  @Test(timeout = 10000)
-  public void testLogAggregationFileControllerFactory() throws Exception {
-    ApplicationId appId = ApplicationId.newInstance(
-        System.currentTimeMillis(), 1);
-    String appOwner = "test";
-    String remoteLogRootDir = "target/app-logs/";
+  private static final String REMOTE_DEFAULT_DIR = "default/";
+  private static final String APP_OWNER = "test";
+
+  private static final String WRONG_ROOT_LOG_DIR_MSG =
+      "Wrong remote root log directory found.";
+  private static final String WRONG_ROOT_LOG_DIR_SUFFIX_MSG =
+      "Wrong remote root log directory suffix found.";
+
+  private static final List<Class<? extends LogAggregationFileController>>
+      ALL_FILE_CONTROLLERS = Arrays.asList(
+          TestLogAggregationFileController.class,
+          LogAggregationIndexedFileController.class,
+          LogAggregationTFileController.class);
+  private static final List<String> ALL_FILE_CONTROLLER_NAMES =
+      Arrays.asList("TestLogAggregationFileController", "IFile", "TFile");
+
+  private ApplicationId appId = ApplicationId.newInstance(
+      System.currentTimeMillis(), 1);
+
+  @BeforeEach
+  public void setup() throws IOException {
     Configuration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED, true);
-    conf.set(YarnConfiguration.NM_REMOTE_APP_LOG_DIR, remoteLogRootDir);
+    conf.set(YarnConfiguration.NM_REMOTE_APP_LOG_DIR, REMOTE_LOG_ROOT + REMOTE_DEFAULT_DIR);
     conf.set(YarnConfiguration.NM_REMOTE_APP_LOG_DIR_SUFFIX, "log");
-    FileSystem fs = FileSystem.get(conf);
+    setConf(conf);
+  }
 
+  private void verifyFileControllerInstance(
+      LogAggregationFileControllerFactory factory,
+      Class<? extends LogAggregationFileController> className)
+      throws IOException {
+    List<LogAggregationFileController> fileControllers =
+        factory.getConfiguredLogAggregationFileControllerList();
+    FileSystem fs = FileSystem.get(getConf());
+    Path logPath = fileControllers.get(0).getRemoteAppLogDir(appId, APP_OWNER);
+    LOG.debug("Checking " + logPath);
+
+    try {
+      if (fs.exists(logPath)) {
+        fs.delete(logPath, true);
+      }
+      assertTrue(fs.mkdirs(logPath));
+      try (Writer writer =
+               new FileWriter(new File(logPath.toString(), "testLog"))) {
+        writer.write("test");
+      }
+      assertTrue(className.isInstance(factory.getFileControllerForRead(appId, APP_OWNER)),
+          "The used LogAggregationFileController is not instance of " + className.getSimpleName());
+    } finally {
+      fs.delete(logPath, true);
+    }
+  }
+
+  @Test
+  void testDefaultLogAggregationFileControllerFactory()
+      throws IOException {
+    LogAggregationFileControllerFactory factory =
+        new LogAggregationFileControllerFactory(getConf());
+    List<LogAggregationFileController> list = factory
+        .getConfiguredLogAggregationFileControllerList();
+
+    assertEquals(1,
+        list.size(),
+        "Only one LogAggregationFileController is expected!");
+    assertTrue(list.get(0) instanceof
+        LogAggregationTFileController, "TFile format is expected to be the first " +
+        "LogAggregationFileController!");
+    assertTrue(factory.getFileControllerForWrite() instanceof
+            LogAggregationTFileController,
+        "TFile format is expected to be used for writing!");
+
+    verifyFileControllerInstance(factory, LogAggregationTFileController.class);
+  }
+
+  @Test
+  void testLogAggregationFileControllerFactoryClassNotSet() {
+    assertThrows(Exception.class, () -> {
+      Configuration conf = getConf();
+      conf.set(LOG_AGGREGATION_FILE_FORMATS, "TestLogAggregationFileController");
+      new LogAggregationFileControllerFactory(conf);
+      fail("TestLogAggregationFileController's class was not set, " +
+          "but the factory creation did not fail.");
+    });
+  }
+
+  @Test
+  void testLogAggregationFileControllerFactory() throws Exception {
+    enableFileControllers(getConf(), ALL_FILE_CONTROLLERS, ALL_FILE_CONTROLLER_NAMES);
+    LogAggregationFileControllerFactory factory =
+        new LogAggregationFileControllerFactory(getConf());
+    List<LogAggregationFileController> list =
+        factory.getConfiguredLogAggregationFileControllerList();
+
+    assertEquals(3, list.size(), "The expected number of LogAggregationFileController " +
+        "is not 3!");
+    assertTrue(list.get(0) instanceof
+        TestLogAggregationFileController, "Test format is expected to be the first " +
+        "LogAggregationFileController!");
+    assertTrue(list.get(1) instanceof
+        LogAggregationIndexedFileController, "IFile format is expected to be the second " +
+        "LogAggregationFileController!");
+    assertTrue(list.get(2) instanceof
+        LogAggregationTFileController, "TFile format is expected to be the first " +
+        "LogAggregationFileController!");
+    assertTrue(factory.getFileControllerForWrite() instanceof
+            TestLogAggregationFileController,
+        "Test format is expected to be used for writing!");
+
+    verifyFileControllerInstance(factory,
+        TestLogAggregationFileController.class);
+  }
+
+  @Test
+  void testClassConfUsed() {
+    enableFileControllers(getConf(), Collections.singletonList(LogAggregationTFileController.class),
+        Collections.singletonList("TFile"));
+    LogAggregationFileControllerFactory factory =
+        new LogAggregationFileControllerFactory(getConf());
+    LogAggregationFileController fc = factory.getFileControllerForWrite();
+
+    assertEquals("target/app-logs/TFile",
+        fc.getRemoteRootLogDir().toString(),
+        WRONG_ROOT_LOG_DIR_MSG);
+    assertEquals("TFile",
+        fc.getRemoteRootLogDirSuffix(),
+        WRONG_ROOT_LOG_DIR_SUFFIX_MSG);
+  }
+
+  @Test
+  void testNodemanagerConfigurationIsUsed() {
+    Configuration conf = getConf();
+    conf.set(LOG_AGGREGATION_FILE_FORMATS, "TFile");
     LogAggregationFileControllerFactory factory =
         new LogAggregationFileControllerFactory(conf);
-    LinkedList<LogAggregationFileController> list = factory
-        .getConfiguredLogAggregationFileControllerList();
-    assertTrue(list.size() == 1);
-    assertTrue(list.getFirst() instanceof LogAggregationTFileController);
-    assertTrue(factory.getFileControllerForWrite()
-        instanceof LogAggregationTFileController);
-    Path logPath = list.getFirst().getRemoteAppLogDir(appId, appOwner);
-    try {
-      if (fs.exists(logPath)) {
-        fs.delete(logPath, true);
-      }
-      assertTrue(fs.mkdirs(logPath));
-      Writer writer =
-          new FileWriter(new File(logPath.toString(), "testLog"));
-      writer.write("test");
-      writer.close();
-      assertTrue(factory.getFileControllerForRead(appId, appOwner)
-          instanceof LogAggregationTFileController);
-    } finally {
-      fs.delete(logPath, true);
-    }
+    LogAggregationFileController fc = factory.getFileControllerForWrite();
 
-    conf.set(YarnConfiguration.LOG_AGGREGATION_FILE_FORMATS,
-        "TestLogAggregationFileController");
-    // Did not set class for TestLogAggregationFileController,
-    // should get the exception.
-    try {
-      factory =
-          new LogAggregationFileControllerFactory(conf);
-      fail();
-    } catch (Exception ex) {
-      // should get exception
-    }
+    assertEquals("target/app-logs/default",
+        fc.getRemoteRootLogDir().toString(),
+        WRONG_ROOT_LOG_DIR_MSG);
+    assertEquals("log-tfile",
+        fc.getRemoteRootLogDirSuffix(),
+        WRONG_ROOT_LOG_DIR_SUFFIX_MSG);
+  }
 
-    conf.set(YarnConfiguration.LOG_AGGREGATION_FILE_FORMATS,
-        "TestLogAggregationFileController,TFile");
-    conf.setClass(
-        "yarn.log-aggregation.file-controller.TestLogAggregationFileController"
-        + ".class", TestLogAggregationFileController.class,
-        LogAggregationFileController.class);
+  @Test
+  void testDefaultConfUsed() {
+    Configuration conf = getConf();
+    conf.unset(YarnConfiguration.NM_REMOTE_APP_LOG_DIR);
+    conf.unset(YarnConfiguration.NM_REMOTE_APP_LOG_DIR_SUFFIX);
+    conf.set(LOG_AGGREGATION_FILE_FORMATS, "TFile");
 
-    conf.set(
-        "yarn.log-aggregation.TestLogAggregationFileController"
-        + ".remote-app-log-dir", remoteLogRootDir);
-    conf.set(
-        "yarn.log-aggregation.TestLogAggregationFileController"
-        + ".remote-app-log-dir-suffix", "testLog");
+    LogAggregationFileControllerFactory factory =
+        new LogAggregationFileControllerFactory(getConf());
+    LogAggregationFileController fc = factory.getFileControllerForWrite();
 
-    factory = new LogAggregationFileControllerFactory(conf);
-    list = factory.getConfiguredLogAggregationFileControllerList();
-    assertTrue(list.size() == 2);
-    assertTrue(list.getFirst() instanceof TestLogAggregationFileController);
-    assertTrue(list.getLast() instanceof LogAggregationTFileController);
-    assertTrue(factory.getFileControllerForWrite()
-        instanceof TestLogAggregationFileController);
-
-    logPath = list.getFirst().getRemoteAppLogDir(appId, appOwner);
-    try {
-      if (fs.exists(logPath)) {
-        fs.delete(logPath, true);
-      }
-      assertTrue(fs.mkdirs(logPath));
-      Writer writer =
-          new FileWriter(new File(logPath.toString(), "testLog"));
-      writer.write("test");
-      writer.close();
-      assertTrue(factory.getFileControllerForRead(appId, appOwner)
-          instanceof TestLogAggregationFileController);
-    } finally {
-      fs.delete(logPath, true);
-    }
+    assertEquals("/tmp/logs",
+        fc.getRemoteRootLogDir().toString(),
+        WRONG_ROOT_LOG_DIR_MSG);
+    assertEquals("logs-tfile",
+        fc.getRemoteRootLogDirSuffix(),
+        WRONG_ROOT_LOG_DIR_SUFFIX_MSG);
   }
 
   private static class TestLogAggregationFileController
@@ -144,14 +233,7 @@ public class TestLogAggregationFileControllerFactory {
 
     @Override
     public void initInternal(Configuration conf) {
-      String remoteDirStr = String.format(
-          YarnConfiguration.LOG_AGGREGATION_REMOTE_APP_LOG_DIR_FMT,
-          this.fileControllerName);
-      this.remoteRootLogDir = new Path(conf.get(remoteDirStr));
-      String suffix = String.format(
-          YarnConfiguration.LOG_AGGREGATION_REMOTE_APP_LOG_DIR_SUFFIX_FMT,
-           this.fileControllerName);
-      this.remoteRootLogDirSuffix = conf.get(suffix);
+      // Do Nothing
     }
 
     @Override
@@ -171,20 +253,19 @@ public class TestLogAggregationFileControllerFactory {
     }
 
     @Override
-    public void initializeWriter(LogAggregationFileControllerContext context)
-        throws IOException {
+    public void initializeWriter(LogAggregationFileControllerContext context) {
       // Do Nothing
     }
 
     @Override
     public boolean readAggregatedLogs(ContainerLogsRequest logRequest,
-        OutputStream os) throws IOException {
+        OutputStream os) {
       return false;
     }
 
     @Override
     public List<ContainerLogMeta> readAggregatedLogsMeta(
-        ContainerLogsRequest logRequest) throws IOException {
+        ContainerLogsRequest logRequest) {
       return null;
     }
 

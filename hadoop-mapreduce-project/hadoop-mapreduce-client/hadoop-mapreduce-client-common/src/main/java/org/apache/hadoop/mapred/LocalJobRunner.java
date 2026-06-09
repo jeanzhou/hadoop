@@ -70,8 +70,9 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.ReflectionUtils;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.util.concurrent.HadoopExecutors;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -114,7 +115,7 @@ public class LocalJobRunner implements ClientProtocol {
         this, protocol, clientVersion, clientMethodsHash);
   }
 
-  private class Job extends Thread implements TaskUmbilicalProtocol {
+  private class Job extends SubjectInheritingThread implements TaskUmbilicalProtocol {
     // The job directory on the system: JobClient places job configurations here.
     // This is analogous to JobTracker's system directory.
     private Path systemJobDir;
@@ -169,7 +170,7 @@ public class LocalJobRunner implements ClientProtocol {
       // Manage the distributed cache.  If there are files to be copied,
       // this will trigger localFile to be re-written again.
       localDistributedCacheManager = new LocalDistributedCacheManager();
-      localDistributedCacheManager.setup(conf);
+      localDistributedCacheManager.setup(conf, jobid);
       
       // Write out configuration file.  Instead of copying it from
       // systemJobFile, we re-write it, since setup(), above, may have
@@ -521,7 +522,7 @@ public class LocalJobRunner implements ClientProtocol {
     }
 
     @Override
-    public void run() {
+    public void work() {
       JobID jobId = profile.getJobID();
       JobContext jContext = new JobContextImpl(job, jobId);
       
@@ -593,10 +594,16 @@ public class LocalJobRunner implements ClientProtocol {
 
       } finally {
         try {
-          fs.delete(systemJobFile.getParent(), true);  // delete submit dir
-          localFs.delete(localJobFile, true);              // delete local copy
-          // Cleanup distributed cache
-          localDistributedCacheManager.close();
+          try {
+            // Cleanup distributed cache
+            localDistributedCacheManager.close();
+          } finally {
+            try {
+              fs.delete(systemJobFile.getParent(), true); // delete submit dir
+            } finally {
+              localFs.delete(localJobFile, true);         // delete local copy
+            }
+          }
         } catch (IOException e) {
           LOG.warn("Error cleaning up "+id+": "+e);
         }
@@ -1021,8 +1028,8 @@ public class LocalJobRunner implements ClientProtocol {
     String taskId = t.getTaskID().toString();
     boolean isCleanup = t.isTaskCleanupTask();
     String user = t.getUser();
-    StringBuffer childMapredLocalDir =
-        new StringBuffer(localDirs[0] + Path.SEPARATOR
+    StringBuilder childMapredLocalDir =
+        new StringBuilder(localDirs[0] + Path.SEPARATOR
             + getLocalTaskDir(user, jobId, taskId, isCleanup));
     for (int i = 1; i < localDirs.length; i++) {
       childMapredLocalDir.append("," + localDirs[i] + Path.SEPARATOR

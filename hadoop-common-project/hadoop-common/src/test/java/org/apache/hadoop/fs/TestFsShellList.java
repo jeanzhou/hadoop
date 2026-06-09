@@ -18,13 +18,13 @@
 
 package org.apache.hadoop.fs;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
-
 import org.apache.hadoop.conf.Configuration;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Test FsShell -ls command.
@@ -35,7 +35,7 @@ public class TestFsShellList {
   private static LocalFileSystem lfs;
   private static Path testRootDir;
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     conf = new Configuration();
     shell = new FsShell(conf);
@@ -45,10 +45,10 @@ public class TestFsShellList {
 
     String root = System.getProperty("test.build.data", "test/build/data");
     testRootDir = lfs.makeQualified(new Path(root, "testFsShellList"));
-    assertThat(lfs.mkdirs(testRootDir), is(true));
+    assertThat(lfs.mkdirs(testRootDir)).isTrue();
   }
 
-  @AfterClass
+  @AfterAll
   public static void teardown() throws Exception {
     lfs.delete(testRootDir, true);
   }
@@ -57,36 +57,40 @@ public class TestFsShellList {
     FSDataOutputStream out = lfs.create(filePath);
     out.writeChars("I am " + filePath);
     out.close();
-    assertThat(lfs.exists(lfs.getChecksumFile(filePath)), is(true));
+    assertThat(lfs.exists(lfs.getChecksumFile(filePath))).isTrue();
   }
 
   @Test
   public void testList() throws Exception {
     createFile(new Path(testRootDir, "abc"));
     String[] lsArgv = new String[]{"-ls", testRootDir.toString()};
-    assertThat(shell.run(lsArgv), is(0));
+    assertThat(shell.run(lsArgv)).isEqualTo(0);
 
-    createFile(new Path(testRootDir, "abc\bd\tef"));
+    if (!Path.WINDOWS) {
+      createFile(new Path(testRootDir, "abc\bd\tef"));
+      createFile(new Path(testRootDir, "qq\r123"));
+    }
+
     createFile(new Path(testRootDir, "ghi"));
-    createFile(new Path(testRootDir, "qq\r123"));
     lsArgv = new String[]{"-ls", testRootDir.toString()};
-    assertThat(shell.run(lsArgv), is(0));
+    assertThat(shell.run(lsArgv)).isEqualTo(0);
 
     lsArgv = new String[]{"-ls", "-q", testRootDir.toString()};
-    assertThat(shell.run(lsArgv), is(0));
+    assertThat(shell.run(lsArgv)).isEqualTo(0);
   }
 
   /*
   UGI params should take effect when we pass.
  */
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testListWithUGI() throws Exception {
-    FsShell fsShell = new FsShell(new Configuration());
-    //Passing Dummy such that it should through IAE
-    fsShell.getConf()
-        .set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION,
-            "DUMMYAUTH");
-    String[] lsArgv = new String[] {"-ls", testRootDir.toString()};
-    fsShell.run(lsArgv);
+    assertThrows(IllegalArgumentException.class, () -> {
+      FsShell fsShell = new FsShell(new Configuration());
+      //Passing Dummy such that it should through IAE
+      fsShell.getConf().set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION,
+          "DUMMYAUTH");
+      String[] lsArgv = new String[]{"-ls", testRootDir.toString()};
+      fsShell.run(lsArgv);
+    });
   }
 }

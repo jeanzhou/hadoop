@@ -24,20 +24,22 @@ import org.apache.hadoop.crypto.key.kms.server.KMSConfiguration;
 import org.apache.hadoop.crypto.key.kms.server.KMSWebApp;
 import org.apache.hadoop.crypto.key.kms.server.MiniKMS;
 import org.apache.hadoop.fs.Path;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.FileWriter;
 import java.io.Writer;
 import java.util.UUID;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test class for re-encryption with minikms.
  */
+@Tag("slow")
 public class TestReencryptionWithKMS extends TestReencryption{
 
   private MiniKMS miniKMS;
@@ -49,7 +51,7 @@ public class TestReencryptionWithKMS extends TestReencryption{
         miniKMS.getKMSUrl().toExternalForm().replace("://", "@");
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     kmsDir = "target/test-classes/" + UUID.randomUUID().toString();
     final File dir = new File(kmsDir);
@@ -60,7 +62,7 @@ public class TestReencryptionWithKMS extends TestReencryption{
     super.setup();
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     super.teardown();
     if (miniKMS != null) {

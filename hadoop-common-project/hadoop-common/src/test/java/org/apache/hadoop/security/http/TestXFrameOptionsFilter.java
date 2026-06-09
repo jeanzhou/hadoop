@@ -21,17 +21,19 @@ import java.util.Collection;
 import java.util.ArrayList;
 import javax.servlet.FilterChain;
 import javax.servlet.FilterConfig;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
 
 /**
  * Test the default and customized behaviors of XFrameOptionsFilter.
@@ -56,38 +58,34 @@ public class TestXFrameOptionsFilter {
         @Override
         public Object answer(InvocationOnMock invocation) throws Throwable {
           Object[] args = invocation.getArguments();
-          Assert.assertTrue(
-              "header should be visible inside chain and filters.",
-              ((HttpServletResponse)args[1]).
-              containsHeader(X_FRAME_OPTIONS));
+          assertTrue(((HttpServletResponse)args[1]).containsHeader(X_FRAME_OPTIONS),
+              "header should be visible inside chain and filters.");
             return null;
           }
         }
-       ).when(chain).doFilter(Mockito.<ServletRequest>anyObject(),
-          Mockito.<ServletResponse>anyObject());
+       ).when(chain).doFilter(any(), any());
 
     Mockito.doAnswer(
         new Answer() {
         @Override
         public Object answer(InvocationOnMock invocation) throws Throwable {
             Object[] args = invocation.getArguments();
-            Assert.assertTrue(
-                "Options value incorrect should be DENY but is: "
-                + args[1], "DENY".equals(args[1]));
+            assertTrue("DENY".equals(args[1]),
+                "Options value incorrect should be DENY but is: " + args[1]);
             headers.add((String)args[1]);
             return null;
           }
         }
-       ).when(response).setHeader(Mockito.<String>anyObject(),
-        Mockito.<String>anyObject());
+       ).when(response).setHeader(any(), any());
 
     XFrameOptionsFilter filter = new XFrameOptionsFilter();
     filter.init(filterConfig);
 
     filter.doFilter(request, response, chain);
 
-    Assert.assertEquals("X-Frame-Options count not equal to 1.",
-        headers.size(), 1);
+    assertThat(headers.size())
+        .withFailMessage("X-Frame-Options count not equal to 1.")
+        .isOne();
   }
 
   @Test
@@ -108,44 +106,42 @@ public class TestXFrameOptionsFilter {
         public Object answer(InvocationOnMock invocation) throws Throwable {
           Object[] args = invocation.getArguments();
           HttpServletResponse resp = (HttpServletResponse) args[1];
-          Assert.assertTrue(
-              "Header should be visible inside chain and filters.",
-              resp.containsHeader(X_FRAME_OPTIONS));
+          assertTrue(resp.containsHeader(X_FRAME_OPTIONS),
+              "Header should be visible inside chain and filters.");
           // let's try and set another value for the header and make
           // sure that it doesn't overwrite the configured value
-          Assert.assertTrue(resp instanceof
+          assertTrue(resp instanceof
               XFrameOptionsFilter.XFrameOptionsResponseWrapper);
           resp.setHeader(X_FRAME_OPTIONS, "LJM");
           return null;
           }
         }
-       ).when(chain).doFilter(Mockito.<ServletRequest>anyObject(),
-          Mockito.<ServletResponse>anyObject());
+       ).when(chain).doFilter(any(), any());
 
     Mockito.doAnswer(
         new Answer() {
         @Override
         public Object answer(InvocationOnMock invocation) throws Throwable {
             Object[] args = invocation.getArguments();
-            Assert.assertEquals(
-                "Options value incorrect should be SAMEORIGIN but is: "
-                + args[1], "SAMEORIGIN", args[1]);
+            assertEquals("SAMEORIGIN", args[1],
+                "Options value incorrect should be SAMEORIGIN but is: " + args[1]);
             headers.add((String)args[1]);
             return null;
           }
         }
-       ).when(response).setHeader(Mockito.<String>anyObject(),
-        Mockito.<String>anyObject());
+       ).when(response).setHeader(any(), any());
 
     XFrameOptionsFilter filter = new XFrameOptionsFilter();
     filter.init(filterConfig);
 
     filter.doFilter(request, response, chain);
 
-    Assert.assertEquals("X-Frame-Options count not equal to 1.",
-        headers.size(), 1);
+    assertThat(headers.size())
+        .withFailMessage("X-Frame-Options count not equal to 1.")
+        .isOne();
 
-    Assert.assertEquals("X-Frame-Options count not equal to 1.",
-        headers.toArray()[0], "SAMEORIGIN");
+    assertThat(headers.toArray()[0])
+        .withFailMessage("X-Frame-Options count not equal to 1.")
+        .isEqualTo("SAMEORIGIN");
   }
 }

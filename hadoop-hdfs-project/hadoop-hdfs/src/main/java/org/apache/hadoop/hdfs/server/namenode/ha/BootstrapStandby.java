@@ -20,23 +20,28 @@ package org.apache.hadoop.hdfs.server.namenode.ha;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.security.PrivilegedAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.HAUtil;
@@ -66,8 +71,8 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * Tool which allows the standby node's storage directories to be bootstrapped
@@ -76,7 +81,8 @@ import com.google.common.base.Preconditions;
  */
 @InterfaceAudience.Private
 public class BootstrapStandby implements Tool, Configurable {
-  private static final Log LOG = LogFactory.getLog(BootstrapStandby.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(BootstrapStandby.class);
   private String nsId;
   private String nnId;
   private List<RemoteNameNodeInfo> remoteNNs;
@@ -90,6 +96,9 @@ public class BootstrapStandby implements Tool, Configurable {
   private boolean interactive = true;
   private boolean skipSharedEditsCheck = false;
 
+  private boolean inMemoryAliasMapEnabled;
+  private String aliasMapPath;
+
   // Exit/return codes.
   static final int ERR_CODE_FAILED_CONNECT = 2;
   static final int ERR_CODE_INVALID_VERSION = 3;
@@ -100,6 +109,9 @@ public class BootstrapStandby implements Tool, Configurable {
   @Override
   public int run(String[] args) throws Exception {
     parseArgs(args);
+    // Disable using the RPC tailing mechanism for bootstrapping the standby
+    // since it is less efficient in this case; see HDFS-14806
+    conf.setBoolean(DFSConfigKeys.DFS_HA_TAILEDITS_INPROGRESS_KEY, false);
     parseConfAndFindOtherNN();
     NameNode.checkAllowFormat(conf);
 
@@ -159,6 +171,7 @@ public class BootstrapStandby implements Tool, Configurable {
     NamenodeProtocol proxy = null;
     NamespaceInfo nsInfo = null;
     boolean isUpgradeFinalized = false;
+    boolean isRollingUpgrade = false;
     RemoteNameNodeInfo proxyInfo = null;
     for (int i = 0; i < remoteNNs.size(); i++) {
       proxyInfo = remoteNNs.get(i);
@@ -169,8 +182,9 @@ public class BootstrapStandby implements Tool, Configurable {
         // bootstrapping the other NNs from that layout, it will only contact the single NN.
         // However, if there cluster is already running and you are adding a NN later (e.g.
         // replacing a failed NN), then this will bootstrap from any node in the cluster.
-        nsInfo = proxy.versionRequest();
+        nsInfo = getProxyNamespaceInfo(proxy);
         isUpgradeFinalized = proxy.isUpgradeFinalized();
+        isRollingUpgrade = proxy.isRollingUpgrade();
         break;
       } catch (IOException ioe) {
         LOG.warn("Unable to fetch namespace information from remote NN at " + otherIpcAddress
@@ -182,16 +196,23 @@ public class BootstrapStandby implements Tool, Configurable {
     }
 
     if (nsInfo == null) {
-      LOG.fatal(
+      LOG.error(
           "Unable to fetch namespace information from any remote NN. Possible NameNodes: "
               + remoteNNs);
       return ERR_CODE_FAILED_CONNECT;
     }
 
-    if (!checkLayoutVersion(nsInfo)) {
-      LOG.fatal("Layout version on remote node (" + nsInfo.getLayoutVersion()
-          + ") does not match " + "this node's layout version ("
-          + HdfsServerConstants.NAMENODE_LAYOUT_VERSION + ")");
+    if (!checkLayoutVersion(nsInfo, isRollingUpgrade)) {
+      if(isRollingUpgrade) {
+        LOG.error("Layout version on remote node in rolling upgrade ({}, {})"
+            + " is not compatible based on minimum compatible version ({})",
+            nsInfo.getLayoutVersion(), proxyInfo.getIpcAddress(),
+            HdfsServerConstants.MINIMUM_COMPATIBLE_NAMENODE_LAYOUT_VERSION);
+      } else {
+        LOG.error("Layout version on remote node ({}) does not match this "
+            + "node's service layout version ({})", nsInfo.getLayoutVersion(),
+            nsInfo.getServiceLayoutVersion());
+      }
       return ERR_CODE_INVALID_VERSION;
     }
 
@@ -206,9 +227,11 @@ public class BootstrapStandby implements Tool, Configurable {
         "            Block pool ID: " + nsInfo.getBlockPoolID() + "\n" +
         "               Cluster ID: " + nsInfo.getClusterID() + "\n" +
         "           Layout version: " + nsInfo.getLayoutVersion() + "\n" +
+        "   Service Layout version: " + nsInfo.getServiceLayoutVersion() + "\n" +
         "       isUpgradeFinalized: " + isUpgradeFinalized + "\n" +
+        "         isRollingUpgrade: " + isRollingUpgrade + "\n" +
         "=====================================================");
-    
+
     NNStorage storage = new NNStorage(conf, dirsToFormat, editUrisToFormat);
 
     if (!isUpgradeFinalized) {
@@ -220,12 +243,12 @@ public class BootstrapStandby implements Tool, Configurable {
       if (!doPreUpgrade(storage, nsInfo)) {
         return ERR_CODE_ALREADY_FORMATTED;
       }
-    } else if (!format(storage, nsInfo)) { // prompt the user to format storage
+    } else if (!format(storage, nsInfo, isRollingUpgrade)) { // prompt the user to format storage
       return ERR_CODE_ALREADY_FORMATTED;
     }
 
     // download the fsimage from active namenode
-    int download = downloadImage(storage, proxy, proxyInfo);
+    int download = downloadImage(storage, proxy, proxyInfo, isRollingUpgrade);
     if (download != 0) {
       return download;
     }
@@ -234,7 +257,19 @@ public class BootstrapStandby implements Tool, Configurable {
     if (!isUpgradeFinalized) {
       doUpgrade(storage);
     }
+
+    if (inMemoryAliasMapEnabled) {
+      return formatAndDownloadAliasMap(aliasMapPath, proxyInfo);
+    } else {
+      LOG.info("Skipping InMemoryAliasMap bootstrap as it was not configured");
+    }
     return 0;
+  }
+
+  @VisibleForTesting
+  public NamespaceInfo getProxyNamespaceInfo(NamenodeProtocol proxy)
+      throws IOException {
+    return proxy.versionRequest();
   }
 
   /**
@@ -242,15 +277,15 @@ public class BootstrapStandby implements Tool, Configurable {
    * formatted. Format the storage if necessary and allowed by the user.
    * @return True if formatting is processed
    */
-  private boolean format(NNStorage storage, NamespaceInfo nsInfo)
-      throws IOException {
+  private boolean format(NNStorage storage, NamespaceInfo nsInfo,
+      boolean isRollingUpgrade) throws IOException {
     // Check with the user before blowing away data.
     if (!Storage.confirmFormat(storage.dirIterable(null), force, interactive)) {
       storage.close();
       return false;
     } else {
       // Format the storage (writes VERSION file)
-      storage.format(nsInfo);
+      storage.format(nsInfo, isRollingUpgrade);
       return true;
     }
   }
@@ -285,7 +320,7 @@ public class BootstrapStandby implements Tool, Configurable {
     // format the storage. Although this format is done through the new
     // software, since in HA setup the SBN is rolled back through
     // "-bootstrapStandby", we should still be fine.
-    if (!isFormatted && !format(storage, nsInfo)) {
+    if (!isFormatted && !format(storage, nsInfo, false)) {
       return false;
     }
 
@@ -316,12 +351,32 @@ public class BootstrapStandby implements Tool, Configurable {
     }
   }
 
-  private int downloadImage(NNStorage storage, NamenodeProtocol proxy, RemoteNameNodeInfo proxyInfo)
+  private int downloadImage(NNStorage storage, NamenodeProtocol proxy, RemoteNameNodeInfo proxyInfo,
+        boolean isRollingUpgrade)
       throws IOException {
     // Load the newly formatted image, using all of the directories
     // (including shared edits)
     final long imageTxId = proxy.getMostRecentCheckpointTxId();
     final long curTxId = proxy.getTransactionID();
+
+    if (isRollingUpgrade) {
+      final long rollbackTxId =
+          proxy.getMostRecentNameNodeFileTxId(NameNodeFile.IMAGE_ROLLBACK);
+      assert rollbackTxId != HdfsServerConstants.INVALID_TXID :
+          "Expected a valid TXID for fsimage_rollback file";
+      FSImage rollbackImage = new FSImage(conf);
+      try {
+        rollbackImage.getStorage().setStorageInfo(storage);
+        MD5Hash hash = TransferFsImage.downloadImageToStorage(
+            proxyInfo.getHttpAddress(), rollbackTxId, storage, true, true);
+        rollbackImage.saveDigestAndRenameCheckpointImage(
+            NameNodeFile.IMAGE_ROLLBACK, rollbackTxId, hash);
+      } catch (IOException ioe) {
+        throw ioe;
+      } finally {
+        rollbackImage.close();
+      }
+    }
     FSImage image = new FSImage(conf);
     try {
       image.getStorage().setStorageInfo(storage);
@@ -382,16 +437,22 @@ public class BootstrapStandby implements Tool, Configurable {
           "Please copy these logs into the shared edits storage " + 
           "or call saveNamespace on the active node.\n" +
           "Error: " + e.getLocalizedMessage();
-      LOG.fatal(msg, e);
+      LOG.error(msg, e);
 
       return false;
     }
   }
 
-  private boolean checkLayoutVersion(NamespaceInfo nsInfo) throws IOException {
-    return (nsInfo.getLayoutVersion() == HdfsServerConstants.NAMENODE_LAYOUT_VERSION);
+  private boolean checkLayoutVersion(NamespaceInfo nsInfo, boolean isRollingUpgrade) {
+    if (isRollingUpgrade) {
+      // During a rolling upgrade the service layout versions may be different,
+      // but we should check that the layout version being sent is compatible
+      return nsInfo.getLayoutVersion() <=
+          HdfsServerConstants.MINIMUM_COMPATIBLE_NAMENODE_LAYOUT_VERSION;
+    }
+    return nsInfo.getLayoutVersion() == nsInfo.getServiceLayoutVersion();
   }
-  
+
   private void parseConfAndFindOtherNN() throws IOException {
     Configuration conf = getConf();
     nsId = DFSUtil.getNamenodeNameServiceId(conf);
@@ -432,6 +493,82 @@ public class BootstrapStandby implements Tool, Configurable {
     editUrisToFormat = FSNamesystem.getNamespaceEditsDirs(
         conf, false);
     sharedEditsUris = FSNamesystem.getSharedEditsDirs(conf);
+
+    parseProvidedConfigurations(conf);
+  }
+
+  private void parseProvidedConfigurations(Configuration configuration)
+      throws IOException {
+    // if provided and in-memory aliasmap are enabled,
+    // get the aliasmap location.
+    boolean providedEnabled = configuration.getBoolean(
+        DFSConfigKeys.DFS_NAMENODE_PROVIDED_ENABLED,
+        DFSConfigKeys.DFS_NAMENODE_PROVIDED_ENABLED_DEFAULT);
+    boolean inmemoryAliasmapConfigured = configuration.getBoolean(
+        DFSConfigKeys.DFS_PROVIDED_ALIASMAP_INMEMORY_ENABLED,
+        DFSConfigKeys.DFS_PROVIDED_ALIASMAP_INMEMORY_ENABLED_DEFAULT);
+    if (providedEnabled && inmemoryAliasmapConfigured) {
+      inMemoryAliasMapEnabled = true;
+      aliasMapPath = configuration.get(
+          DFSConfigKeys.DFS_PROVIDED_ALIASMAP_INMEMORY_LEVELDB_DIR);
+    } else {
+      inMemoryAliasMapEnabled = false;
+      aliasMapPath = null;
+    }
+  }
+
+  /**
+   * A storage directory for aliasmaps. This is primarily used for the
+   * StorageDirectory#hasSomeData for formatting aliasmap directories.
+   */
+  private static class AliasMapStorageDirectory extends StorageDirectory {
+
+    AliasMapStorageDirectory(File aliasMapDir) {
+      super(aliasMapDir);
+    }
+
+    @Override
+    public String toString() {
+      return "AliasMap directory = " + this.getRoot();
+    }
+  }
+
+  /**
+   * Format, if needed, and download the aliasmap.
+   * @param pathAliasMap the path where the aliasmap should be downloaded.
+   * @param proxyInfo remote namenode to get the aliasmap from.
+   * @return 0 on a successful transfer, and error code otherwise.
+   * @throws IOException
+   */
+  private int formatAndDownloadAliasMap(String pathAliasMap,
+      RemoteNameNodeInfo proxyInfo) throws IOException {
+    LOG.info("Bootstrapping the InMemoryAliasMap from "
+        + proxyInfo.getHttpAddress());
+    if (pathAliasMap == null) {
+      throw new IOException("InMemoryAliasMap enabled with null location");
+    }
+    File aliasMapFile = new File(pathAliasMap);
+    if (aliasMapFile.exists()) {
+      AliasMapStorageDirectory aliasMapSD =
+          new AliasMapStorageDirectory(aliasMapFile);
+      if (!Storage.confirmFormat(
+          Arrays.asList(aliasMapSD), force, interactive)) {
+        return ERR_CODE_ALREADY_FORMATTED;
+      } else {
+        if (!FileUtil.fullyDelete(aliasMapFile)) {
+          throw new IOException(
+              "Cannot remove current alias map: " + aliasMapFile);
+        }
+      }
+    }
+
+    // create the aliasmap location.
+    if (!aliasMapFile.mkdirs()) {
+      throw new IOException("Cannot create directory " + aliasMapFile);
+    }
+    TransferFsImage.downloadAliasMap(proxyInfo.getHttpAddress(), aliasMapFile,
+        true);
+    return 0;
   }
 
   @Override

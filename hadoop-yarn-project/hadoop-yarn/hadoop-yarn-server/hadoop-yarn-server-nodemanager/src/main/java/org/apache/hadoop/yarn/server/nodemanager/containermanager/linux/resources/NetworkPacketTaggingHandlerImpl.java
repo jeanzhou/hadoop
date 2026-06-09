@@ -30,7 +30,7 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileg
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -104,7 +104,7 @@ public class NetworkPacketTaggingHandlerImpl
     //executable.
     String tasksFile = cGroupsHandler.getPathForCGroupTasks(
         CGroupsHandler.CGroupController.NET_CLS, containerIdStr);
-    String opArg = new StringBuffer(PrivilegedOperation.CGROUP_ARG_PREFIX)
+    String opArg = new StringBuilder(PrivilegedOperation.CGROUP_ARG_PREFIX)
         .append(tasksFile).toString();
     List<PrivilegedOperation> ops = new ArrayList<>();
 
@@ -128,6 +128,12 @@ public class NetworkPacketTaggingHandlerImpl
     return null;
   }
 
+  @Override
+  public List<PrivilegedOperation> updateContainer(Container container)
+      throws ResourceHandlerException {
+    return null;
+  }
+
   /**
    * Cleanup operation once container is completed - deletes cgroup.
    *
@@ -147,9 +153,7 @@ public class NetworkPacketTaggingHandlerImpl
   @Override
   public List<PrivilegedOperation> teardown()
       throws ResourceHandlerException {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("teardown(): Nothing to do");
-    }
+    LOG.debug("teardown(): Nothing to do");
 
     return null;
   }
@@ -159,5 +163,10 @@ public class NetworkPacketTaggingHandlerImpl
   public NetworkTagMappingManager createNetworkTagMappingManager(
       Configuration conf) {
     return NetworkTagMappingManagerFactory.getManager(conf);
+  }
+
+  @Override
+  public String toString() {
+    return NetworkPacketTaggingHandlerImpl.class.getName();
   }
 }

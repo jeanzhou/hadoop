@@ -19,15 +19,15 @@ package org.apache.hadoop.mapreduce;
 
 import org.apache.hadoop.conf.Configuration;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
-import static org.junit.Assert.assertNotNull;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocolProvider;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -38,16 +38,16 @@ import java.util.ServiceConfigurationError;
  * Testing the Cluster initialization.
  */
 public class TestCluster {
-  @Test
+
   @SuppressWarnings("unchecked")
-  public void testProtocolProviderCreation() throws Exception {
-    Iterator iterator = mock(Iterator.class);
+  public void testProtocolProviderCreation(Throwable error) throws Exception {
+    Iterator<ClientProtocolProvider> iterator = mock(Iterator.class);
     when(iterator.hasNext()).thenReturn(true, true, true, true);
     when(iterator.next()).thenReturn(getClientProtocolProvider())
-        .thenThrow(new ServiceConfigurationError("Test error"))
+        .thenThrow(error)
         .thenReturn(getClientProtocolProvider());
 
-    Iterable frameworkLoader = mock(Iterable.class);
+    Iterable<ClientProtocolProvider> frameworkLoader = mock(Iterable.class);
     when(frameworkLoader.iterator()).thenReturn(iterator);
 
     Cluster.frameworkLoader = frameworkLoader;
@@ -55,9 +55,19 @@ public class TestCluster {
 
     // Check that we get the acceptable client, even after
     // failure in instantiation.
-    assertNotNull("ClientProtocol is expected", testCluster.getClient());
+    assertNotNull(testCluster.getClient(), "ClientProtocol is expected");
     // Check if we do not try to load the providers after a failure.
     verify(iterator, times(2)).next();
+  }
+
+  @Test
+  public void testThrowServiceConfigurationError() throws Exception {
+    testProtocolProviderCreation(new ServiceConfigurationError("Test error"));
+  }
+
+  @Test
+  public void testThrowNoClassDefFoundError() throws Exception {
+    testProtocolProviderCreation(new NoClassDefFoundError("Test error"));
   }
 
   public ClientProtocolProvider getClientProtocolProvider() {

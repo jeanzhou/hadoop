@@ -26,24 +26,30 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 
-import org.junit.Assert;
+import org.apache.hadoop.net.ServerSocketUtil;
 
 import org.apache.hadoop.yarn.lib.ZKClient;
 import org.apache.zookeeper.server.NIOServerCnxnFactory;
 import org.apache.zookeeper.server.ZKDatabase;
 import org.apache.zookeeper.server.ZooKeeperServer;
 import org.apache.zookeeper.server.persistence.FileTxnLog;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestZKClient  {
 
-  public static int CONNECTION_TIMEOUT = 30000;
+  private static int CONNECTION_TIMEOUT = 30000;
+  private static int DEFAULT_PORT = 20384;
   static final File BASETEST =
     new File(System.getProperty("build.test.dir", "target/zookeeper-build"));
 
-  protected String hostPort = "127.0.0.1:2000";
+  protected String hostPort = "127.0.0.1:" + getOpenPort();
+
+
   protected int maxCnxns = 0;
   protected NIOServerCnxnFactory factory = null;
   protected ZooKeeperServer zks;
@@ -132,14 +138,15 @@ public class TestZKClient  {
     // don't delete tmpFile - this ensures we don't attempt to create
     // a tmpDir with a duplicate name
     File tmpDir = new File(tmpFile + ".dir");
-    Assert.assertFalse(tmpDir.exists()); 
-    Assert.assertTrue(tmpDir.mkdirs());
+    assertFalse(tmpDir.exists());
+    assertTrue(tmpDir.mkdirs());
     return tmpDir;
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException, InterruptedException {
     System.setProperty("zookeeper.preAllocSize", "100");
+    System.setProperty("zookeeper.4lw.commands.whitelist", "*");
     FileTxnLog.setPreallocSize(100 * 1024);
     if (!BASETEST.exists()) {
       BASETEST.mkdirs();
@@ -152,13 +159,12 @@ public class TestZKClient  {
       factory.configure(new InetSocketAddress(PORT), maxCnxns);
     }
     factory.startup(zks);
-    Assert.assertTrue("waiting for server up",
-        waitForServerUp("127.0.0.1:" + PORT,
-            CONNECTION_TIMEOUT));
+    assertTrue(waitForServerUp("127.0.0.1:" + PORT,
+        CONNECTION_TIMEOUT), "waiting for server up");
     
   }
   
-  @After
+  @AfterEach
   public void tearDown() throws IOException, InterruptedException {
     if (zks != null) {
       ZKDatabase zkDb = zks.getZKDatabase();
@@ -169,9 +175,8 @@ public class TestZKClient  {
       }
       final int PORT = Integer.parseInt(hostPort.split(":")[1]);
 
-      Assert.assertTrue("waiting for server down",
-          waitForServerDown("127.0.0.1:" + PORT,
-              CONNECTION_TIMEOUT));
+      assertTrue(waitForServerDown("127.0.0.1:" + PORT,
+          CONNECTION_TIMEOUT), "waiting for server down");
     }
 
   }
@@ -184,6 +189,14 @@ public class TestZKClient  {
     ZKClient client = new ZKClient(hostPort);
     client.registerService("/nodemanager", "hostPort");
     client.unregisterService("/nodemanager");
+  }
+
+  private int getOpenPort() {
+    try {
+      return ServerSocketUtil.getPorts(1)[0];
+    } catch (IOException e) {
+      return DEFAULT_PORT;
+    }
   }
 
 }

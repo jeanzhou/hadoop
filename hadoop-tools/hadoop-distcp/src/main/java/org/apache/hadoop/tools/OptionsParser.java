@@ -28,12 +28,12 @@ import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * The OptionsParser parses out the command-line options passed to DistCp,
@@ -41,7 +41,7 @@ import com.google.common.base.Preconditions;
  */
 public class OptionsParser {
 
-  static final Log LOG = LogFactory.getLog(OptionsParser.class);
+  static final Logger LOG = LoggerFactory.getLogger(OptionsParser.class);
 
   private static final Options cliOptions = new Options();
 
@@ -108,12 +108,18 @@ public class OptionsParser {
             command.hasOption(DistCpOptionSwitch.OVERWRITE.getSwitch()))
         .withAppend(
             command.hasOption(DistCpOptionSwitch.APPEND.getSwitch()))
-        .withCRC(
+        .withSkipCRC(
             command.hasOption(DistCpOptionSwitch.SKIP_CRC.getSwitch()))
         .withBlocking(
             !command.hasOption(DistCpOptionSwitch.BLOCKING.getSwitch()))
         .withVerboseLog(
-            command.hasOption(DistCpOptionSwitch.VERBOSE_LOG.getSwitch()));
+            command.hasOption(DistCpOptionSwitch.VERBOSE_LOG.getSwitch()))
+        .withDirectWrite(
+            command.hasOption(DistCpOptionSwitch.DIRECT_WRITE.getSwitch()))
+        .withUseIterator(
+            command.hasOption(DistCpOptionSwitch.USE_ITERATOR.getSwitch()))
+        .withUpdateRoot(
+            command.hasOption(DistCpOptionSwitch.UPDATE_ROOT.getSwitch()));
 
     if (command.hasOption(DistCpOptionSwitch.DIFF.getSwitch())) {
       String[] snapshots = getVals(command,
@@ -195,9 +201,6 @@ public class OptionsParser {
     if (command.hasOption(DistCpOptionSwitch.PRESERVE_STATUS.getSwitch())) {
       builder.preserve(
           getVal(command, DistCpOptionSwitch.PRESERVE_STATUS.getSwitch()));
-    } else {
-      // No "preserve" settings specified. Preserve block-size.
-      builder.preserve(DistCpOptions.FileAttribute.BLOCKSIZE);
     }
 
     if (command.hasOption(DistCpOptionSwitch.FILE_LIMIT.getSwitch())) {

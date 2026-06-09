@@ -1,0 +1,247 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.hadoop.fs.s3a.tools;
+
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.List;
+
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.AfterEach;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.s3a.AbstractS3ATestBase;
+import org.apache.hadoop.util.StringUtils;
+
+import static org.apache.hadoop.fs.s3a.Constants.*;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.disableFilesystemCaching;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.getTestBucketName;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.removeBaseAndBucketOverrides;
+import static org.apache.hadoop.fs.s3a.s3guard.S3GuardTool.VERBOSE;
+import static org.apache.hadoop.fs.s3a.s3guard.S3GuardToolTestHelper.runS3GuardCommand;
+import static org.apache.hadoop.fs.s3a.s3guard.S3GuardToolTestHelper.runS3GuardCommandToFailure;
+import static org.apache.hadoop.fs.s3a.tools.MarkerTool.UNLIMITED_LISTING;
+
+/**
+ * Class for marker tool tests.
+ */
+public class AbstractMarkerToolTest extends AbstractS3ATestBase {
+
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AbstractMarkerToolTest.class);
+
+  /** the -verbose option. */
+  protected static final String V = AbstractMarkerToolTest.m(VERBOSE);
+
+  @Override
+  protected Configuration createConfiguration() {
+    Configuration conf = super.createConfiguration();
+    String bucketName = getTestBucketName(conf);
+    removeBaseAndBucketOverrides(bucketName, conf,
+        S3A_BUCKET_PROBE,
+        AUTHORITATIVE_PATH,
+        FS_S3A_CREATE_PERFORMANCE,
+        FS_S3A_PERFORMANCE_FLAGS);
+    conf.setBoolean(FS_S3A_CREATE_PERFORMANCE, false);
+
+    // turn off bucket probes for a bit of speedup in the connectors we create.
+    conf.setInt(S3A_BUCKET_PROBE, 0);
+
+    return conf;
+  }
+
+  @Override
+  @AfterEach
+  public void teardown() throws Exception {
+    // do this ourselves to avoid audits teardown failing
+    // when surplus markers are found
+    deleteTestDirInTeardown();
+    super.teardown();
+  }
+
+
+  /**
+   * Get a filename for a temp file.
+   * The generated file is deleted.
+   *
+   * @return a file path for a output file
+   */
+  protected File tempAuditFile() throws IOException {
+    final File audit = File.createTempFile("audit", ".txt");
+    audit.delete();
+    return audit;
+  }
+
+  /**
+   * Read the audit output and verify it has the expected number of lines.
+   * @param auditFile audit file to read
+   * @param expected expected line count
+   */
+  protected void expectMarkersInOutput(final File auditFile,
+      final int expected)
+      throws IOException {
+    final List<String> lines = readOutput(auditFile);
+    Assertions.assertThat(lines)
+        .describedAs("Content of %s", auditFile)
+        .hasSize(expected);
+  }
+
+  /**
+   * Read the output file in. Logs the contents at info.
+   * @param outputFile audit output file.
+   * @return the lines
+   */
+  protected List<String> readOutput(final File outputFile)
+      throws IOException {
+    try (FileReader reader = new FileReader(outputFile)) {
+      final List<String> lines =
+          org.apache.commons.io.IOUtils.readLines(reader);
+
+      LOG.info("contents of output file {}\n{}", outputFile,
+          StringUtils.join("\n", lines));
+      return lines;
+    }
+  }
+
+  /**
+   * Execute the marker tool, expecting the execution to succeed.
+   * @param sourceFS filesystem to use
+   * @param path path to scan
+   * @param expectedMarkerCount number of markers expected
+   * @return the result
+   */
+  protected MarkerTool.ScanResult markerTool(
+      final FileSystem sourceFS,
+      final Path path,
+      final int expectedMarkerCount)
+      throws IOException {
+    return markerTool(0, sourceFS, path, false,
+        expectedMarkerCount,
+        UNLIMITED_LISTING, false);
+  }
+
+  /**
+   * Run a S3GuardTool command from a varags list and the
+   * configuration returned by {@code getConfiguration()}.
+   * @param args argument list
+   * @return the return code
+   * @throws Exception any exception
+   */
+  protected int run(Object... args) throws Exception {
+    return runS3GuardCommand(uncachedFSConfig(getConfiguration()), args);
+  }
+
+  /**
+   * Take a configuration, copy it and disable FS Caching on
+   * the new one.
+   * @param conf source config
+   * @return a new, patched, config
+   */
+  protected Configuration uncachedFSConfig(final Configuration conf) {
+    Configuration c = new Configuration(conf);
+    disableFilesystemCaching(c);
+    return c;
+  }
+
+  /**
+   * given an FS instance, create a matching configuration where caching
+   * is disabled.
+   * @param fs source
+   * @return new config.
+   */
+  protected Configuration uncachedFSConfig(final FileSystem fs) {
+    return uncachedFSConfig(fs.getConf());
+  }
+
+    /**
+     * Run a S3GuardTool command from a varags list, catch any raised
+     * ExitException and verify the status code matches that expected.
+     * @param status expected status code of the exception
+     * @param args argument list
+     * @throws Exception any exception
+     */
+  protected void runToFailure(int status, Object... args)
+      throws Exception {
+    Configuration conf = uncachedFSConfig(getConfiguration());
+    runS3GuardCommandToFailure(conf, status, args);
+  }
+
+  /**
+   * Given a base and a filename, create a new path.
+   * @param base base path
+   * @param name name: may be empty, in which case the base path is returned
+   * @return a path
+   */
+  protected static Path toPath(final Path base, final String name) {
+    return name.isEmpty() ? base : new Path(base, name);
+  }
+
+  /**
+   * Execute the marker tool, expecting the execution to
+   * return a specific exit code.
+   *
+   * @param sourceFS filesystem to use
+   * @param exitCode exit code to expect.
+   * @param path path to scan
+   * @param doPurge should markers be purged
+   * @param expectedMarkers number of markers expected
+   * @param limit limit of files to scan; -1 for 'unlimited'
+   * @param nonAuth only use nonauth path count for failure rules
+   * @return the result
+   */
+  public static MarkerTool.ScanResult markerTool(
+      final int exitCode,
+      final FileSystem sourceFS,
+      final Path path,
+      final boolean doPurge,
+      final int expectedMarkers,
+      final int limit,
+      final boolean nonAuth) throws IOException {
+
+    MarkerTool.ScanResult result = MarkerTool.execMarkerTool(
+        new MarkerTool.ScanArgsBuilder()
+            .withSourceFS(sourceFS)
+            .withPath(path)
+            .withDoPurge(doPurge)
+            .withMinMarkerCount(expectedMarkers)
+            .withMaxMarkerCount(expectedMarkers)
+            .withLimit(limit)
+            .build());
+    Assertions.assertThat(result.getExitCode())
+        .describedAs("Exit code of marker(%s, %s, %d) -> %s",
+            path, doPurge, expectedMarkers, result)
+        .isEqualTo(exitCode);
+    return result;
+  }
+
+  /**
+   * Add a "-" prefix to a string.
+   * @param s string to prefix
+   * @return a string for passing into the CLI
+   */
+  protected static String m(String s) {
+    return "-" + s;
+  }
+
+}

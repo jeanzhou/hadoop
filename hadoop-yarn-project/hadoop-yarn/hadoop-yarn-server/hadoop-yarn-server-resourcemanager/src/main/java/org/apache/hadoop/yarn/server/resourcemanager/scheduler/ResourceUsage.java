@@ -73,8 +73,8 @@ public class ResourceUsage extends AbstractResourceUsage {
   }
   
   public void copyAllUsed(AbstractResourceUsage other) {
+    writeLock.lock();
     try {
-      writeLock.lock();
       for (Entry<String, UsageByLabel> entry : other.usages.entrySet()) {
         setUsed(entry.getKey(), Resources.clone(entry.getValue().getUsed()));
       }
@@ -200,6 +200,10 @@ public class ResourceUsage extends AbstractResourceUsage {
     return _getAll(ResourceType.USED);
   }
 
+  public Resource getAllReserved() {
+    return _getAll(ResourceType.RESERVED);
+  }
+
   // Cache Used
   public Resource getCachedUsed() {
     return _get(NL, ResourceType.CACHED_USED);
@@ -285,8 +289,8 @@ public class ResourceUsage extends AbstractResourceUsage {
   }
 
   public Resource getCachedDemand(String label) {
+    readLock.lock();
     try {
-      readLock.lock();
       Resource demand = Resources.createResource(0);
       Resources.addTo(demand, getCachedUsed(label));
       Resources.addTo(demand, getCachedPending(label));

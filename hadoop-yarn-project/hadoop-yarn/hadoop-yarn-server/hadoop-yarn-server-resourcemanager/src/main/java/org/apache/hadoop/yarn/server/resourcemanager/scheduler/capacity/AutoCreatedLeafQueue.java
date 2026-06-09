@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueResourceQuotas;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerDynamicEditException;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.QueueEntitlement;
 
@@ -27,6 +28,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.HashSet;
+import java.util.Set;
+
+import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractCSQueue.CapacityConfigType.ABSOLUTE_RESOURCE;
 
 /**
  * Leaf queues which are auto created by an underlying implementation of
@@ -34,30 +39,29 @@ import java.io.IOException;
  * ManagedParentQueue for auto created dynamic queues
  */
 public class AutoCreatedLeafQueue extends AbstractAutoCreatedLeafQueue {
-
   private static final Logger LOG = LoggerFactory
       .getLogger(AutoCreatedLeafQueue.class);
 
-  public AutoCreatedLeafQueue(CapacitySchedulerContext cs, String queueName,
+  public AutoCreatedLeafQueue(CapacitySchedulerQueueContext queueContext, String queueName,
       ManagedParentQueue parent) throws IOException {
-    super(cs, parent.getLeafQueueConfigs(queueName),
-        queueName,
-        parent, null);
+    super(queueContext, queueName, parent, null);
+    parent.setLeafQueueConfigs(queueName);
+    super.setupQueueConfigs(queueContext.getClusterResource());
+
     updateCapacitiesToZero();
   }
 
   @Override
   public void reinitialize(CSQueue newlyParsedQueue, Resource clusterResource)
       throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
-
       validate(newlyParsedQueue);
 
       ManagedParentQueue managedParentQueue = (ManagedParentQueue) parent;
 
-      super.reinitialize(newlyParsedQueue, clusterResource, managedParentQueue
-          .getLeafQueueConfigs(newlyParsedQueue.getQueueName()));
+      managedParentQueue.setLeafQueueConfigs(newlyParsedQueue.getQueueShortName());
+      super.reinitialize(newlyParsedQueue, clusterResource);
 
       //Reset capacities to 0 since reinitialize above
       // queueCapacities to initialize to configured capacity which might
@@ -69,39 +73,25 @@ public class AutoCreatedLeafQueue extends AbstractAutoCreatedLeafQueue {
     }
   }
 
-  public void reinitializeFromTemplate(AutoCreatedLeafQueueConfig
-      leafQueueTemplate) throws SchedulerDynamicEditException, IOException {
+  public void reinitializeFromTemplate(AutoCreatedLeafQueueConfig leafQueueTemplate) {
 
+    writeLock.lock();
     try {
-      writeLock.lock();
-
-      // TODO:
       // reinitialize only capacities for now since 0 capacity updates
       // can cause
       // abs capacity related config computations to be incorrect if we go
       // through reinitialize
       QueueCapacities capacities = leafQueueTemplate.getQueueCapacities();
 
-      //update abs capacities
-      setupConfigurableCapacities(capacities);
-
       //reset capacities for the leaf queue
-      mergeCapacities(capacities);
-
-      //update queue used capacity for all the node labels
-      CSQueueUtils.updateQueueStatistics(resourceCalculator,
-          csContext.getClusterResource(),
-          this, labelManager, null);
-
-      //activate applications if any are pending
-      activateApplications();
+      mergeCapacities(capacities, leafQueueTemplate.getResourceQuotas());
 
     } finally {
       writeLock.unlock();
     }
   }
 
-  private void mergeCapacities(QueueCapacities capacities) {
+  public void mergeCapacities(QueueCapacities capacities, QueueResourceQuotas resourceQuotas) {
     for ( String nodeLabel : capacities.getExistingNodeLabels()) {
       queueCapacities.setCapacity(nodeLabel,
           capacities.getCapacity(nodeLabel));
@@ -113,10 +103,20 @@ public class AutoCreatedLeafQueue extends AbstractAutoCreatedLeafQueue {
           .getAbsoluteMaximumCapacity(nodeLabel));
 
       Resource resourceByLabel = labelManager.getResourceByLabel(nodeLabel,
-          csContext.getClusterResource());
-      getQueueResourceQuotas().setEffectiveMinResource(nodeLabel,
-          Resources.multiply(resourceByLabel,
-              queueCapacities.getAbsoluteCapacity(nodeLabel)));
+          queueContext.getClusterResource());
+      // Update effective resource from template due to rounding errors.
+      // However, we need to consider deactivation as well, in which case we fall back to
+      // Percentage calculation (as absolute capacity will be 0, resource will be zero as well).
+      if (getCapacityConfigType().equals(ABSOLUTE_RESOURCE)
+          && queueCapacities.getAbsoluteCapacity(nodeLabel) > 0) {
+        getQueueResourceQuotas().setEffectiveMinResource(nodeLabel,
+            resourceQuotas.getConfiguredMinResource(nodeLabel));
+      } else {
+        getQueueResourceQuotas().setEffectiveMinResource(nodeLabel,
+            Resources.multiply(resourceByLabel,
+                queueCapacities.getAbsoluteCapacity(nodeLabel)));
+      }
+
       getQueueResourceQuotas().setEffectiveMaxResource(nodeLabel,
           Resources.multiply(resourceByLabel, queueCapacities
               .getAbsoluteMaximumCapacity(nodeLabel)));
@@ -135,6 +135,22 @@ public class AutoCreatedLeafQueue extends AbstractAutoCreatedLeafQueue {
     }
   }
 
+  @Override
+  protected void parseAndSetDynamicTemplates() {
+    String parentTemplate = String.format("%s.%s", getParent().getQueuePath(),
+        CapacitySchedulerConfiguration
+            .AUTO_CREATED_LEAF_QUEUE_TEMPLATE_PREFIX);
+    Set<String> parentNodeLabels = queueContext
+        .getQueueManager().getConfiguredNodeLabelsForAllQueues()
+        .getLabelsByQueue(parentTemplate);
+
+    if (parentNodeLabels != null && parentNodeLabels.size() > 1) {
+      queueContext.getQueueManager().getConfiguredNodeLabelsForAllQueues()
+          .setLabelsByQueue(getQueuePath(),
+              new HashSet<>(parentNodeLabels));
+    }
+  }
+
   private void validate(final CSQueue newlyParsedQueue) throws IOException {
     if (!(newlyParsedQueue instanceof AutoCreatedLeafQueue) || !newlyParsedQueue
         .getQueuePath().equals(getQueuePath())) {
@@ -148,11 +164,10 @@ public class AutoCreatedLeafQueue extends AbstractAutoCreatedLeafQueue {
     try {
       for( String nodeLabel : parent.getQueueCapacities().getExistingNodeLabels
           ()) {
-        //TODO - update to use getMaximumCapacity(nodeLabel) in YARN-7574
         setEntitlement(nodeLabel, new QueueEntitlement(0.0f,
             parent.getLeafQueueTemplate()
                 .getQueueCapacities()
-                .getMaximumCapacity()));
+                .getMaximumCapacity(nodeLabel)));
       }
     } catch (SchedulerDynamicEditException e) {
       throw new IOException(e);

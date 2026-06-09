@@ -21,7 +21,7 @@ package org.apache.hadoop.metrics2.lib;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.metrics2.MetricsException;
@@ -83,6 +83,10 @@ public class MutableMetricsFactory {
       return registry.newMutableRollingAverages(info.name(),
           annotation.valueName());
     }
+    if (cls == MutableQuantiles.class) {
+      return registry.newQuantiles(info.name(), annotation.about(),
+          annotation.sampleName(), annotation.valueName(), annotation.interval());
+    }
     throw new MetricsException("Unsupported metric field "+ field.getName() +
                                " of type "+ field.getType().getName());
   }
@@ -142,8 +146,10 @@ public class MutableMetricsFactory {
   }
 
   /**
-   * Remove the prefix "get", if any, from the method name. Return the
+   * @return Remove the prefix "get", if any, from the method name. Return the
    * capacitalized method name."
+   *
+   * @param method input method.
    */
   protected String getName(Method method) {
     String methodName = method.getName();

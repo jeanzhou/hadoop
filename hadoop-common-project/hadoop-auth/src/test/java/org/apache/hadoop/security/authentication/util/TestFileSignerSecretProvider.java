@@ -14,13 +14,17 @@
 package org.apache.hadoop.security.authentication.util;
 
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.FileWriter;
 import java.io.Writer;
 import java.util.Properties;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestFileSignerSecretProvider {
 
@@ -42,10 +46,30 @@ public class TestFileSignerSecretProvider {
             AuthenticationFilter.SIGNATURE_SECRET_FILE,
         secretFile.getAbsolutePath());
     secretProvider.init(secretProviderProps, null, -1);
-    Assert.assertArrayEquals(secretValue.getBytes(),
+    assertArrayEquals(secretValue.getBytes(),
         secretProvider.getCurrentSecret());
     byte[][] allSecrets = secretProvider.getAllSecrets();
-    Assert.assertEquals(1, allSecrets.length);
-    Assert.assertArrayEquals(secretValue.getBytes(), allSecrets[0]);
+    assertEquals(1, allSecrets.length);
+    assertArrayEquals(secretValue.getBytes(), allSecrets[0]);
+  }
+
+  @Test
+  public void testEmptySecretFileThrows() throws Exception {
+    File secretFile = File.createTempFile("test_empty_secret", ".txt");
+    assertTrue(secretFile.exists());
+
+    FileSignerSecretProvider secretProvider
+            = new FileSignerSecretProvider();
+    Properties secretProviderProps = new Properties();
+    secretProviderProps.setProperty(
+            AuthenticationFilter.SIGNATURE_SECRET_FILE,
+            secretFile.getAbsolutePath());
+
+    Exception exception =
+        assertThrows(RuntimeException.class, () -> {
+          secretProvider.init(secretProviderProps, null, -1);
+        });
+    assertTrue(exception.getMessage().startsWith(
+        "No secret in signature secret file:"));
   }
 }

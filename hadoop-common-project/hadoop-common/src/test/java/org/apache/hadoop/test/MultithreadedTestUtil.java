@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,8 +71,8 @@ public abstract class MultithreadedTestUtil {
   public static class TestContext {
     private Throwable err = null;
     private boolean stopped = false;
-    private Set<TestingThread> testThreads = new HashSet<TestingThread>();
-    private Set<TestingThread> finishedThreads = new HashSet<TestingThread>();
+    private Set<TestingThread> testThreads = new HashSet<>();
+    private Set<TestingThread> finishedThreads = new HashSet<>();
 
     /**
      * Check if the context can run threads.
@@ -175,7 +176,7 @@ public abstract class MultithreadedTestUtil {
    * A thread that can be added to a test context, and properly
    * passes exceptions through.
    */
-  public static abstract class TestingThread extends Thread {
+  public static abstract class TestingThread extends SubjectInheritingThread {
     protected final TestContext ctx;
     protected boolean stopped;
 
@@ -184,7 +185,7 @@ public abstract class MultithreadedTestUtil {
     }
 
     @Override
-    public void run() {
+    public void work() {
       try {
         doWork();
       } catch (Throwable t) {

@@ -18,22 +18,22 @@
 
 package org.apache.hadoop.fs.s3a.commit.magic;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.List;
 
-import com.amazonaws.services.s3.model.PartETag;
-import com.amazonaws.services.s3.model.PutObjectRequest;
-import com.google.common.base.Preconditions;
+import software.amazon.awssdk.services.s3.model.CompletedPart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.commons.lang.StringUtils;
+
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.s3a.WriteOperationHelper;
 import org.apache.hadoop.fs.s3a.commit.PutTracker;
-import org.apache.hadoop.fs.s3a.commit.files.SinglePendingCommit;
+import org.apache.hadoop.fs.s3a.statistics.PutTrackerStatistics;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Put tracker for Magic commits.
@@ -41,7 +41,7 @@ import org.apache.hadoop.fs.s3a.commit.files.SinglePendingCommit;
  * uses any datatype in hadoop-mapreduce.
  */
 @InterfaceAudience.Private
-public class MagicCommitTracker extends PutTracker {
+public abstract class MagicCommitTracker extends PutTracker {
   public static final Logger LOG = LoggerFactory.getLogger(
       MagicCommitTracker.class);
 
@@ -50,7 +50,8 @@ public class MagicCommitTracker extends PutTracker {
   private final Path path;
   private final WriteOperationHelper writer;
   private final String bucket;
-  private static final byte[] EMPTY = new byte[0];
+  protected static final byte[] EMPTY = new byte[0];
+  private final PutTrackerStatistics trackerStatistics;
 
   /**
    * Magic commit tracker.
@@ -59,20 +60,23 @@ public class MagicCommitTracker extends PutTracker {
    * @param originalDestKey the original key, in the magic directory.
    * @param destKey key for the destination
    * @param pendingsetKey key of the pendingset file
-   * @param writer writer instance to use for operations
+   * @param writer writer instance to use for operations; includes audit span
+   * @param trackerStatistics tracker statistics
    */
   public MagicCommitTracker(Path path,
       String bucket,
       String originalDestKey,
       String destKey,
       String pendingsetKey,
-      WriteOperationHelper writer) {
+      WriteOperationHelper writer,
+      PutTrackerStatistics trackerStatistics) {
     super(destKey);
     this.bucket = bucket;
     this.path = path;
     this.originalDestKey = originalDestKey;
     this.pendingPartKey = pendingsetKey;
     this.writer = writer;
+    this.trackerStatistics = requireNonNull(trackerStatistics);
     LOG.info("File {} is written as magic file to path {}",
         path, destKey);
   }
@@ -102,50 +106,17 @@ public class MagicCommitTracker extends PutTracker {
    * @param uploadId Upload ID
    * @param parts list of parts
    * @param bytesWritten bytes written
+   * @param iostatistics nullable IO statistics
    * @return false, indicating that the commit must fail.
    * @throws IOException any IO problem.
    * @throws IllegalArgumentException bad argument
    */
   @Override
-  public boolean aboutToComplete(String uploadId,
-      List<PartETag> parts,
-      long bytesWritten)
-      throws IOException {
-    Preconditions.checkArgument(StringUtils.isNotEmpty(uploadId),
-        "empty/null upload ID: "+ uploadId);
-    Preconditions.checkArgument(parts != null,
-        "No uploaded parts list");
-    Preconditions.checkArgument(!parts.isEmpty(),
-        "No uploaded parts to save");
-    SinglePendingCommit commitData = new SinglePendingCommit();
-    commitData.touch(System.currentTimeMillis());
-    commitData.setDestinationKey(getDestKey());
-    commitData.setBucket(bucket);
-    commitData.setUri(path.toUri().toString());
-    commitData.setUploadId(uploadId);
-    commitData.setText("");
-    commitData.setLength(bytesWritten);
-    commitData.bindCommitData(parts);
-    byte[] bytes = commitData.toBytes();
-    LOG.info("Uncommitted data pending to file {};"
-            + " commit metadata for {} parts in {}. sixe: {} byte(s)",
-        path.toUri(), parts.size(), pendingPartKey, bytesWritten);
-    LOG.debug("Closed MPU to {}, saved commit information to {}; data=:\n{}",
-        path, pendingPartKey, commitData);
-    PutObjectRequest put = writer.createPutObjectRequest(
-        pendingPartKey,
-        new ByteArrayInputStream(bytes),
-        bytes.length);
-    writer.uploadObject(put);
-
-    // now put a 0-byte file with the name of the original under-magic path
-    PutObjectRequest originalDestPut = writer.createPutObjectRequest(
-        originalDestKey,
-        new ByteArrayInputStream(EMPTY),
-        0);
-    writer.uploadObject(originalDestPut);
-    return false;
-  }
+  public abstract boolean aboutToComplete(String uploadId,
+      List<CompletedPart> parts,
+      long bytesWritten,
+      IOStatistics iostatistics)
+      throws IOException;
 
   @Override
   public String toString() {
@@ -157,5 +128,29 @@ public class MagicCommitTracker extends PutTracker {
     sb.append(", writer=").append(writer);
     sb.append('}');
     return sb.toString();
+  }
+
+  public String getOriginalDestKey() {
+    return originalDestKey;
+  }
+
+  public String getPendingPartKey() {
+    return pendingPartKey;
+  }
+
+  public Path getPath() {
+    return path;
+  }
+
+  public String getBucket() {
+    return bucket;
+  }
+
+  public WriteOperationHelper getWriter() {
+    return writer;
+  }
+
+  public PutTrackerStatistics getTrackerStatistics() {
+    return trackerStatistics;
   }
 }

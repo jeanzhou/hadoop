@@ -18,8 +18,16 @@
 
 package org.apache.hadoop.yarn;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.net.NetUtils;
@@ -31,6 +39,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReInitializeContainerRequest;
@@ -57,14 +67,9 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.ipc.HadoopYarnProtoRPC;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
 import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
-import org.junit.Assert;
-import org.junit.Test;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.SocketTimeoutException;
-import java.util.ArrayList;
-import java.util.List;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /*
  * Test that the container resource increase rpc times out properly.
@@ -72,11 +77,11 @@ import java.util.List;
  */
 public class TestContainerResourceIncreaseRPC {
 
-  static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       TestContainerResourceIncreaseRPC.class);
 
   @Test
-  public void testHadoopProtoRPCTimeout() throws Exception {
+  void testHadoopProtoRPCTimeout() throws Exception {
     testRPCTimeout(HadoopYarnProtoRPC.class.getName());
   }
 
@@ -120,15 +125,14 @@ public class TestContainerResourceIncreaseRPC {
         proxy.updateContainer(request);
       } catch (Exception e) {
         LOG.info(StringUtils.stringifyException(e));
-        Assert.assertEquals("Error, exception is not: "
-            + SocketTimeoutException.class.getName(),
-            SocketTimeoutException.class.getName(), e.getClass().getName());
+        assertEquals(SocketTimeoutException.class.getName(), e.getClass().getName(),
+            "Error, exception is not: " + SocketTimeoutException.class.getName());
         return;
       }
     } finally {
       server.stop();
     }
-    Assert.fail("timeout exception should have occurred!");
+    fail("timeout exception should have occurred!");
   }
 
   public static Token newContainerToken(NodeId nodeId, byte[] password,
@@ -155,11 +159,9 @@ public class TestContainerResourceIncreaseRPC {
     }
 
     @Override
-    public StopContainersResponse
-    stopContainers(StopContainersRequest requests) throws YarnException,
-        IOException {
-      Exception e = new Exception("Dummy function", new Exception(
-          "Dummy function cause"));
+    public StopContainersResponse stopContainers(StopContainersRequest requests)
+        throws YarnException, IOException {
+      Exception e = new Exception("Dummy function", new Exception("Dummy function cause"));
       throw new YarnException(e);
     }
 
@@ -186,7 +188,7 @@ public class TestContainerResourceIncreaseRPC {
         // make the thread sleep to look like its not going to respond
         Thread.sleep(10000);
       } catch (Exception e) {
-        LOG.error(e);
+        LOG.error(e.toString());
         throw new YarnException(e);
       }
       throw new YarnException("Shouldn't happen!!");
@@ -224,6 +226,13 @@ public class TestContainerResourceIncreaseRPC {
 
     @Override
     public CommitResponse commitLastReInitialization(ContainerId containerId)
+        throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public GetLocalizationStatusesResponse getLocalizationStatuses(
+        GetLocalizationStatusesRequest request)
         throws YarnException, IOException {
       return null;
     }

@@ -18,11 +18,12 @@
 
 package org.apache.hadoop.metrics2.sink;
 
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.metrics2.MetricsSystem;
 
-import org.junit.Test;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test the {@link RollingFileSystemSink} class in the context of the local file
@@ -36,7 +37,7 @@ public class TestRollingFileSystemSinkWithLocal
    */
   @Test
   public void testWrite() throws Exception {
-    String path = methodDir.getAbsolutePath();
+    String path = methodDir.toURI().toString();
     MetricsSystem ms = initMetricsSystem(path, false, false);
 
     assertMetricsContents(doWriteTest(ms, path, 1));
@@ -49,7 +50,7 @@ public class TestRollingFileSystemSinkWithLocal
    */
   @Test
   public void testSilentWrite() throws Exception {
-    String path = methodDir.getAbsolutePath();
+    String path = methodDir.toURI().toString();
     MetricsSystem ms = initMetricsSystem(path, true, false);
 
     assertMetricsContents(doWriteTest(ms, path, 1));
@@ -62,7 +63,7 @@ public class TestRollingFileSystemSinkWithLocal
    */
   @Test
   public void testExistingWrite() throws Exception {
-    String path = methodDir.getAbsolutePath();
+    String path = methodDir.toURI().toString();
 
     assertMetricsContents(doAppendTest(path, false, false, 2));
   }
@@ -75,7 +76,7 @@ public class TestRollingFileSystemSinkWithLocal
    */
   @Test
   public void testExistingWrite2() throws Exception {
-    String path = methodDir.getAbsolutePath();
+    String path = methodDir.toURI().toString();
     MetricsSystem ms = initMetricsSystem(path, false, false);
 
     preCreateLogFile(path, 2);
@@ -91,7 +92,7 @@ public class TestRollingFileSystemSinkWithLocal
    */
   @Test
   public void testSilentExistingWrite() throws Exception {
-    String path = methodDir.getAbsolutePath();
+    String path = methodDir.toURI().toString();
 
     assertMetricsContents(doAppendTest(path, false, false, 2));
   }
@@ -101,21 +102,21 @@ public class TestRollingFileSystemSinkWithLocal
    */
   @Test
   public void testFailedWrite() {
-    String path = methodDir.getAbsolutePath();
+    String path = methodDir.toURI().toString();
     MetricsSystem ms = initMetricsSystem(path, false, false);
 
     new MyMetrics1().registerWith(ms);
 
-    methodDir.setWritable(false);
+    assertTrue(FileUtil.setWritable(methodDir, false));
     MockSink.errored = false;
 
     try {
       // publish the metrics
       ms.publishMetricsNow();
 
-      assertTrue("No exception was generated while writing metrics "
-          + "even though the target directory was not writable",
-          MockSink.errored);
+      assertTrue(MockSink.errored,
+          "No exception was generated while writing metrics "
+          + "even though the target directory was not writable");
 
       ms.stop();
       ms.shutdown();
@@ -130,22 +131,22 @@ public class TestRollingFileSystemSinkWithLocal
    */
   @Test
   public void testSilentFailedWrite() {
-    String path = methodDir.getAbsolutePath();
+    String path = methodDir.toURI().toString();
     MetricsSystem ms = initMetricsSystem(path, true, false);
 
     new MyMetrics1().registerWith(ms);
 
-    methodDir.setWritable(false);
+    assertTrue(FileUtil.setWritable(methodDir, false));
     MockSink.errored = false;
 
     try {
       // publish the metrics
       ms.publishMetricsNow();
 
-      assertFalse("An exception was generated while writing metrics "
+      assertFalse(MockSink.errored,
+          "An exception was generated while writing metrics "
           + "when the target directory was not writable, even though the "
-          + "sink is set to ignore errors",
-          MockSink.errored);
+          + "sink is set to ignore errors");
 
       ms.stop();
       ms.shutdown();

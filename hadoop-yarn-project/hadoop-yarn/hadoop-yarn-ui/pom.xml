@@ -16,15 +16,15 @@
 -->
 
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/maven-v4_0_0.xsd">
   <parent>
     <artifactId>hadoop-yarn</artifactId>
     <groupId>org.apache.hadoop</groupId>
-    <version>3.2.0-SNAPSHOT</version>
+    <version>3.6.0-SNAPSHOT</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>hadoop-yarn-ui</artifactId>
-  <version>3.2.0-SNAPSHOT</version>
+  <version>3.6.0-SNAPSHOT</version>
   <name>Apache Hadoop YARN UI</name>
   <packaging>${packagingType}</packaging>
 
@@ -38,6 +38,34 @@
 
   <build>
     <plugins>
+      <!-- Pkck the appropriate ember build script to use in src/package.json based on the OS -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>1.8</version>
+        <executions>
+          <execution>
+            <phase>validate</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <exportAntProperties>true</exportAntProperties>
+              <target>
+                <!-- Set the Maven property emberBuildScript to build:mvn:windows if this is
+                 running on Windows. Set it to build:mvn otherwise. -->
+                <condition property="emberBuildScript" value="build:mvn:windows" else="build:mvn">
+                  <and>
+                    <os family="windows"/>
+                  </and>
+                </condition>
+                <echo>Ember build script to use = ${emberBuildScript}</echo>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
       <!-- Apache RAT -->
       <plugin>
         <groupId>org.apache.rat</groupId>
@@ -47,9 +75,13 @@
             <exclude>src/main/webapp/jsconfig.json</exclude>
             <exclude>src/main/webapp/bower.json</exclude>
             <exclude>src/main/webapp/bower-shrinkwrap.json</exclude>
+            <exclude>src/main/webapp/bower_components/**</exclude>
+            <exclude>src/main/webapp/dist/**</exclude>
+            <exclude>src/main/webapp/node_modules/**</exclude>
             <exclude>src/main/webapp/package.json</exclude>
             <exclude>src/main/webapp/yarn.lock</exclude>
             <exclude>src/main/webapp/testem.json</exclude>
+            <exclude>src/main/webapp/testem.log</exclude>
             <exclude>src/main/webapp/public/assets/images/**/*</exclude>
             <exclude>src/main/webapp/public/assets/images/*</exclude>
             <exclude>src/main/webapp/public/robots.txt</exclude>
@@ -65,7 +97,6 @@
 
       <plugin>
         <artifactId>maven-clean-plugin</artifactId>
-        <version>3.0.0</version>
         <configuration>
           <skip>${keepUIBuildCache}</skip>
           <followSymLinks>false</followSymLinks>
@@ -118,7 +149,48 @@
                         <exclude>bower_components/**/*</exclude>
                         <exclude>tmp/**/*</exclude>
                         <exclude>dist/**/*</exclude>
+                        <exclude>terminal/**/*</exclude>
                       </excludes>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+              <execution>
+                <id>copy-terminal</id>
+                <!-- here the phase you need -->
+                <phase>compile</phase>
+                <goals>
+                  <goal>copy-resources</goal>
+                </goals>
+                <configuration>
+                  <outputDirectory>${webappDir}/dist</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${basedir}/src/main/webapp</directory>
+                      <filtering>true</filtering>
+                      <includes>
+                        <include>terminal/**/*</include>
+                      </includes>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+              <execution>
+                <id>copy-xterm</id>
+                <!-- here the phase you need -->
+                <phase>compile</phase>
+                <goals>
+                  <goal>copy-resources</goal>
+                </goals>
+                <configuration>
+                  <outputDirectory>${webappDir}/dist/terminal/xterm</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${basedir}/target/webapp/node_modules/xterm</directory>
+                      <filtering>true</filtering>
+                      <includes>
+                        <include>dist/**/*</include>
+                      </includes>
                     </resource>
                   </resources>
                 </configuration>
@@ -144,8 +216,8 @@
                   <goal>install-node-and-yarn</goal>
                 </goals>
                 <configuration>
-                  <nodeVersion>v5.12.0</nodeVersion>
-                  <yarnVersion>v0.21.3</yarnVersion>
+                  <nodeVersion>${nodejs.version}</nodeVersion>
+                  <yarnVersion>${yarnpkg.version}</yarnVersion>
                 </configuration>
               </execution>
               <execution>
@@ -162,7 +234,7 @@
                 <phase>generate-resources</phase>
                 <id>bower install</id>
                 <configuration>
-                  <arguments>install</arguments>
+                  <arguments>install --allow-root</arguments>
                 </configuration>
                 <goals>
                   <goal>bower</goal>
@@ -189,7 +261,7 @@
                   <arguments>
                     <argument>${packageManagerScript}</argument>
                     <argument>run</argument>
-                    <argument>build:mvn</argument>
+                    <argument>${emberBuildScript}</argument>
                   </arguments>
                 </configuration>
               </execution>
@@ -201,7 +273,14 @@
           <plugin>
             <groupId>ro.isdc.wro4j</groupId>
             <artifactId>wro4j-maven-plugin</artifactId>
-            <version>1.7.9</version>
+            <version>1.8.0</version>
+            <dependencies>
+              <dependency>
+                <groupId>org.mockito</groupId>
+                <artifactId>mockito-core</artifactId>
+                <version>${mockito.version}</version>
+              </dependency>
+            </dependencies>
             <executions>
               <execution>
                 <phase>prepare-package</phase>

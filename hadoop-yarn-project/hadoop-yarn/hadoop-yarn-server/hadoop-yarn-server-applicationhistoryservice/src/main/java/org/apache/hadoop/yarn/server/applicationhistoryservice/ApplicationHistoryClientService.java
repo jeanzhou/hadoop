@@ -58,7 +58,7 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
 import org.apache.hadoop.yarn.server.timeline.security.authorize.TimelinePolicyProvider;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -186,10 +186,10 @@ public class ApplicationHistoryClientService extends AbstractService implements
           IOException {
     long startedBegin =
         request.getStartRange() == null ? 0L : request.getStartRange()
-          .getMinimumLong();
+          .getMinimum();
     long startedEnd =
         request.getStartRange() == null ? Long.MAX_VALUE : request
-          .getStartRange().getMaximumLong();
+          .getStartRange().getMaximum();
     GetApplicationsResponse response =
         GetApplicationsResponse.newInstance(new ArrayList<ApplicationReport>(
           history.getApplications(request.getLimit(), startedBegin, startedEnd)

@@ -19,48 +19,27 @@
 package org.apache.hadoop.security;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.minikdc.MiniKdc;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import org.junit.rules.Timeout;
+
+import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.util.Properties;
-
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_TOKEN_FILES;
-import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION;
 import static org.apache.hadoop.security.KDiag.ARG_KEYLEN;
-import static org.apache.hadoop.security.KDiag.ARG_KEYTAB;
 import static org.apache.hadoop.security.KDiag.ARG_NOFAIL;
 import static org.apache.hadoop.security.KDiag.ARG_NOLOGIN;
-import static org.apache.hadoop.security.KDiag.ARG_PRINCIPAL;
-import static org.apache.hadoop.security.KDiag.ARG_SECURE;
-import static org.apache.hadoop.security.KDiag.CAT_CONFIG;
-import static org.apache.hadoop.security.KDiag.CAT_KERBEROS;
 import static org.apache.hadoop.security.KDiag.CAT_LOGIN;
 import static org.apache.hadoop.security.KDiag.CAT_TOKEN;
 import static org.apache.hadoop.security.KDiag.KerberosDiagsFailure;
 import static org.apache.hadoop.security.KDiag.exec;
 
-public class TestKDiagNoKDC extends Assert {
+@Timeout(30)
+public class TestKDiagNoKDC extends Assertions {
   private static final Logger LOG = LoggerFactory.getLogger(TestKDiagNoKDC.class);
 
   public static final String KEYLEN = "128";
 
-  @Rule
-  public TestName methodName = new TestName();
-
-  @Rule
-  public Timeout testTimeout = new Timeout(30000);
-
-  @BeforeClass
+  @BeforeAll
   public static void nameThread() {
     Thread.currentThread().setName("JUnit");
   }
@@ -68,7 +47,7 @@ public class TestKDiagNoKDC extends Assert {
   private static Configuration conf = new Configuration();
 
 
-  @Before
+  @BeforeEach
   public void reset() {
     UserGroupInformation.reset();
   }

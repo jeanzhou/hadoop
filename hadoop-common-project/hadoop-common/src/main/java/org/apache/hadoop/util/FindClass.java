@@ -17,10 +17,9 @@
 
 package org.apache.hadoop.util;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
-import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 import java.io.IOException;
@@ -33,9 +32,9 @@ import java.security.CodeSource;
  * This entry point exists for diagnosing classloader problems:
  * is a class or resource present -and if so, where?
  *
- * <p/>
+ * <p>
  * Actions
- * <p/>
+ * <br>
  * <ul>
  *   <li><pre>load</pre>: load a class but do not attempt to create it </li>
  *   <li><pre>create</pre>: load and create a class, print its string value</li>

@@ -21,6 +21,7 @@ import static org.apache.hadoop.metrics2.impl.MsInfo.ProcessName;
 import static org.apache.hadoop.metrics2.impl.MsInfo.SessionId;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeServiceState;
 import org.apache.hadoop.hdfs.server.federation.router.RouterRpcServer;
 import org.apache.hadoop.metrics2.MetricsSystem;
 import org.apache.hadoop.metrics2.annotation.Metric;
@@ -49,15 +50,22 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   private MutableRate proxy;
   @Metric("Number of operations the Router proxied to a Namenode")
   private MutableCounterLong proxyOp;
-
-  @Metric("Number of operations to fail to reach NN")
-  private MutableCounterLong proxyOpFailureStandby;
+  @Metric("Number of operations the Router proxied to a Active Namenode")
+  private MutableCounterLong activeProxyOp;
+  @Metric("Number of operations the Router proxied to a Observer Namenode")
+  private MutableCounterLong observerProxyOp;
   @Metric("Number of operations to hit a standby NN")
+  private MutableCounterLong proxyOpFailureStandby;
+  @Metric("Number of operations to fail to reach NN")
   private MutableCounterLong proxyOpFailureCommunicate;
+  @Metric("Number of operations to hit a client overloaded Router")
+  private MutableCounterLong proxyOpFailureClientOverloaded;
   @Metric("Number of operations not implemented")
   private MutableCounterLong proxyOpNotImplemented;
   @Metric("Number of operation retries")
   private MutableCounterLong proxyOpRetries;
+  @Metric("Number of operations to hit no namenodes available")
+  private MutableCounterLong proxyOpNoNamenodes;
 
   @Metric("Failed requests due to State Store unavailable")
   private MutableCounterLong routerFailureStateStore;
@@ -67,6 +75,9 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   private MutableCounterLong routerFailureLocked;
   @Metric("Failed requests due to safe mode")
   private MutableCounterLong routerFailureSafemode;
+
+  @Metric("Number of operations to hit permit limits")
+  private MutableCounterLong proxyOpPermitRejected;
 
   public FederationRPCMetrics(Configuration conf, RouterRpcServer rpcServer) {
     this.rpcServer = rpcServer;
@@ -81,15 +92,6 @@ public class FederationRPCMetrics implements FederationRPCMBean {
     return ms.register(FederationRPCMetrics.class.getName(),
         "HDFS Federation RPC Metrics",
         new FederationRPCMetrics(conf, rpcServer));
-  }
-
-  /**
-   * Convert nanoseconds to milliseconds.
-   * @param ns Time in nanoseconds.
-   * @return Time in milliseconds.
-   */
-  private static double toMs(double ns) {
-    return ns / 1000000;
   }
 
   /**
@@ -118,6 +120,14 @@ public class FederationRPCMetrics implements FederationRPCMBean {
     return proxyOpFailureCommunicate.value();
   }
 
+  public void incrProxyOpFailureClientOverloaded() {
+    proxyOpFailureClientOverloaded.incr();
+  }
+
+  @Override
+  public long getProxyOpFailureClientOverloaded() {
+    return proxyOpFailureClientOverloaded.value();
+  }
 
   public void incrProxyOpNotImplemented() {
     proxyOpNotImplemented.incr();
@@ -135,6 +145,15 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   @Override
   public long getProxyOpRetries() {
     return proxyOpRetries.value();
+  }
+
+  public void incrProxyOpNoNamenodes() {
+    proxyOpNoNamenodes.incr();
+  }
+
+  @Override
+  public long getProxyOpNoNamenodes() {
+    return proxyOpNoNamenodes.value();
   }
 
   public void incrRouterFailureStateStore() {
@@ -174,31 +193,49 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   }
 
   @Override
+  @Metric({"RpcServerCallQueue", "Length of the rpc server call queue"})
   public int getRpcServerCallQueue() {
     return rpcServer.getServer().getCallQueueLen();
   }
 
   @Override
+  @Metric({"RpcServerNumOpenConnections", "Number of the rpc server open connections"})
   public int getRpcServerNumOpenConnections() {
     return rpcServer.getServer().getNumOpenConnections();
   }
 
   @Override
+  @Metric({"RpcClientNumConnections", "Number of the rpc client open connections"})
   public int getRpcClientNumConnections() {
     return rpcServer.getRPCClient().getNumConnections();
   }
 
   @Override
+  @Metric({"RpcClientNumActiveConnections", "Number of the rpc client active connections"})
   public int getRpcClientNumActiveConnections() {
     return rpcServer.getRPCClient().getNumActiveConnections();
   }
 
   @Override
+  @Metric({"RpcClientNumIdleConnections", "Number of the rpc client idle connections"})
+  public int getRpcClientNumIdleConnections() {
+    return rpcServer.getRPCClient().getNumIdleConnections();
+  }
+
+  @Override
+  @Metric({"RpcClientNumActiveConnectionsRecently", "Number of the rpc client active connections recently"})
+  public int getRpcClientNumActiveConnectionsRecently() {
+    return rpcServer.getRPCClient().getNumActiveConnectionsRecently();
+  }
+
+  @Override
+  @Metric({"RpcClientNumCreatingConnections", "Number of the rpc client creating connections"})
   public int getRpcClientNumCreatingConnections() {
     return rpcServer.getRPCClient().getNumCreatingConnections();
   }
 
   @Override
+  @Metric({"RpcClientNumConnectionPools", "Number of the rpc client connection pools"})
   public int getRpcClientNumConnectionPools() {
     return rpcServer.getRPCClient().getNumConnectionPools();
   }
@@ -208,24 +245,51 @@ public class FederationRPCMetrics implements FederationRPCMBean {
     return rpcServer.getRPCClient().getJSON();
   }
 
+  @Override
+  public String getAvailableHandlerOnPerNs() {
+    return rpcServer.getRPCClient().
+        getRouterRpcFairnessPolicyController().getAvailableHandlerOnPerNs();
+  }
+
+  @Override
+  public String getAsyncCallerPool() {
+    return rpcServer.getRPCClient().getAsyncCallerPoolJson();
+  }
+
   /**
    * Add the time to proxy an operation from the moment the Router sends it to
    * the Namenode until it replied.
    * @param time Proxy time of an operation in nanoseconds.
+   * @param state NameNode state. Maybe null
    */
-  public void addProxyTime(long time) {
+  public void addProxyTime(long time, FederationNamenodeServiceState state) {
     proxy.add(time);
+    if(FederationNamenodeServiceState.ACTIVE == state) {
+      activeProxyOp.incr();
+    } else if (FederationNamenodeServiceState.OBSERVER == state) {
+      observerProxyOp.incr();
+    }
     proxyOp.incr();
   }
 
   @Override
   public double getProxyAvg() {
-    return toMs(proxy.lastStat().mean());
+    return proxy.lastStat().mean();
   }
 
   @Override
   public long getProxyOps() {
     return proxyOp.value();
+  }
+
+  @Override
+  public long getActiveProxyOps() {
+    return activeProxyOp.value();
+  }
+
+  @Override
+  public long getObserverProxyOps() {
+    return observerProxyOp.value();
   }
 
   /**
@@ -240,11 +304,30 @@ public class FederationRPCMetrics implements FederationRPCMBean {
 
   @Override
   public double getProcessingAvg() {
-    return toMs(processing.lastStat().mean());
+    return processing.lastStat().mean();
   }
 
   @Override
   public long getProcessingOps() {
     return processingOp.value();
+  }
+
+  public void incrProxyOpPermitRejected() {
+    proxyOpPermitRejected.incr();
+  }
+
+  @Override
+  public long getProxyOpPermitRejected() {
+    return proxyOpPermitRejected.value();
+  }
+
+  @Override
+  public String getProxyOpPermitRejectedPerNs() {
+    return rpcServer.getRPCClient().getRejectedPermitsPerNsJSON();
+  }
+
+  @Override
+  public String getProxyOpPermitAcceptedPerNs() {
+    return rpcServer.getRPCClient().getAcceptedPermitsPerNsJSON();
   }
 }

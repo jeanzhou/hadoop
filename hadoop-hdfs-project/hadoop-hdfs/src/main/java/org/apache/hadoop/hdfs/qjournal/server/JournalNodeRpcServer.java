@@ -17,8 +17,10 @@
  */
 package org.apache.hadoop.hdfs.qjournal.server;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.BlockingService;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.StorageInfoProto;
+import org.apache.hadoop.thirdparty.protobuf.BlockingService;
+import org.slf4j.Logger;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -31,6 +33,7 @@ import org.apache.hadoop.hdfs.qjournal.protocol.InterQJournalProtocol;
 import org.apache.hadoop.hdfs.qjournal.protocol.InterQJournalProtocolProtos.InterQJournalProtocolService;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocol;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.GetEditLogManifestResponseProto;
+import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.GetJournaledEditsResponseProto;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.GetJournalStateResponseProto;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.NewEpochResponseProto;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.PrepareRecoveryResponseProto;
@@ -44,7 +47,7 @@ import org.apache.hadoop.hdfs.qjournal.protocolPB.QJournalProtocolServerSideTran
 import org.apache.hadoop.hdfs.server.common.StorageInfo;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RPC.Server;
 import org.apache.hadoop.net.NetUtils;
@@ -53,42 +56,67 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URL;
 
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_JOURNALNODE_HANDLER_COUNT_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_JOURNALNODE_HANDLER_COUNT_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_JOURNALNODE_RPC_BIND_HOST_KEY;
+
 
 @InterfaceAudience.Private
 @VisibleForTesting
 public class JournalNodeRpcServer implements QJournalProtocol,
     InterQJournalProtocol {
-  private static final int HANDLER_COUNT = 5;
+  private static final Logger LOG = JournalNode.LOG;
   private final JournalNode jn;
   private Server server;
+  private final int handlerCount;
 
   JournalNodeRpcServer(Configuration conf, JournalNode jn) throws IOException {
     this.jn = jn;
-    
+
     Configuration confCopy = new Configuration(conf);
-    
+
     // Ensure that nagling doesn't kick in, which could cause latency issues.
     confCopy.setBoolean(
         CommonConfigurationKeysPublic.IPC_SERVER_TCPNODELAY_KEY,
         true);
-    
+
     InetSocketAddress addr = getAddress(confCopy);
+    String bindHost = conf.getTrimmed(DFS_JOURNALNODE_RPC_BIND_HOST_KEY, null);
+    if (bindHost == null) {
+      bindHost = addr.getHostName();
+    }
+    LOG.info("RPC server is binding to " + bindHost + ":" + addr.getPort());
+
     RPC.setProtocolEngine(confCopy, QJournalProtocolPB.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     QJournalProtocolServerSideTranslatorPB translator =
         new QJournalProtocolServerSideTranslatorPB(this);
     BlockingService service = QJournalProtocolService
         .newReflectiveBlockingService(translator);
-    
-    this.server = new RPC.Builder(confCopy)
-      .setProtocol(QJournalProtocolPB.class)
-      .setInstance(service)
-      .setBindAddress(addr.getHostName())
-      .setPort(addr.getPort())
-      .setNumHandlers(HANDLER_COUNT)
-      .setVerbose(false)
-      .build();
+    int confHandlerCount = conf.getInt(DFS_JOURNALNODE_HANDLER_COUNT_KEY,
+        DFS_JOURNALNODE_HANDLER_COUNT_DEFAULT);
+    if (confHandlerCount <= 0) {
+      LOG.warn("Invalid value for: {} = {}, Should be > 0,"
+              + " will use default value of: {}.",
+          DFS_JOURNALNODE_HANDLER_COUNT_KEY, confHandlerCount,
+          DFS_JOURNALNODE_HANDLER_COUNT_DEFAULT);
+      confHandlerCount = DFS_JOURNALNODE_HANDLER_COUNT_DEFAULT;
+    }
+    this.handlerCount = confHandlerCount;
+    LOG.info("The number of JournalNodeRpcServer handlers is {}.",
+        this.handlerCount);
 
+    this.server = new RPC.Builder(confCopy)
+        .setProtocol(QJournalProtocolPB.class)
+        .setInstance(service)
+        .setBindAddress(bindHost)
+        .setPort(addr.getPort())
+        .setNumHandlers(this.handlerCount)
+        .setVerbose(false)
+        .build();
+
+    this.server.addTerseExceptions(NewerTxnIdException.class);
+    this.server.addTerseExceptions(JournaledEditsCache.CacheMissException.class);
 
     //Adding InterQJournalProtocolPB to server
     InterQJournalProtocolServerSideTranslatorPB
@@ -98,7 +126,7 @@ public class JournalNodeRpcServer implements QJournalProtocol,
     BlockingService interQJournalProtocolService = InterQJournalProtocolService
         .newReflectiveBlockingService(qJournalProtocolServerSideTranslatorPB);
 
-    DFSUtil.addPBProtocol(confCopy, InterQJournalProtocolPB.class,
+    DFSUtil.addInternalPBProtocol(confCopy, InterQJournalProtocolPB.class,
         interQJournalProtocolService, server);
 
 
@@ -110,6 +138,11 @@ public class JournalNodeRpcServer implements QJournalProtocol,
     this.server.setTracer(jn.tracer);
   }
 
+  @VisibleForTesting
+  protected int getHandlerCount() {
+    return this.handlerCount;
+  }
+
   void start() {
     this.server.start();
   }
@@ -117,15 +150,15 @@ public class JournalNodeRpcServer implements QJournalProtocol,
   public InetSocketAddress getAddress() {
     return server.getListenerAddress();
   }
-  
+
   void join() throws InterruptedException {
     this.server.join();
   }
-  
+
   void stop() {
     this.server.stop();
   }
-  
+
   static InetSocketAddress getAddress(Configuration conf) {
     String addr = conf.get(
         DFSConfigKeys.DFS_JOURNALNODE_RPC_ADDRESS_KEY,
@@ -166,9 +199,10 @@ public class JournalNodeRpcServer implements QJournalProtocol,
   @Override
   public void format(String journalId,
                      String nameServiceId,
-                     NamespaceInfo nsInfo)
+                     NamespaceInfo nsInfo,
+                     boolean force)
       throws IOException {
-    jn.getOrCreateJournal(journalId, nameServiceId).format(nsInfo);
+    jn.getOrCreateJournal(journalId, nameServiceId).format(nsInfo, force);
   }
 
   @Override
@@ -178,7 +212,7 @@ public class JournalNodeRpcServer implements QJournalProtocol,
     jn.getOrCreateJournal(reqInfo.getJournalId(), reqInfo.getNameServiceId())
        .journal(reqInfo, segmentTxId, firstTxnId, numTxns, records);
   }
-  
+
   @Override
   public void heartbeat(RequestInfo reqInfo) throws IOException {
     jn.getOrCreateJournal(reqInfo.getJournalId(), reqInfo.getNameServiceId())
@@ -212,15 +246,29 @@ public class JournalNodeRpcServer implements QJournalProtocol,
       String jid, String nameServiceId,
       long sinceTxId, boolean inProgressOk)
       throws IOException {
-    
+
     RemoteEditLogManifest manifest = jn.getOrCreateJournal(jid, nameServiceId)
         .getEditLogManifest(sinceTxId, inProgressOk);
-    
+
     return GetEditLogManifestResponseProto.newBuilder()
         .setManifest(PBHelper.convert(manifest))
         .setHttpPort(jn.getBoundHttpAddress().getPort())
         .setFromURL(jn.getHttpServerURI())
         .build();
+  }
+
+  @Override
+  public StorageInfoProto getStorageInfo(String jid,
+      String nameServiceId) throws IOException {
+    StorageInfo storage = jn.getOrCreateJournal(jid, nameServiceId).getStorage();
+    return PBHelper.convert(storage);
+  }
+
+  @Override
+  public GetJournaledEditsResponseProto getJournaledEdits(String jid,
+      String nameServiceId, long sinceTxId, int maxTxns) throws IOException {
+    return jn.getOrCreateJournal(jid, nameServiceId)
+        .getJournaledEdits(sinceTxId, maxTxns);
   }
 
   @Override
@@ -297,5 +345,11 @@ public class JournalNodeRpcServer implements QJournalProtocol,
         .setHttpPort(jn.getBoundHttpAddress().getPort())
         .setFromURL(jn.getHttpServerURI())
         .build();
+  }
+
+  /** Allow access to the RPC server for testing. */
+  @VisibleForTesting
+  Server getRpcServer() {
+    return server;
   }
 }

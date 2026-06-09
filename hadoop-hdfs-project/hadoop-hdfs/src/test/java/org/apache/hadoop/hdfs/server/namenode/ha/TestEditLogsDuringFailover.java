@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -27,8 +27,8 @@ import java.net.URI;
 import java.util.Collections;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.HAUtil;
@@ -40,20 +40,21 @@ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.Lists;
+
 import static org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter.getFileInfo;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.base.Joiner;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 
 /**
  * Test cases for the handling of edit logs during failover
  * and startup of the standby node.
  */
 public class TestEditLogsDuringFailover {
-  private static final Log LOG =
-    LogFactory.getLog(TestEditLogsDuringFailover.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestEditLogsDuringFailover.class);
   private static final int NUM_DIRS_IN_LOG = 5;
 
   static {
@@ -159,7 +160,7 @@ public class TestEditLogsDuringFailover {
           outs.write(new byte[] { 0x18, 0x00, 0x00, 0x00 } );
           LOG.error("editLogFile = " + editLogFile);
         } finally {
-          IOUtils.cleanup(LOG, outs);
+          IOUtils.cleanupWithLogger(LOG, outs);
         }
      }
 

@@ -51,6 +51,8 @@ public class AllocationFileQueueParser {
   private static final String MAX_CHILD_RESOURCES = "maxChildResources";
   private static final String MAX_RUNNING_APPS = "maxRunningApps";
   private static final String MAX_AMSHARE = "maxAMShare";
+  public static final String MAX_CONTAINER_ALLOCATION =
+      "maxContainerAllocation";
   private static final String WEIGHT = "weight";
   private static final String MIN_SHARE_PREEMPTION_TIMEOUT =
       "minSharePreemptionTimeout";
@@ -124,6 +126,7 @@ public class AllocationFileQueueParser {
     NodeList fields = element.getChildNodes();
     boolean isLeaf = true;
     boolean isReservable = false;
+    boolean isMaxAMShareSet = false;
 
     for (int j = 0; j < fields.getLength(); j++) {
       Node fieldNode = fields.item(j);
@@ -134,7 +137,7 @@ public class AllocationFileQueueParser {
       if (MIN_RESOURCES.equals(field.getTagName())) {
         String text = getTrimmedTextData(field);
         ConfigurableResource val =
-            FairSchedulerConfiguration.parseResourceConfigValue(text);
+            FairSchedulerConfiguration.parseResourceConfigValue(text, 0L);
         builder.minQueueResources(queueName, val.getResource());
       } else if (MAX_RESOURCES.equals(field.getTagName())) {
         String text = getTrimmedTextData(field);
@@ -155,6 +158,12 @@ public class AllocationFileQueueParser {
         float val = Float.parseFloat(text);
         val = Math.min(val, 1.0f);
         builder.queueMaxAMShares(queueName, val);
+        isMaxAMShareSet = true;
+      } else if (MAX_CONTAINER_ALLOCATION.equals(field.getTagName())) {
+        String text = getTrimmedTextData(field);
+        ConfigurableResource val =
+            FairSchedulerConfiguration.parseResourceConfigValue(text);
+        builder.queueMaxContainerAllocation(queueName, val.getResource());
       } else if (WEIGHT.equals(field.getTagName())) {
         String text = getTrimmedTextData(field);
         double val = Double.parseDouble(text);
@@ -213,17 +222,20 @@ public class AllocationFileQueueParser {
         isLeaf = false;
       }
     }
-
     // if a leaf in the alloc file is marked as type='parent'
     // then store it as a parent queue
     if (isLeaf && !"parent".equals(element.getAttribute("type"))) {
-      builder.configuredQueues(FSQueueType.LEAF, queueName);
+      // reservable queue has been already configured as parent
+      if (!isReservable) {
+        builder.configuredQueues(FSQueueType.LEAF, queueName);
+      }
     } else {
       if (isReservable) {
-        throw new AllocationConfigurationException("The configuration settings"
-            + " for " + queueName + " are invalid. A queue element that "
-            + "contains child queue elements or that has the type='parent' "
-            + "attribute cannot also include a reservation element.");
+        throw new AllocationConfigurationException(
+            getErrorString(queueName, RESERVATION));
+      } else if (isMaxAMShareSet) {
+        throw new AllocationConfigurationException(
+            getErrorString(queueName, MAX_AMSHARE));
       }
       builder.configuredQueues(FSQueueType.PARENT, queueName);
     }
@@ -241,6 +253,19 @@ public class AllocationFileQueueParser {
 
     checkMinAndMaxResource(builder.getMinQueueResources(),
         builder.getMaxQueueResources(), queueName);
+  }
+
+  /**
+   * Set up the error string based on the supplied parent queueName and element.
+   * @param parentQueueName the parent queue name.
+   * @param element the element that should not be present for the parent queue.
+   * @return the error string.
+   */
+  private String getErrorString(String parentQueueName, String element) {
+    return "The configuration settings"
+        + " for " + parentQueueName + " are invalid. A queue element that "
+        + "contains child queue elements or that has the type='parent' "
+        + "attribute cannot also include a " + element + " element.";
   }
 
   private String getTrimmedTextData(Element element) {

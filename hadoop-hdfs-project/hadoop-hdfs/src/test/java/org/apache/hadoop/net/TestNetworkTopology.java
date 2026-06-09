@@ -18,19 +18,23 @@
 
 package org.apache.hadoop.net;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
@@ -39,22 +43,23 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
+@Timeout(30)
 public class TestNetworkTopology {
-  private static final Log LOG = LogFactory.getLog(TestNetworkTopology.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestNetworkTopology.class);
   private final static NetworkTopology cluster =
       NetworkTopology.getInstance(new Configuration());
   private DatanodeDescriptor dataNodes[];
 
-  @Rule
-  public Timeout testTimeout = new Timeout(30000);
-
-  @Before
+  @BeforeEach
   public void setupDatanodes() {
     dataNodes = new DatanodeDescriptor[] {
         DFSTestUtil.getDatanodeDescriptor("1.1.1.1", "/d1/r1"),
@@ -83,6 +88,7 @@ public class TestNetworkTopology {
     }
     dataNodes[9].setDecommissioned();
     dataNodes[10].setDecommissioned();
+    GenericTestUtils.setLogLevel(NetworkTopology.LOG, Level.TRACE);
   }
   
   @Test
@@ -132,7 +138,62 @@ public class TestNetworkTopology {
     assertFalse(cluster.isOnSameRack(dataNodes[4], dataNodes[5]));
     assertTrue(cluster.isOnSameRack(dataNodes[5], dataNodes[6]));
   }
-  
+
+  @Test
+  public void testGetWeight() throws Exception {
+    DatanodeDescriptor nodeInMap = dataNodes[0];
+    assertEquals(0, cluster.getWeight(nodeInMap, dataNodes[0]));
+    assertEquals(2, cluster.getWeight(nodeInMap, dataNodes[1]));
+    assertEquals(4, cluster.getWeight(nodeInMap, dataNodes[2]));
+
+    DatanodeDescriptor nodeNotInMap =
+        DFSTestUtil.getDatanodeDescriptor("21.21.21.21", "/d1/r2");
+    assertEquals(4, cluster.getWeightUsingNetworkLocation(nodeNotInMap,
+        dataNodes[0]));
+    assertEquals(4, cluster.getWeightUsingNetworkLocation(nodeNotInMap,
+        dataNodes[1]));
+    assertEquals(2, cluster.getWeightUsingNetworkLocation(nodeNotInMap,
+        dataNodes[2]));
+  }
+
+  /**
+   * Test getWeight/getWeightUsingNetworkLocation for complex topology.
+   */
+  @Test
+  public void testGetWeightForDepth() throws Exception {
+    NetworkTopology topology = NetworkTopology.getInstance(new Configuration());
+    DatanodeDescriptor[] dns = new DatanodeDescriptor[] {
+        DFSTestUtil.getDatanodeDescriptor("1.1.1.1", "/z1/d1/p1/r1"),
+        DFSTestUtil.getDatanodeDescriptor("2.2.2.2", "/z1/d1/p1/r1"),
+        DFSTestUtil.getDatanodeDescriptor("3.3.3.3", "/z1/d1/p2/r2"),
+        DFSTestUtil.getDatanodeDescriptor("4.4.4.4", "/z1/d2/p1/r2"),
+        DFSTestUtil.getDatanodeDescriptor("5.5.5.5", "/z2/d3/p1/r1"),
+    };
+    for (int i = 0; i < dns.length; i++) {
+      topology.add(dns[i]);
+    }
+
+    DatanodeDescriptor nodeInMap = dns[0];
+    assertEquals(0, topology.getWeight(nodeInMap, dns[0]));
+    assertEquals(2, topology.getWeight(nodeInMap, dns[1]));
+    assertEquals(6, topology.getWeight(nodeInMap, dns[2]));
+    assertEquals(8, topology.getWeight(nodeInMap, dns[3]));
+    assertEquals(10, topology.getWeight(nodeInMap, dns[4]));
+
+    DatanodeDescriptor nodeNotInMap =
+        DFSTestUtil.getDatanodeDescriptor("6.6.6.6", "/z1/d1/p1/r2");
+    assertEquals(4, topology.getWeightUsingNetworkLocation(
+        nodeNotInMap, dns[0]));
+    assertEquals(4, topology.getWeightUsingNetworkLocation(
+        nodeNotInMap, dns[1]));
+    assertEquals(6, topology.getWeightUsingNetworkLocation(
+        nodeNotInMap, dns[2]));
+    assertEquals(8, topology.getWeightUsingNetworkLocation(
+        nodeNotInMap, dns[3]));
+    assertEquals(10, topology.getWeightUsingNetworkLocation(
+        nodeNotInMap, dns[4]));
+  }
+
   @Test
   public void testGetDistance() throws Exception {
     assertEquals(cluster.getDistance(dataNodes[0], dataNodes[0]), 0);
@@ -181,10 +242,16 @@ public class TestNetworkTopology {
     cluster.setRandomSeed(0xDEADBEEF);
     cluster.sortByDistance(dataNodes[8], dtestNodes, dtestNodes.length - 2);
     assertTrue(dtestNodes[0] == dataNodes[8]);
-    assertTrue(dtestNodes[1] == dataNodes[11]);
-    assertTrue(dtestNodes[2] == dataNodes[12]);
-    assertTrue(dtestNodes[3] == dataNodes[9]);
-    assertTrue(dtestNodes[4] == dataNodes[10]);
+    assertTrue(dtestNodes[1] != dtestNodes[2]);
+    assertTrue(dtestNodes[1] == dataNodes[11]
+        || dtestNodes[1] == dataNodes[12]);
+    assertTrue(dtestNodes[2] == dataNodes[11]
+        || dtestNodes[2] == dataNodes[12]);
+    assertTrue(dtestNodes[3] != dtestNodes[4]);
+    assertTrue(dtestNodes[3] == dataNodes[9]
+        || dtestNodes[3] == dataNodes[10]);
+    assertTrue(dtestNodes[4] == dataNodes[9]
+        || dtestNodes[4] == dataNodes[10]);
 
     // array contains local node
     testNodes[0] = dataNodes[1];
@@ -244,7 +311,7 @@ public class TestNetworkTopology {
         }
       }
     }
-    assertTrue("Expected to find a different first location", foundRandom);
+    assertTrue(foundRandom, "Expected to find a different first location");
 
     // Array of just remote nodes
     // Expect random first node
@@ -263,7 +330,7 @@ public class TestNetworkTopology {
         }
       }
     }
-    assertTrue("Expected to find a different first location", foundRandom);
+    assertTrue(foundRandom, "Expected to find a different first location");
 
     //Reader is not a datanode, but is in one of the datanode's rack.
     testNodes[0] = dataNodes[0];
@@ -271,10 +338,14 @@ public class TestNetworkTopology {
     testNodes[2] = dataNodes[8];
     Node rackClient = new NodeBase("/d3/r1/25.25.25");
     cluster.setRandomSeed(0xDEADBEEF);
-    cluster.sortByDistance(rackClient, testNodes, testNodes.length);
+    cluster.sortByDistanceUsingNetworkLocation(rackClient, testNodes,
+        testNodes.length);
     assertTrue(testNodes[0] == dataNodes[8]);
-    assertTrue(testNodes[1] == dataNodes[5]);
-    assertTrue(testNodes[2] == dataNodes[0]);
+    assertTrue(testNodes[1] != testNodes[2]);
+    assertTrue(testNodes[1] == dataNodes[0]
+        || testNodes[1] == dataNodes[5]);
+    assertTrue(testNodes[2] == dataNodes[0]
+        || testNodes[2] == dataNodes[5]);
 
     //Reader is not a datanode , but is in one of the datanode's data center.
     testNodes[0] = dataNodes[8];
@@ -282,15 +353,23 @@ public class TestNetworkTopology {
     testNodes[2] = dataNodes[0];
     Node dcClient = new NodeBase("/d1/r2/25.25.25");
     cluster.setRandomSeed(0xDEADBEEF);
-    cluster.sortByDistance(dcClient, testNodes, testNodes.length);
+    cluster.sortByDistanceUsingNetworkLocation(dcClient, testNodes,
+        testNodes.length);
     assertTrue(testNodes[0] == dataNodes[0]);
-    assertTrue(testNodes[1] == dataNodes[5]);
-    assertTrue(testNodes[2] == dataNodes[8]);
+    assertTrue(testNodes[1] != testNodes[2]);
+    assertTrue(testNodes[1] == dataNodes[5]
+        || testNodes[1] == dataNodes[8]);
+    assertTrue(testNodes[2] == dataNodes[5]
+        || testNodes[2] == dataNodes[8]);
 
   }
   
   @Test
   public void testRemove() throws Exception {
+    // this cluster topology is:
+    // /d1/r1, /d1/r2, /d2/r3, /d3/r1, /d3/r2, /d4/r1
+    // so root "" has four children
+    assertEquals(4, cluster.clusterMap.getNumOfChildren());
     for(int i=0; i<dataNodes.length; i++) {
       cluster.remove(dataNodes[i]);
     }
@@ -299,6 +378,7 @@ public class TestNetworkTopology {
     }
     assertEquals(0, cluster.getNumOfLeaves());
     assertEquals(0, cluster.clusterMap.getChildren().size());
+    assertEquals(0, cluster.clusterMap.getNumOfChildren());
     for(int i=0; i<dataNodes.length; i++) {
       cluster.add(dataNodes[i]);
     }
@@ -324,6 +404,7 @@ public class TestNetworkTopology {
         frequency.put(random, frequency.get(random) + 1);
       }
     }
+    LOG.info("Result:" + frequency);
     return frequency;
   }
 
@@ -373,18 +454,18 @@ public class TestNetworkTopology {
     excludedNodes.add(dataNodes[18]);
     Map<Node, Integer> frequency = pickNodesAtRandom(100, scope, excludedNodes);
 
-    assertEquals("dn[3] should be excluded", 0,
-        frequency.get(dataNodes[3]).intValue());
-    assertEquals("dn[5] should be exclude18d", 0,
-        frequency.get(dataNodes[5]).intValue());
-    assertEquals("dn[7] should be excluded", 0,
-        frequency.get(dataNodes[7]).intValue());
-    assertEquals("dn[9] should be excluded", 0,
-        frequency.get(dataNodes[9]).intValue());
-    assertEquals("dn[13] should be excluded", 0,
-        frequency.get(dataNodes[13]).intValue());
-    assertEquals("dn[18] should be excluded", 0,
-        frequency.get(dataNodes[18]).intValue());
+    assertEquals(0, frequency.get(dataNodes[3]).intValue(),
+        "dn[3] should be excluded");
+    assertEquals(0, frequency.get(dataNodes[5]).intValue(),
+        "dn[5] should be exclude18d");
+    assertEquals(0, frequency.get(dataNodes[7]).intValue(),
+        "dn[7] should be excluded");
+    assertEquals(0, frequency.get(dataNodes[9]).intValue(),
+        "dn[9] should be excluded");
+    assertEquals(0, frequency.get(dataNodes[13]).intValue(),
+        "dn[13] should be excluded");
+    assertEquals(0, frequency.get(dataNodes[18]).intValue(),
+        "dn[18] should be excluded");
     for (Node key : dataNodes) {
       if (excludedNodes.contains(key)) {
         continue;
@@ -411,7 +492,8 @@ public class TestNetworkTopology {
     }
   }
 
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testInvalidNetworkTopologiesNotCachedInHdfs() throws Exception {
     // start a cluster
     Configuration conf = new HdfsConfiguration();
@@ -425,14 +507,14 @@ public class TestNetworkTopology {
       cluster.waitActive();
       
       NamenodeProtocols nn = cluster.getNameNodeRpc();
-      Assert.assertNotNull(nn);
+      assertNotNull(nn);
       
       // Wait for one DataNode to register.
       // The other DataNode will not be able to register up because of the rack mismatch.
       DatanodeInfo[] info;
       while (true) {
         info = nn.getDatanodeReport(DatanodeReportType.LIVE);
-        Assert.assertFalse(info.length == 2);
+        assertFalse(info.length == 2);
         if (info.length == 1) {
           break;
         }
@@ -462,8 +544,8 @@ public class TestNetworkTopology {
         }
         Thread.sleep(1000);
       }
-      Assert.assertEquals(info[0].getNetworkLocation(),
-                          info[1].getNetworkLocation());
+      assertEquals(info[0].getNetworkLocation(),
+          info[1].getNetworkLocation());
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -471,4 +553,134 @@ public class TestNetworkTopology {
     }
   }
 
+  /**
+   * Tests chooseRandom with include scope, excluding a few nodes.
+   */
+  @Test
+  public void testChooseRandomInclude1() {
+    final String scope = "/d1";
+    final Set<Node> excludedNodes = new HashSet<>();
+    final Random r = new Random();
+    for (int i = 0; i < 4; ++i) {
+      final int index = r.nextInt(5);
+      excludedNodes.add(dataNodes[index]);
+    }
+    Map<Node, Integer> frequency = pickNodesAtRandom(100, scope, excludedNodes);
+
+    verifyResults(5, excludedNodes, frequency);
+  }
+
+  /**
+   * Tests chooseRandom with include scope at rack, excluding a node.
+   */
+  @Test
+  public void testChooseRandomInclude2() {
+    String scope = dataNodes[0].getNetworkLocation();
+    Set<Node> excludedNodes = new HashSet<>();
+    final Random r = new Random();
+    int index = r.nextInt(1);
+    excludedNodes.add(dataNodes[index]);
+    final int count = 100;
+    Map<Node, Integer> frequency =
+        pickNodesAtRandom(count, scope, excludedNodes);
+
+    verifyResults(1, excludedNodes, frequency);
+  }
+
+  private void verifyResults(int upperbound, Set<Node> excludedNodes,
+      Map<Node, Integer> frequency) {
+    LOG.info("Excluded nodes are: {}", excludedNodes);
+    for (int i = 0; i < upperbound; ++i) {
+      final Node n = dataNodes[i];
+      LOG.info("Verifying node {}", n);
+      if (excludedNodes.contains(n)) {
+        assertEquals(0, (int) frequency.get(n),
+            n + " should not have been chosen.");
+      } else {
+        assertTrue(frequency.get(n) > 0, n + " should have been chosen");
+      }
+    }
+  }
+
+  /**
+   * Tests chooseRandom with include scope, no exlucde nodes.
+   */
+  @Test
+  public void testChooseRandomInclude3() {
+    String scope = "/d1";
+    Map<Node, Integer> frequency = pickNodesAtRandom(200, scope, null);
+    LOG.info("No node is excluded.");
+    for (int i = 0; i < 5; ++i) {
+      // all nodes should be more than zero
+      assertTrue(frequency.get(dataNodes[i]) > 0,
+          dataNodes[i] + " should have been chosen.");
+    }
+  }
+
+  @Test
+  public void testCountNumOfAvailableNodes() {
+    int numNodes = cluster.countNumOfAvailableNodes(NodeBase.ROOT, null);
+    assertEquals(20, numNodes);
+
+    // Excluding a single node
+    Collection<Node> excludedNodes = new HashSet<Node>();
+    excludedNodes.add(dataNodes[0]);
+    numNodes = cluster.countNumOfAvailableNodes(NodeBase.ROOT, excludedNodes);
+    assertEquals(19, numNodes);
+
+    // Excluding a full rack
+    Node d4r1 = cluster.getNode("/d4/r1");
+    excludedNodes.add(d4r1);
+    numNodes = cluster.countNumOfAvailableNodes(NodeBase.ROOT, excludedNodes);
+    assertEquals(12, numNodes);
+  }
+
+  @Test
+  public void testAddAndRemoveNodeWithEmptyRack() {
+    DatanodeDescriptor n1 = DFSTestUtil.getDatanodeDescriptor("6.6.6.6", "/d2/r3");
+    DatanodeDescriptor n2 = DFSTestUtil.getDatanodeDescriptor("7.7.7.7", "/d2/r3");
+    DatanodeDescriptor n3 = DFSTestUtil.getDatanodeDescriptor("8.8.8.8", "/d2/r3");
+
+    cluster.decommissionNode(n1);
+    assertEquals(6, cluster.getNumOfNonEmptyRacks());
+    cluster.decommissionNode(n2);
+    cluster.decommissionNode(n3);
+    assertEquals(5, cluster.getNumOfNonEmptyRacks());
+
+    cluster.recommissionNode(n1);
+    assertEquals(6, cluster.getNumOfNonEmptyRacks());
+  }
+
+  @Test
+  public void testShuffle() {
+    testShuffleInternal(0);
+    testShuffleInternal(1);
+    testShuffleInternal(2);
+    testShuffleInternal(3);
+  }
+
+  private void testShuffleInternal(int activeLen) {
+    // Produce the sequence used for later validation
+    List<Integer> idxList = new ArrayList<>();
+    for (int i = 0; i < activeLen; ++i) {
+      idxList.add(i);
+    }
+    cluster.setRandomSeed(0xDEADBEEF);
+    Collections.shuffle(idxList, cluster.getRandom());
+    for (int i = activeLen; i < 3; ++i) {
+      idxList.add(i);
+    }
+
+    // array contains both active and other nodes
+    DatanodeDescriptor[] testNodes = new DatanodeDescriptor[3];
+    testNodes[0] = dataNodes[0];
+    testNodes[1] = dataNodes[1];
+    testNodes[2] = dataNodes[2];
+    cluster.setRandomSeed(0xDEADBEEF);
+    cluster.shuffle(testNodes, activeLen);
+
+    for (int i = 0; i < testNodes.length; ++i) {
+      assertEquals(testNodes[i], dataNodes[idxList.get(i)]);
+    }
+  }
 }

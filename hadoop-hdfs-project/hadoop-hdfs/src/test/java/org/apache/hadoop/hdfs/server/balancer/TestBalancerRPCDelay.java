@@ -17,16 +17,42 @@
  */
 package org.apache.hadoop.hdfs.server.balancer;
 
-import org.junit.Test;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * The Balancer ensures that it disperses RPCs to the NameNode
  * in order to avoid NN's RPC queue saturation.
  */
+@Timeout(100)
 public class TestBalancerRPCDelay {
 
-  @Test(timeout=100000)
-  public void testBalancerRPCDelay() throws Exception {
-    new TestBalancer().testBalancerRPCDelay();
+  private TestBalancer testBalancer;
+
+  @BeforeEach
+  public void setup() {
+    testBalancer = new TestBalancer();
+    testBalancer.setup();
+  }
+
+  @AfterEach
+  public void teardown() throws Exception {
+    if (testBalancer != null) {
+      testBalancer.shutdown();
+    }
+  }
+
+  @Test
+  public void testBalancerRPCDelayQps3() throws Exception {
+    testBalancer.testBalancerRPCDelay(3);
+  }
+
+  @Test
+  public void testBalancerRPCDelayQpsDefault() throws Exception {
+    testBalancer.testBalancerRPCDelay(
+        DFSConfigKeys.DFS_NAMENODE_GETBLOCKS_MAX_QPS_DEFAULT);
   }
 }

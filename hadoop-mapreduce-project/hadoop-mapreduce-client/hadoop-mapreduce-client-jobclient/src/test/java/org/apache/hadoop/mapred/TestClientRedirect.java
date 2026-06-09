@@ -82,8 +82,12 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAttributesToNodesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAttributesToNodesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeAttributesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeAttributesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodesRequest;
@@ -100,6 +104,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToAttributesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToAttributesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoRequest;
@@ -140,10 +146,12 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestClientRedirect {
 
@@ -194,7 +202,7 @@ public class TestClientRedirect {
     org.apache.hadoop.mapreduce.Counters counters =
         cluster.getJob(jobID).getCounters();
     validateCounters(counters);
-    Assert.assertTrue(amContact);
+    assertTrue(amContact);
 
     LOG.info("Sleeping for 5 seconds before stop for" +
     " the client socket to not get EOF immediately..");
@@ -212,7 +220,7 @@ public class TestClientRedirect {
     // Same client
     //results are returned from fake (not started job)
     counters = cluster.getJob(jobID).getCounters();
-    Assert.assertEquals(0, counters.countCounters());
+    assertEquals(0, counters.countCounters());
     Job job = cluster.getJob(jobID);
     org.apache.hadoop.mapreduce.TaskID taskId =
       new org.apache.hadoop.mapreduce.TaskID(jobID, TaskType.MAP, 0);
@@ -236,7 +244,7 @@ public class TestClientRedirect {
 
     counters = cluster.getJob(jobID).getCounters();
     validateCounters(counters);
-    Assert.assertTrue(amContact);
+    assertTrue(amContact);
 
     // Stop the AM. It is not even restarting. So it should be treated as
     // completed.
@@ -245,7 +253,7 @@ public class TestClientRedirect {
     // Same client
     counters = cluster.getJob(jobID).getCounters();
     validateCounters(counters);
-    Assert.assertTrue(hsContact);
+    assertTrue(hsContact);
 
     rmService.stop();
     historyService.stop();
@@ -261,7 +269,7 @@ public class TestClientRedirect {
         LOG.info("Counter is " + itc.next().getDisplayName());
       }
     }
-    Assert.assertEquals(1, counters.countCounters());
+    assertEquals(1, counters.countCounters());
   }
 
   class RMService extends AbstractService implements ApplicationClientProtocol {
@@ -271,6 +279,14 @@ public class TestClientRedirect {
 
     public RMService(String name) {
       super(name);
+    }
+
+    @Override
+    protected void serviceStop() throws Exception {
+      if (server != null) {
+        server.stop();
+      }
+      super.serviceStop();
     }
 
     @Override
@@ -519,6 +535,25 @@ public class TestClientRedirect {
     public GetAllResourceTypeInfoResponse getResourceTypeInfo(
         GetAllResourceTypeInfoRequest request)
         throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public GetAttributesToNodesResponse getAttributesToNodes(
+        GetAttributesToNodesRequest request) throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public GetClusterNodeAttributesResponse getClusterNodeAttributes(
+        GetClusterNodeAttributesRequest request)
+        throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public GetNodesToAttributesResponse getNodesToAttributes(
+        GetNodesToAttributesRequest request) throws YarnException, IOException {
       return null;
     }
   }

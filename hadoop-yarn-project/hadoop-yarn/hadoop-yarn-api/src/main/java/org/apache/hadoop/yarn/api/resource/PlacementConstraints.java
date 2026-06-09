@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.records.AllocationTagNamespaceType;
+import org.apache.hadoop.yarn.api.records.NodeAttributeOpCode;
 import org.apache.hadoop.yarn.api.resource.PlacementConstraint.AbstractConstraint;
 import org.apache.hadoop.yarn.api.resource.PlacementConstraint.And;
 import org.apache.hadoop.yarn.api.resource.PlacementConstraint.DelayedOr;
@@ -83,6 +84,24 @@ public final class PlacementConstraints {
   public static AbstractConstraint targetNotIn(String scope,
       TargetExpression... targetExpressions) {
     return new SingleConstraint(scope, 0, 0, targetExpressions);
+  }
+
+  /**
+   * Creates a constraint that requires allocations to be placed on nodes that
+   * belong to a scope (e.g., node or rack) that satisfy any of the
+   * target expressions based on node attribute op code.
+   *
+   * @param scope the scope within which the target expressions should not be
+   *          true
+   * @param opCode Node Attribute code which could be equals, not equals.
+   * @param targetExpressions the expressions that need to not be true within
+   *          the scope
+   * @return the resulting placement constraint
+   */
+  public static AbstractConstraint targetNodeAttribute(String scope,
+      NodeAttributeOpCode opCode,
+      TargetExpression... targetExpressions) {
+    return new SingleConstraint(scope, -1, -1, opCode, targetExpressions);
   }
 
   /**
@@ -258,15 +277,17 @@ public final class PlacementConstraints {
 
     /**
      * Constructs a target expression on an allocation tag. It is satisfied if
-     * there are allocations with one of the given tags.
+     * there are allocations with one of the given tags. The default namespace
+     * for these tags is {@link AllocationTagNamespaceType#SELF}, this only
+     * checks tags within the application.
      *
      * @param allocationTags the set of tags that the attribute should take
      *          values from
      * @return the resulting expression on the allocation tags
      */
     public static TargetExpression allocationTag(String... allocationTags) {
-      return new TargetExpression(TargetType.ALLOCATION_TAG, null,
-          allocationTags);
+      return allocationTagWithNamespace(
+          AllocationTagNamespaceType.SELF.toString(), allocationTags);
     }
 
     /**
@@ -281,22 +302,6 @@ public final class PlacementConstraints {
         String... allocationTags) {
       return new TargetExpression(TargetType.ALLOCATION_TAG,
           namespace, allocationTags);
-    }
-
-    /**
-     * Constructs a target expression on an allocation tag. It is satisfied if
-     * there are allocations with one of the given tags. Comparing to
-     * {@link PlacementTargets#allocationTag(String...)}, this only checks tags
-     * within the application.
-     *
-     * @param allocationTags the set of tags that the attribute should take
-     *          values from
-     * @return the resulting expression on the allocation tags
-     */
-    public static TargetExpression allocationTagToIntraApp(
-        String... allocationTags) {
-      return new TargetExpression(TargetType.ALLOCATION_TAG,
-          AllocationTagNamespaceType.SELF.toString(), allocationTags);
     }
   }
 

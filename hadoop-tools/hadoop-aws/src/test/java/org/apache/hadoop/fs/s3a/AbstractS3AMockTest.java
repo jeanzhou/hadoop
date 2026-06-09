@@ -20,58 +20,79 @@ package org.apache.hadoop.fs.s3a;
 
 import static org.apache.hadoop.fs.s3a.Constants.*;
 
-import com.amazonaws.AmazonServiceException;
-import com.amazonaws.services.s3.AmazonS3;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.awscore.exception.AwsServiceException;
+import software.amazon.awssdk.services.s3.S3Client;
 
 import java.net.URI;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.s3a.commit.CommitConstants;
-import org.apache.hadoop.fs.s3a.s3guard.MetadataStore;
-import org.apache.hadoop.fs.s3a.s3guard.NullMetadataStore;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+
 
 /**
- * Abstract base class for S3A unit tests using a mock S3 client and a null
- * metadata store.
+ * Abstract base class for S3A unit tests using a mock S3 client.
  */
 public abstract class AbstractS3AMockTest {
 
   protected static final String BUCKET = "mock-bucket";
-  protected static final AmazonServiceException NOT_FOUND;
-  static {
-    NOT_FOUND = new AmazonServiceException("Not Found");
-    NOT_FOUND.setStatusCode(404);
-  }
-
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
+  protected static final AwsServiceException NOT_FOUND =
+      AwsServiceException.builder()
+          .message("Not Found")
+          .statusCode(404)
+          .awsErrorDetails(AwsErrorDetails.builder()
+              .errorCode("")
+              .build())
+          .build();
 
   protected S3AFileSystem fs;
-  protected AmazonS3 s3;
+  protected S3Client s3;
+  protected Configuration conf;
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
+    conf = createConfiguration();
+    fs = new S3AFileSystem();
+    URI uri = URI.create(FS_S3A + "://" + BUCKET);
+    // unset S3CSE property from config to avoid pathIOE.
+    conf.unset(Constants.S3_ENCRYPTION_ALGORITHM);
+    fs.initialize(uri, conf);
+    s3 = fs.getS3AInternals().getAmazonS3Client("mocking");
+  }
+
+  public Configuration createConfiguration() {
     Configuration conf = new Configuration();
     conf.setClass(S3_CLIENT_FACTORY_IMPL, MockS3ClientFactory.class,
         S3ClientFactory.class);
-    // We explicitly disable MetadataStore even if it's configured. For unit
-    // test we don't issue request to AWS DynamoDB service.
-    conf.setClass(S3_METADATA_STORE_IMPL, NullMetadataStore.class,
-        MetadataStore.class);
-    // FS is always magic
-    conf.setBoolean(CommitConstants.MAGIC_COMMITTER_ENABLED, true);
-    fs = new S3AFileSystem();
-    URI uri = URI.create(FS_S3A + "://" + BUCKET);
-    fs.initialize(uri, conf);
-    s3 = fs.getAmazonS3ClientForTesting("mocking");
+
+    // use minimum multipart size for faster triggering
+    conf.setLong(Constants.MULTIPART_SIZE, MULTIPART_MIN_SIZE);
+    conf.setInt(Constants.S3A_BUCKET_PROBE, 1);
+    // this is so stream draining is always blocking, allowing
+    // assertions to be safely made without worrying
+    // about any race conditions
+    conf.setInt(ASYNC_DRAIN_THRESHOLD, Integer.MAX_VALUE);
+    // set the region to avoid the getBucketLocation on FS init.
+    conf.set(AWS_REGION, "eu-west-1");
+
+    // tight retry logic as all failures are simulated
+    final String interval = "1ms";
+    final int limit = 3;
+    conf.set(RETRY_THROTTLE_INTERVAL, interval);
+    conf.setInt(RETRY_THROTTLE_LIMIT, limit);
+    conf.set(RETRY_INTERVAL, interval);
+    conf.setInt(RETRY_LIMIT, limit);
+
+    return conf;
   }
 
-  @After
+  public S3Client getS3Client() {
+    return s3;
+  }
+
+  @AfterEach
   public void teardown() throws Exception {
     if (fs != null) {
       fs.close();

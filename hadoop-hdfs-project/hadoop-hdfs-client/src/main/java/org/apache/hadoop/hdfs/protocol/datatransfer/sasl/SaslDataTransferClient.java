@@ -18,8 +18,11 @@
 package org.apache.hadoop.hdfs.protocol.datatransfer.sasl;
 
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_CIPHER_SUITES_KEY;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_NEW_QOP_KEY;
 import static org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSaslUtil.*;
 
+import org.apache.hadoop.classification.VisibleForTesting;
+import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -27,10 +30,12 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import javax.crypto.SecretKey;
 import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.CallbackHandler;
 import javax.security.auth.callback.NameCallback;
@@ -39,6 +44,7 @@ import javax.security.auth.callback.UnsupportedCallbackException;
 import javax.security.sasl.RealmCallback;
 import javax.security.sasl.RealmChoiceCallback;
 
+import javax.security.sasl.Sasl;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
@@ -54,12 +60,12 @@ import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
 import org.apache.hadoop.security.SaslPropertiesResolver;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.util.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Charsets;
-import com.google.common.collect.Lists;
 
 /**
  * Negotiates SASL for DataTransferProtocol on behalf of a client.  There are
@@ -82,6 +88,10 @@ public class SaslDataTransferClient {
   private final AtomicBoolean fallbackToSimpleAuth;
   private final SaslPropertiesResolver saslPropsResolver;
   private final TrustedChannelResolver trustedChannelResolver;
+
+  // Store the most recent successfully negotiated QOP,
+  // for testing purpose only
+  private String targetQOP;
 
   /**
    * Creates a new SaslDataTransferClient.  This constructor is used in cases
@@ -140,7 +150,7 @@ public class SaslDataTransferClient {
     DataEncryptionKey encryptionKey = !trustedChannelResolver.isTrusted() ?
         encryptionKeyFactory.newDataEncryptionKey() : null;
     IOStreamPair ios = send(socket.getInetAddress(), underlyingOut,
-        underlyingIn, encryptionKey, accessToken, datanodeId);
+        underlyingIn, encryptionKey, accessToken, datanodeId, null);
     return ios != null ? ios : new IOStreamPair(underlyingIn, underlyingOut);
   }
 
@@ -159,7 +169,7 @@ public class SaslDataTransferClient {
       throws IOException {
     IOStreamPair ios = checkTrustAndSend(getPeerAddress(peer),
         peer.getOutputStream(), peer.getInputStream(), encryptionKeyFactory,
-        accessToken, datanodeId);
+        accessToken, datanodeId, null);
     // TODO: Consider renaming EncryptedPeer to SaslPeer.
     return ios != null ? new EncryptedPeer(peer, ios) : peer;
   }
@@ -180,8 +190,19 @@ public class SaslDataTransferClient {
       InputStream underlyingIn, DataEncryptionKeyFactory encryptionKeyFactory,
       Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId)
       throws IOException {
+    return socketSend(socket, underlyingOut, underlyingIn, encryptionKeyFactory,
+        accessToken, datanodeId, null);
+  }
+
+  public IOStreamPair socketSend(
+      Socket socket, OutputStream underlyingOut, InputStream underlyingIn,
+      DataEncryptionKeyFactory encryptionKeyFactory,
+      Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId,
+      SecretKey secretKey)
+      throws IOException {
     IOStreamPair ios = checkTrustAndSend(socket.getInetAddress(), underlyingOut,
-        underlyingIn, encryptionKeyFactory, accessToken, datanodeId);
+        underlyingIn, encryptionKeyFactory, accessToken, datanodeId,
+        secretKey);
     return ios != null ? ios : new IOStreamPair(underlyingIn, underlyingOut);
   }
 
@@ -198,22 +219,22 @@ public class SaslDataTransferClient {
    * @return new pair of streams, wrapped after SASL negotiation
    * @throws IOException for any error
    */
-  private IOStreamPair checkTrustAndSend(InetAddress addr,
-      OutputStream underlyingOut, InputStream underlyingIn,
+  private IOStreamPair checkTrustAndSend(
+      InetAddress addr, OutputStream underlyingOut, InputStream underlyingIn,
       DataEncryptionKeyFactory encryptionKeyFactory,
-      Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId)
+      Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId,
+      SecretKey secretKey)
       throws IOException {
     boolean localTrusted = trustedChannelResolver.isTrusted();
     boolean remoteTrusted = trustedChannelResolver.isTrusted(addr);
     LOG.debug("SASL encryption trust check: localHostTrusted = {}, "
         + "remoteHostTrusted = {}", localTrusted, remoteTrusted);
-
     if (!localTrusted || !remoteTrusted) {
       // The encryption key factory only returns a key if encryption is enabled.
-      DataEncryptionKey encryptionKey = encryptionKeyFactory
-          .newDataEncryptionKey();
+      DataEncryptionKey encryptionKey =
+          encryptionKeyFactory.newDataEncryptionKey();
       return send(addr, underlyingOut, underlyingIn, encryptionKey, accessToken,
-          datanodeId);
+          datanodeId, secretKey);
     } else {
       LOG.debug(
           "SASL client skipping handshake on trusted connection for addr = {}, "
@@ -237,13 +258,14 @@ public class SaslDataTransferClient {
    */
   private IOStreamPair send(InetAddress addr, OutputStream underlyingOut,
       InputStream underlyingIn, DataEncryptionKey encryptionKey,
-      Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId)
+      Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId,
+      SecretKey secretKey)
       throws IOException {
     if (encryptionKey != null) {
       LOG.debug("SASL client doing encrypted handshake for addr = {}, "
           + "datanodeId = {}", addr, datanodeId);
       return getEncryptedStreams(addr, underlyingOut, underlyingIn,
-          encryptionKey);
+          encryptionKey, accessToken, secretKey);
     } else if (!UserGroupInformation.isSecurityEnabled()) {
       LOG.debug("SASL client skipping handshake in unsecured configuration for "
           + "addr = {}, datanodeId = {}", addr, datanodeId);
@@ -264,7 +286,8 @@ public class SaslDataTransferClient {
       LOG.debug(
           "SASL client doing general handshake for addr = {}, datanodeId = {}",
           addr, datanodeId);
-      return getSaslStreams(addr, underlyingOut, underlyingIn, accessToken);
+      return getSaslStreams(addr, underlyingOut, underlyingIn,
+          accessToken, secretKey);
     } else {
       // It's a secured cluster using non-privileged ports, but no SASL.  The
       // only way this can happen is if the DataNode has
@@ -287,11 +310,18 @@ public class SaslDataTransferClient {
    * @throws IOException for any error
    */
   private IOStreamPair getEncryptedStreams(InetAddress addr,
-      OutputStream underlyingOut,
-      InputStream underlyingIn, DataEncryptionKey encryptionKey)
+      OutputStream underlyingOut, InputStream underlyingIn,
+      DataEncryptionKey encryptionKey,
+      Token<BlockTokenIdentifier> accessToken,
+      SecretKey secretKey)
       throws IOException {
     Map<String, String> saslProps = createSaslPropertiesForEncryption(
         encryptionKey.encryptionAlgorithm);
+    if (secretKey != null) {
+      LOG.debug("DataNode overwriting downstream QOP" +
+          saslProps.get(Sasl.QOP));
+      updateToken(accessToken, secretKey, saslProps);
+    }
 
     LOG.debug("Client using encryption algorithm {}",
         encryptionKey.encryptionAlgorithm);
@@ -301,7 +331,7 @@ public class SaslDataTransferClient {
     CallbackHandler callbackHandler = new SaslClientCallbackHandler(userName,
         password);
     return doSaslHandshake(addr, underlyingOut, underlyingIn, userName,
-        saslProps, callbackHandler);
+        saslProps, callbackHandler, accessToken);
   }
 
   /**
@@ -317,7 +347,7 @@ public class SaslDataTransferClient {
     return encryptionKey.keyId + NAME_DELIMITER +
         encryptionKey.blockPoolId + NAME_DELIMITER +
         new String(Base64.encodeBase64(encryptionKey.nonce, false),
-            Charsets.UTF_8);
+            StandardCharsets.UTF_8);
   }
 
   /**
@@ -370,6 +400,11 @@ public class SaslDataTransferClient {
     }
   }
 
+  @VisibleForTesting
+  public String getTargetQOP() {
+    return targetQOP;
+  }
+
   /**
    * Sends client SASL negotiation for general-purpose handshake.
    *
@@ -382,16 +417,46 @@ public class SaslDataTransferClient {
    */
   private IOStreamPair getSaslStreams(InetAddress addr,
       OutputStream underlyingOut, InputStream underlyingIn,
-      Token<BlockTokenIdentifier> accessToken)
+      Token<BlockTokenIdentifier> accessToken,
+      SecretKey secretKey)
       throws IOException {
     Map<String, String> saslProps = saslPropsResolver.getClientProperties(addr);
 
+    // secretKey != null only happens when this is called by DN
+    // sending to downstream DN. If called from client, this will be null,
+    // as there is no key for client to generate mac instance.
+    // So that, if a different QOP is desired for inter-DN communication,
+    // the check below will use new QOP to create a secret, which includes
+    // the new QOP.
+    if (secretKey != null) {
+      String newQOP = conf
+          .get(DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_NEW_QOP_KEY);
+      if (newQOP != null) {
+        saslProps.put(Sasl.QOP, newQOP);
+      }
+      LOG.debug("DataNode overwriting downstream QOP " +
+          saslProps.get(Sasl.QOP));
+      updateToken(accessToken, secretKey, saslProps);
+    }
+    targetQOP = saslProps.get(Sasl.QOP);
     String userName = buildUserName(accessToken);
     char[] password = buildClientPassword(accessToken);
     CallbackHandler callbackHandler = new SaslClientCallbackHandler(userName,
         password);
     return doSaslHandshake(addr, underlyingOut, underlyingIn, userName,
-        saslProps, callbackHandler);
+        saslProps, callbackHandler, accessToken);
+  }
+
+  private void updateToken(Token<BlockTokenIdentifier> accessToken,
+      SecretKey secretKey, Map<String, String> saslProps)
+      throws IOException {
+    byte[] newSecret = saslProps.get(Sasl.QOP).getBytes(StandardCharsets.UTF_8);
+    BlockTokenIdentifier bkid = accessToken.decodeIdentifier();
+    bkid.setHandshakeMsg(newSecret);
+    byte[] bkidBytes = bkid.getBytes();
+    accessToken.setPassword(
+        SecretManager.createPassword(bkidBytes, secretKey));
+    accessToken.setID(bkidBytes);
   }
 
   /**
@@ -406,7 +471,7 @@ public class SaslDataTransferClient {
    */
   private static String buildUserName(Token<BlockTokenIdentifier> blockToken) {
     return new String(Base64.encodeBase64(blockToken.getIdentifier(), false),
-        Charsets.UTF_8);
+        StandardCharsets.UTF_8);
   }
 
   /**
@@ -418,7 +483,7 @@ public class SaslDataTransferClient {
    */
   private char[] buildClientPassword(Token<BlockTokenIdentifier> blockToken) {
     return new String(Base64.encodeBase64(blockToken.getPassword(), false),
-        Charsets.UTF_8).toCharArray();
+        StandardCharsets.UTF_8).toCharArray();
   }
 
   /**
@@ -435,8 +500,8 @@ public class SaslDataTransferClient {
    */
   private IOStreamPair doSaslHandshake(InetAddress addr,
       OutputStream underlyingOut, InputStream underlyingIn, String userName,
-      Map<String, String> saslProps,
-      CallbackHandler callbackHandler) throws IOException {
+      Map<String, String> saslProps, CallbackHandler callbackHandler,
+      Token<BlockTokenIdentifier> accessToken) throws IOException {
 
     DataOutputStream out = new DataOutputStream(underlyingOut);
     DataInputStream in = new DataInputStream(underlyingIn);
@@ -449,7 +514,31 @@ public class SaslDataTransferClient {
 
     try {
       // Start of handshake - "initial response" in SASL terminology.
-      sendSaslMessage(out, new byte[0]);
+      // The handshake secret can be null, this happens when client is running
+      // a new version but the cluster does not have this feature.
+      // In which case there will be no encrypted secret sent from NN.
+      BlockTokenIdentifier blockTokenIdentifier =
+          accessToken.decodeIdentifier();
+      final byte[] first = sasl.createFirstMessage();
+      if (blockTokenIdentifier != null) {
+        byte[] handshakeSecret =
+            accessToken.decodeIdentifier().getHandshakeMsg();
+        if (handshakeSecret == null || handshakeSecret.length == 0) {
+          LOG.debug("Handshake secret is null, "
+              + "sending without handshake secret.");
+          sendSaslMessage(out, first);
+        } else {
+          LOG.debug("Sending handshake secret.");
+          BlockTokenIdentifier identifier = new BlockTokenIdentifier();
+          identifier.readFields(new DataInputStream(
+              new ByteArrayInputStream(accessToken.getIdentifier())));
+          String bpid = identifier.getBlockPoolId();
+          sendSaslMessageHandshakeSecret(out, first, handshakeSecret, bpid);
+        }
+      } else {
+        LOG.debug("Block token id is null, sending without handshake secret.");
+        sendSaslMessage(out, first);
+      }
 
       // step 1
       byte[] remoteResponse = readSaslMessage(in);
@@ -459,18 +548,24 @@ public class SaslDataTransferClient {
           DFS_ENCRYPT_DATA_TRANSFER_CIPHER_SUITES_KEY);
       if (requestedQopContainsPrivacy(saslProps)) {
         // Negotiate cipher suites if configured.  Currently, the only supported
-        // cipher suite is AES/CTR/NoPadding, but the protocol allows multiple
-        // values for future expansion.
+        // cipher suite is AES/CTR/NoPadding or SM4/CTR/Nopadding,
+        // but the protocol allows multiple values for future expansion.
         if (cipherSuites != null && !cipherSuites.isEmpty()) {
-          if (!cipherSuites.equals(CipherSuite.AES_CTR_NOPADDING.getName())) {
+          CipherOption option = null;
+          if (cipherSuites.equals(CipherSuite.AES_CTR_NOPADDING.getName())) {
+            option = new CipherOption(CipherSuite.AES_CTR_NOPADDING);
+          } else if (cipherSuites.equals(
+              CipherSuite.SM4_CTR_NOPADDING.getName())) {
+            option = new CipherOption(CipherSuite.SM4_CTR_NOPADDING);
+          } else {
             throw new IOException(String.format("Invalid cipher suite, %s=%s",
                 DFS_ENCRYPT_DATA_TRANSFER_CIPHER_SUITES_KEY, cipherSuites));
           }
-          CipherOption option = new CipherOption(CipherSuite.AES_CTR_NOPADDING);
           cipherOptions = Lists.newArrayListWithCapacity(1);
           cipherOptions.add(option);
         }
       }
+      LOG.debug("{}: cipherOptions={}", sasl, cipherOptions);
       sendSaslMessageAndNegotiationCipherOptions(out, localResponse,
           cipherOptions);
 
@@ -494,11 +589,11 @@ public class SaslDataTransferClient {
               // the client accepts some cipher suites, but the server does not.
               LOG.debug("Client accepts cipher suites {}, "
                       + "but server {} does not accept any of them",
-                  cipherSuites, addr.toString());
+                  cipherSuites, addr);
             }
           } else {
             LOG.debug("Client using cipher suite {} with server {}",
-                cipherOption.getCipherSuite().getName(), addr.toString());
+                cipherOption.getCipherSuite().getName(), addr);
           }
         }
       }
@@ -509,7 +604,20 @@ public class SaslDataTransferClient {
           conf, cipherOption, underlyingOut, underlyingIn, false) :
           sasl.createStreamPair(out, in);
     } catch (IOException ioe) {
-      sendGenericSaslErrorMessage(out, ioe.getMessage());
+      String message = ioe.getMessage();
+      try {
+        sendGenericSaslErrorMessage(out, message);
+      } catch (Exception e) {
+        // If ioe is caused by error response from server, server will close peer connection.
+        // So sendGenericSaslErrorMessage might cause IOException due to "Broken pipe".
+        // We suppress IOException from sendGenericSaslErrorMessage
+        // and always throw `ioe` as top level.
+        // `ioe` can be InvalidEncryptionKeyException or InvalidBlockTokenException
+        // that indicates refresh key or token and are important for caller.
+        LOG.debug("Failed to send generic sasl error to server {} (message: {}), "
+                + "suppress exception", addr, message, e);
+        ioe.addSuppressed(e);
+      }
       throw ioe;
     }
   }

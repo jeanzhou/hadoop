@@ -18,9 +18,17 @@
 
 package org.apache.hadoop.mapreduce.security;
 
-import static org.junit.Assert.*;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.net.URI;
@@ -37,8 +45,8 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
@@ -46,7 +54,7 @@ public class TestTokenCache {
   private static Configuration conf;
   private static String renewer;
   
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     conf = new Configuration();
     conf.set(YarnConfiguration.RM_PRINCIPAL, "mapred/host@REALM");
@@ -56,8 +64,8 @@ public class TestTokenCache {
   @Test
   public void testObtainTokens() throws Exception {
     Credentials credentials = new Credentials();
-    FileSystem fs = mock(FileSystem.class);  
-    TokenCache.obtainTokensForNamenodesInternal(fs, credentials, conf);
+    FileSystem fs = mock(FileSystem.class);
+    TokenCache.obtainTokensForNamenodesInternal(fs, credentials, conf, renewer);
     verify(fs).addDelegationTokens(eq(renewer), eq(credentials));
   }
 
@@ -105,23 +113,23 @@ public class TestTokenCache {
     checkToken(creds, newerToken1);
     
     // get token for fs1, see that fs2's token was loaded 
-    TokenCache.obtainTokensForNamenodesInternal(fs1, creds, conf);
+    TokenCache.obtainTokensForNamenodesInternal(fs1, creds, conf, renewer);
     checkToken(creds, newerToken1, token2);
     
     // get token for fs2, nothing should change since already present
-    TokenCache.obtainTokensForNamenodesInternal(fs2, creds, conf);
+    TokenCache.obtainTokensForNamenodesInternal(fs2, creds, conf, renewer);
     checkToken(creds, newerToken1, token2);
     
     // get token for fs3, should only add token for fs3
-    TokenCache.obtainTokensForNamenodesInternal(fs3, creds, conf);
+    TokenCache.obtainTokensForNamenodesInternal(fs3, creds, conf, renewer);
     Token<?> token3 = creds.getToken(new Text(fs3.getCanonicalServiceName()));
-    assertTrue(token3 != null);
+    assertThat(token3).isNotNull();
     checkToken(creds, newerToken1, token2, token3);
     
     // be paranoid, check one last time that nothing changes
-    TokenCache.obtainTokensForNamenodesInternal(fs1, creds, conf);
-    TokenCache.obtainTokensForNamenodesInternal(fs2, creds, conf);
-    TokenCache.obtainTokensForNamenodesInternal(fs3, creds, conf);
+    TokenCache.obtainTokensForNamenodesInternal(fs1, creds, conf, renewer);
+    TokenCache.obtainTokensForNamenodesInternal(fs2, creds, conf, renewer);
+    TokenCache.obtainTokensForNamenodesInternal(fs3, creds, conf, renewer);
     checkToken(creds, newerToken1, token2, token3);
   }
 
@@ -129,7 +137,7 @@ public class TestTokenCache {
     assertEquals(tokens.length, creds.getAllTokens().size());
     for (Token<?> token : tokens) {
       Token<?> credsToken = creds.getToken(token.getService());
-      assertTrue(credsToken != null);
+      assertThat(credsToken).isNotNull();
       assertEquals(token, credsToken);
     }
   }
@@ -202,9 +210,9 @@ public class TestTokenCache {
     // wait to set, else the obtain tokens call above will fail with FNF
     conf.set(MRJobConfig.MAPREDUCE_JOB_CREDENTIALS_BINARY, binaryTokenFile);
     creds.writeTokenStorageFile(new Path(binaryTokenFile), conf);
-    TokenCache.obtainTokensForNamenodesInternal(fs1, creds, conf);
+    TokenCache.obtainTokensForNamenodesInternal(fs1, creds, conf, renewer);
     String fs_addr = fs1.getCanonicalServiceName();
     Token<?> nnt = TokenCache.getDelegationToken(creds, fs_addr);
-    assertNotNull("Token for nn is null", nnt);
+    assertNotNull(nnt, "Token for nn is null");
   }
 }

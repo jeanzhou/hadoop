@@ -17,9 +17,11 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.metrics;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
@@ -28,13 +30,21 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports.DiskOp;
 import org.apache.hadoop.util.Daemon;
+import org.apache.hadoop.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY;
 
 /**
  * This class detects and maintains DataNode disk outliers and their
@@ -48,8 +58,6 @@ public class DataNodeDiskMetrics {
       DataNodeDiskMetrics.class);
 
   private DataNode dn;
-  private final long MIN_OUTLIER_DETECTION_DISKS = 5;
-  private final long SLOW_DISK_LOW_THRESHOLD_MS = 20;
   private final long detectionInterval;
   private volatile boolean shouldRun;
   private OutlierDetector slowDiskDetector;
@@ -57,11 +65,42 @@ public class DataNodeDiskMetrics {
   private volatile Map<String, Map<DiskOp, Double>>
       diskOutliersStats = Maps.newHashMap();
 
-  public DataNodeDiskMetrics(DataNode dn, long diskOutlierDetectionIntervalMs) {
+  // Adding for test purpose. When addSlowDiskForTesting() called from test
+  // code, status should not be overridden by daemon thread.
+  private boolean overrideStatus = true;
+
+  /**
+   * Minimum number of disks to run outlier detection.
+   */
+  private volatile long minOutlierDetectionDisks;
+  /**
+   * Threshold in milliseconds below which a disk is definitely not slow.
+   */
+  private volatile long lowThresholdMs;
+  /**
+   * The number of slow disks that needs to be excluded.
+   */
+  private volatile int maxSlowDisksToExclude;
+  /**
+   * List of slow disks that need to be excluded.
+   */
+  private List<String> slowDisksToExclude = new ArrayList<>();
+
+  public DataNodeDiskMetrics(DataNode dn, long diskOutlierDetectionIntervalMs,
+      Configuration conf) {
     this.dn = dn;
     this.detectionInterval = diskOutlierDetectionIntervalMs;
-    slowDiskDetector = new OutlierDetector(MIN_OUTLIER_DETECTION_DISKS,
-        SLOW_DISK_LOW_THRESHOLD_MS);
+    minOutlierDetectionDisks =
+        conf.getLong(DFSConfigKeys.DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY,
+            DFSConfigKeys.DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_DEFAULT);
+    lowThresholdMs =
+        conf.getLong(DFSConfigKeys.DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY,
+            DFSConfigKeys.DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_DEFAULT);
+    maxSlowDisksToExclude =
+        conf.getInt(DFSConfigKeys.DFS_DATANODE_MAX_SLOWDISKS_TO_EXCLUDE_KEY,
+            DFSConfigKeys.DFS_DATANODE_MAX_SLOWDISKS_TO_EXCLUDE_DEFAULT);
+    slowDiskDetector =
+        new OutlierDetector(minOutlierDetectionDisks, lowThresholdMs);
     shouldRun = true;
     startDiskOutlierDetectionThread();
   }
@@ -71,41 +110,58 @@ public class DataNodeDiskMetrics {
       @Override
       public void run() {
         while (shouldRun) {
-          Map<String, Double> metadataOpStats = Maps.newHashMap();
-          Map<String, Double> readIoStats = Maps.newHashMap();
-          Map<String, Double> writeIoStats = Maps.newHashMap();
-          FsDatasetSpi.FsVolumeReferences fsVolumeReferences = null;
-          try {
-            fsVolumeReferences = dn.getFSDataset().getFsVolumeReferences();
-            Iterator<FsVolumeSpi> volumeIterator = fsVolumeReferences
-                .iterator();
-            while (volumeIterator.hasNext()) {
-              FsVolumeSpi volume = volumeIterator.next();
-              DataNodeVolumeMetrics metrics = volumeIterator.next().getMetrics();
-              String volumeName = volume.getBaseURI().getPath();
+          if (dn.getFSDataset() != null) {
+            Map<String, Double> metadataOpStats = Maps.newHashMap();
+            Map<String, Double> readIoStats = Maps.newHashMap();
+            Map<String, Double> writeIoStats = Maps.newHashMap();
+            FsDatasetSpi.FsVolumeReferences fsVolumeReferences = null;
+            try {
+              fsVolumeReferences = dn.getFSDataset().getFsVolumeReferences();
+              Iterator<FsVolumeSpi> volumeIterator = fsVolumeReferences
+                  .iterator();
+              while (volumeIterator.hasNext()) {
+                FsVolumeSpi volume = volumeIterator.next();
+                DataNodeVolumeMetrics metrics = volume.getMetrics();
+                String volumeName = volume.getBaseURI().getPath();
 
-              metadataOpStats.put(volumeName,
-                  metrics.getMetadataOperationMean());
-              readIoStats.put(volumeName, metrics.getReadIoMean());
-              writeIoStats.put(volumeName, metrics.getWriteIoMean());
-            }
-          } finally {
-            if (fsVolumeReferences != null) {
-              try {
-                fsVolumeReferences.close();
-              } catch (IOException e) {
-                LOG.error("Error in releasing FS Volume references", e);
+                metadataOpStats.put(volumeName,
+                    metrics.getMetadataOperationMean());
+                readIoStats.put(volumeName, metrics.getReadIoMean());
+                writeIoStats.put(volumeName, metrics.getWriteIoMean());
+              }
+            } finally {
+              if (fsVolumeReferences != null) {
+                try {
+                  fsVolumeReferences.close();
+                } catch (IOException e) {
+                  LOG.error("Error in releasing FS Volume references", e);
+                }
               }
             }
-          }
-          if (metadataOpStats.isEmpty() && readIoStats.isEmpty() &&
-              writeIoStats.isEmpty()) {
-            LOG.debug("No disk stats available for detecting outliers.");
-            return;
-          }
+            if (metadataOpStats.isEmpty() && readIoStats.isEmpty()
+                && writeIoStats.isEmpty()) {
+              LOG.debug("No disk stats available for detecting outliers.");
+              continue;
+            }
 
-          detectAndUpdateDiskOutliers(metadataOpStats, readIoStats,
-              writeIoStats);
+            detectAndUpdateDiskOutliers(metadataOpStats, readIoStats,
+                writeIoStats);
+
+            // Sort the slow disks by latency and extract the top n by maxSlowDisksToExclude.
+            if (maxSlowDisksToExclude > 0) {
+              ArrayList<DiskLatency> diskLatencies = new ArrayList<>();
+              for (Map.Entry<String, Map<DiskOp, Double>> diskStats :
+                  diskOutliersStats.entrySet()) {
+                diskLatencies.add(new DiskLatency(diskStats.getKey(), diskStats.getValue()));
+              }
+
+              Collections.sort(diskLatencies, (o1, o2)
+                  -> Double.compare(o2.getMaxLatency(), o1.getMaxLatency()));
+
+              slowDisksToExclude = diskLatencies.stream().limit(maxSlowDisksToExclude)
+                  .map(DiskLatency::getSlowDisk).collect(Collectors.toList());
+            }
+          }
 
           try {
             Thread.sleep(detectionInterval);
@@ -143,9 +199,39 @@ public class DataNodeDiskMetrics {
     for (Map.Entry<String, Double> entry : writeIoOutliers.entrySet()) {
       addDiskStat(diskStats, entry.getKey(), DiskOp.WRITE, entry.getValue());
     }
+    if (overrideStatus) {
+      diskOutliersStats = diskStats;
+      LOG.debug("Updated disk outliers.");
+    }
+  }
 
-    diskOutliersStats = diskStats;
-    LOG.debug("Updated disk outliers.");
+  /**
+   * This structure is a wrapper over disk latencies.
+   */
+  public static class DiskLatency {
+    final private String slowDisk;
+    final private Map<DiskOp, Double> latencyMap;
+
+    public DiskLatency(
+        String slowDiskID,
+        Map<DiskOp, Double> latencyMap) {
+      this.slowDisk = slowDiskID;
+      this.latencyMap = latencyMap;
+    }
+
+    double getMaxLatency() {
+      double maxLatency = 0;
+      for (double latency : latencyMap.values()) {
+        if (latency > maxLatency) {
+          maxLatency = latency;
+        }
+      }
+      return maxLatency;
+    }
+
+    public String getSlowDisk() {
+      return slowDisk;
+    }
   }
 
   private void addDiskStat(Map<String, Map<DiskOp, Double>> diskStats,
@@ -176,10 +262,50 @@ public class DataNodeDiskMetrics {
   @VisibleForTesting
   public void addSlowDiskForTesting(String slowDiskPath,
       Map<DiskOp, Double> latencies) {
+    overrideStatus = false;
     if (latencies == null) {
       diskOutliersStats.put(slowDiskPath, ImmutableMap.of());
     } else {
       diskOutliersStats.put(slowDiskPath, latencies);
     }
+  }
+
+  public List<String> getSlowDisksToExclude() {
+    return slowDisksToExclude;
+  }
+
+  public int getMaxSlowDisksToExclude() {
+    return maxSlowDisksToExclude;
+  }
+
+  public void setMaxSlowDisksToExclude(int maxSlowDisksToExclude) {
+    this.maxSlowDisksToExclude = maxSlowDisksToExclude;
+  }
+
+  public void setLowThresholdMs(long thresholdMs) {
+    Preconditions.checkArgument(thresholdMs > 0,
+        DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY + " should be larger than 0");
+    lowThresholdMs = thresholdMs;
+    this.slowDiskDetector.setLowThresholdMs(thresholdMs);
+  }
+
+  public long getLowThresholdMs() {
+    return lowThresholdMs;
+  }
+
+  public void setMinOutlierDetectionDisks(long minDisks) {
+    Preconditions.checkArgument(minDisks > 0,
+        DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY + " should be larger than 0");
+    minOutlierDetectionDisks = minDisks;
+    this.slowDiskDetector.setMinNumResources(minDisks);
+  }
+
+  public long getMinOutlierDetectionDisks() {
+    return minOutlierDetectionDisks;
+  }
+
+  @VisibleForTesting
+  public OutlierDetector getSlowDiskDetector() {
+    return this.slowDiskDetector;
   }
 }

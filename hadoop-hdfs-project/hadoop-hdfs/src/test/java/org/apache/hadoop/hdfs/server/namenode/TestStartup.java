@@ -19,14 +19,11 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption.IMPORT;
 import static org.apache.hadoop.hdfs.server.common.Util.fileAsURI;
-import static org.hamcrest.CoreMatchers.allOf;
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
@@ -37,9 +34,10 @@ import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
+import java.util.stream.Collectors;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.LocalFileSystem;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -74,9 +72,10 @@ import org.apache.hadoop.util.ExitUtil.ExitException;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.log4j.Logger;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
@@ -88,8 +87,8 @@ import javax.management.ObjectName;
 public class TestStartup {
   public static final String NAME_NODE_HOST = "localhost:";
   public static final String WILDCARD_HTTP_HOST = "0.0.0.0:";
-  private static final Log LOG =
-    LogFactory.getLog(TestStartup.class.getName());
+  private static final org.slf4j.Logger LOG =
+      LoggerFactory.getLogger(TestStartup.class.getName());
   private Configuration config;
   private File hdfsDir=null;
   static final long seed = 0xAAAAEEFL;
@@ -97,14 +96,14 @@ public class TestStartup {
   static final int fileSize = 8192;
   private long editsLength=0, fsimageLength=0;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     ExitUtil.disableSystemExit();
     ExitUtil.resetFirstExitException();
     config = new HdfsConfiguration();
     hdfsDir = new File(MiniDFSCluster.getBaseDirectory());
 
-    if ( hdfsDir.exists() && !FileUtil.fullyDelete(hdfsDir) ) {
+    if (hdfsDir.exists() && !FileUtil.fullyDelete(hdfsDir)) {
       throw new IOException("Could not delete hdfs directory '" + hdfsDir + "'");
     }
     LOG.info("--hdfsdir is " + hdfsDir.getAbsolutePath());
@@ -126,7 +125,7 @@ public class TestStartup {
   /**
    * clean up
    */
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if ( hdfsDir.exists() && !FileUtil.fullyDelete(hdfsDir) ) {
       throw new IOException("Could not delete hdfs directory in tearDown '" + hdfsDir + "'");
@@ -286,12 +285,12 @@ public class TestStartup {
         img.getStorage();
         File imf = NNStorage.getStorageFile(sd, NameNodeFile.IMAGE, 0);
         LOG.info("--image file " + imf.getAbsolutePath() + "; len = " + imf.length() + "; expected = " + expectedImgSize);
-        assertEquals(expectedImgSize, imf.length());	
+        assertEquals(expectedImgSize, imf.length());
       } else if(sd.getStorageDirType().isOfType(NameNodeDirType.EDITS)) {
         img.getStorage();
         File edf = NNStorage.getStorageFile(sd, NameNodeFile.EDITS, 0);
         LOG.info("-- edits file " + edf.getAbsolutePath() + "; len = " + edf.length()  + "; expected = " + expectedEditsSize);
-        assertEquals(expectedEditsSize, edf.length());	
+        assertEquals(expectedEditsSize, edf.length());
       } else {
         fail("Image/Edits directories are not different");
       }
@@ -418,7 +417,8 @@ public class TestStartup {
     }
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testSNNStartupWithRuntimeException() throws Exception {
     String[] argv = new String[] { "-checkpoint" };
     try {
@@ -427,7 +427,7 @@ public class TestStartup {
     } catch (ExitException ee) {
       GenericTestUtils.assertExceptionContains(
           ExitUtil.EXIT_EXCEPTION_MESSAGE, ee);
-      assertTrue("Didn't terminate properly ", ExitUtil.terminateCalled());
+      assertTrue(ExitUtil.terminateCalled(), "Didn't terminate properly ");
     }
   }
 
@@ -552,7 +552,8 @@ public class TestStartup {
     }
   }
   
-  @Test(timeout=30000)
+  @Test
+  @Timeout(value = 30)
   public void testCorruptImageFallback() throws IOException {
     // Create two checkpoints
     createCheckPoint(2);
@@ -571,7 +572,8 @@ public class TestStartup {
     }
   }
 
-  @Test(timeout=30000)
+  @Test
+  @Timeout(value = 30)
   public void testCorruptImageFallbackLostECPolicy() throws IOException {
     final ErasureCodingPolicy defaultPolicy = StripedFileTestUtil
         .getDefaultECPolicy();
@@ -656,8 +658,8 @@ public class TestStartup {
         Thread.sleep(HEARTBEAT_INTERVAL * 1000);
         info = nn.getDatanodeReport(DatanodeReportType.LIVE);
       }
-      assertEquals("Number of live nodes should be "+numDatanodes, numDatanodes, 
-          info.length);
+      assertEquals(numDatanodes, info.length,
+          "Number of live nodes should be " + numDatanodes);
       
     } catch (IOException e) {
       fail(StringUtils.stringifyException(e));
@@ -670,7 +672,8 @@ public class TestStartup {
     }
   }
 
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testXattrConfiguration() throws Exception {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = null;
@@ -708,7 +711,8 @@ public class TestStartup {
     }
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testNNFailToStartOnReadOnlyNNDir() throws Exception {
     /* set NN dir */
     final String nnDirStr = Paths.get(
@@ -726,10 +730,8 @@ public class TestStartup {
       final Collection<URI> nnDirs = FSNamesystem.getNamespaceDirs(config);
       assertNotNull(nnDirs);
       assertTrue(nnDirs.iterator().hasNext());
-      assertEquals(
-          "NN dir should be created after NN startup.",
-          nnDirStr,
-          nnDirs.iterator().next().getPath());
+      assertEquals(new File(nnDirStr), new File(nnDirs.iterator().next().getPath()),
+          "NN dir should be created after NN startup.");
       final File nnDir = new File(nnDirStr);
       assertTrue(nnDir.exists());
       assertTrue(nnDir.isDirectory());
@@ -737,20 +739,19 @@ public class TestStartup {
       try {
         /* set read only */
         assertTrue(
-            "Setting NN dir read only should succeed.",
-            nnDir.setReadOnly());
+
+            FileUtil.setWritable(nnDir, false), "Setting NN dir read only should succeed.");
         cluster.restartNameNodes();
         fail("Restarting NN should fail on read only NN dir.");
       } catch (InconsistentFSStateException e) {
-        assertThat(e.toString(), is(allOf(
-            containsString("InconsistentFSStateException"),
-            containsString(nnDirStr),
-            containsString("in an inconsistent state"),
-            containsString(
-                "storage directory does not exist or is not accessible."))));
+        assertThat(e.toString())
+            .contains("InconsistentFSStateException",
+                nnDirStr,
+                "in an inconsistent state",
+                "storage directory does not exist or is not accessible.");
       } finally {
         /* set back to writable in order to clean it */
-        assertTrue("Setting NN dir should succeed.", nnDir.setWritable(true));
+        assertTrue(FileUtil.setWritable(nnDir, true), "Setting NN dir should succeed.");
       }
     }
   }
@@ -764,7 +765,8 @@ public class TestStartup {
    * 4. NN will mark DatanodeStorageInfo#blockContentsStale to false.
    * @throws Exception
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testStorageBlockContentsStaleAfterNNRestart() throws Exception {
     MiniDFSCluster dfsCluster = null;
     try {
@@ -789,4 +791,27 @@ public class TestStartup {
     return;
   }
 
+  @Test
+  @Timeout(value = 60)
+  public void testDirectoryPermissions() throws Exception {
+    Configuration conf = new Configuration();
+    try (MiniDFSCluster dfsCluster
+             = new MiniDFSCluster.Builder(conf).build()) {
+      dfsCluster.waitActive();
+      // name and edits
+      List<StorageDirectory> nameDirs =
+          dfsCluster.getNameNode().getFSImage().getStorage().getStorageDirs();
+      Collection<URI> nameDirUris = nameDirs.stream().map(d -> d
+          .getCurrentDir().toURI()).collect(Collectors.toList());
+      assertNotNull(nameDirUris);
+      LocalFileSystem fs = LocalFileSystem.getLocal(config);
+      FsPermission permission = new FsPermission(conf.get(
+          DFSConfigKeys.DFS_NAMENODE_NAME_DIR_PERMISSION_KEY,
+          DFSConfigKeys.DFS_NAMENODE_NAME_DIR_PERMISSION_DEFAULT));
+      for (URI uri : nameDirUris) {
+        FileStatus fileStatus = fs.getFileLinkStatus(new Path(uri));
+        assertEquals(permission.toOctal(), fileStatus.getPermission().toOctal());
+      }
+    }
+  }
 }

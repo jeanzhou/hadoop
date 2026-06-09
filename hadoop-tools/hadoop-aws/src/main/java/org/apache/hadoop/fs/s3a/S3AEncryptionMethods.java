@@ -28,24 +28,64 @@ import org.apache.commons.lang3.StringUtils;
  */
 public enum S3AEncryptionMethods {
 
-  SSE_S3("AES256"),
-  SSE_KMS("SSE-KMS"),
-  SSE_C("SSE-C"),
-  NONE("");
+  NONE("", false, false),
+  SSE_S3("AES256", true, false),
+  SSE_KMS("SSE-KMS", true, false),
+  SSE_C("SSE-C", true, true),
+  CSE_KMS("CSE-KMS", false, true),
+  CSE_CUSTOM("CSE-CUSTOM", false, true),
+  DSSE_KMS("DSSE-KMS", true, false);
 
-  static final String UNKNOWN_ALGORITHM
-      = "Unknown Server Side Encryption algorithm ";
+  /**
+   * Error string when {@link #getMethod(String)} fails.
+   * Used in tests.
+   */
+  public static final String UNKNOWN_ALGORITHM
+      = "Unknown encryption algorithm ";
 
-  private String method;
+  /**
+   * What is the encryption method?
+   */
+  private final String method;
 
-  S3AEncryptionMethods(String method) {
+  /**
+   * Is this server side?
+   */
+  private final boolean serverSide;
+
+  /**
+   * Does the encryption method require a
+   * secret in the encryption.key property?
+   */
+  private final boolean requiresSecret;
+
+  S3AEncryptionMethods(String method,
+      final boolean serverSide,
+      final boolean requiresSecret) {
     this.method = method;
+    this.serverSide = serverSide;
+    this.requiresSecret = requiresSecret;
   }
 
   public String getMethod() {
     return method;
   }
 
+  /**
+   * Flag to indicate this is a server-side encryption option.
+   * @return true if this is server side.
+   */
+  public boolean isServerSide() {
+    return serverSide;
+  }
+
+  /**
+   * Does this encryption algorithm require a secret?
+   * @return true if a secret must be retrieved.
+   */
+  public boolean requiresSecret() {
+    return requiresSecret;
+  }
 
   /**
    * Get the encryption mechanism from the value provided.
@@ -57,16 +97,12 @@ public enum S3AEncryptionMethods {
     if(StringUtils.isBlank(name)) {
       return NONE;
     }
-    switch(name) {
-    case "AES256":
-      return SSE_S3;
-    case "SSE-KMS":
-      return SSE_KMS;
-    case "SSE-C":
-      return SSE_C;
-    default:
-      throw new IOException(UNKNOWN_ALGORITHM + name);
+    for (S3AEncryptionMethods v : values()) {
+      if (v.getMethod().equalsIgnoreCase(name)) {
+        return v;
+      }
     }
+    throw new IOException(UNKNOWN_ALGORITHM + name);
   }
 
 }

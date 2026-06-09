@@ -22,24 +22,49 @@ import java.io.EOFException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.function.Consumer;
+import java.util.function.IntFunction;
+import java.util.zip.CRC32;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.impl.AbstractFSBuilderImpl;
+import org.apache.hadoop.fs.impl.CombinedFileRange;
+import org.apache.hadoop.fs.impl.FutureDataInputStreamBuilderImpl;
+import org.apache.hadoop.fs.impl.OpenFileParameters;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.IOStatisticsSource;
+import org.apache.hadoop.fs.statistics.IOStatisticsSupport;
 import org.apache.hadoop.util.DataChecksum;
+import org.apache.hadoop.util.LambdaUtils;
 import org.apache.hadoop.util.Progressable;
+
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_STANDARD_OPTIONS;
+import static org.apache.hadoop.fs.VectoredReadUtils.validateAndSortRanges;
+import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapabilityArgs;
+import static org.apache.hadoop.fs.impl.StoreImplementationUtils.isProbeForSyncable;
+import static org.apache.hadoop.io.Sizes.S_0;
 
 /****************************************************************
  * Abstract Checksumed FileSystem.
  * It provide a basic implementation of a Checksumed FileSystem,
  * which creates a checksum file for each raw file.
- * It generates & verifies checksums at the client side.
+ * It generates &amp; verifies checksums at the client side.
  *
  *****************************************************************/
 @InterfaceAudience.Public
@@ -53,7 +78,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
   public static double getApproxChkSumLength(long size) {
     return ChecksumFSOutputSummer.CHKSUM_AS_FRACTION * size;
   }
-  
+
   public ChecksumFileSystem(FileSystem fs) {
     super(fs);
   }
@@ -69,7 +94,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
           bytesPerChecksum);
     }
   }
-  
+
   /**
    * Set whether to verify checksum.
    */
@@ -78,36 +103,63 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
     this.verifyChecksum = verifyChecksum;
   }
 
+  /**
+   * Is checksum verification enabled?
+   * @return true if files are to be verified through checksums.
+   */
+  public boolean getVerifyChecksum() {
+    return verifyChecksum;
+  }
+
   @Override
   public void setWriteChecksum(boolean writeChecksum) {
     this.writeChecksum = writeChecksum;
   }
-  
+
   /** get the raw file system */
   @Override
   public FileSystem getRawFileSystem() {
     return fs;
   }
 
-  /** Return the name of the checksum file associated with a file.*/
+  /**
+   * Return the name of the checksum file associated with a file.
+   *
+   * @param file the file path.
+   * @return name of the checksum file associated with a file.
+   */
   public Path getChecksumFile(Path file) {
     return new Path(file.getParent(), "." + file.getName() + ".crc");
   }
 
-  /** Return true iff file is a checksum file name.*/
+  /**
+   * Return true if file is a checksum file name.
+   *
+   * @param file the file path.
+   * @return if file is a checksum file true, not false.
+   */
   public static boolean isChecksumFile(Path file) {
     String name = file.getName();
     return name.startsWith(".") && name.endsWith(".crc");
   }
 
-  /** Return the length of the checksum file given the size of the 
+  /**
+   * Return the length of the checksum file given the size of the
    * actual file.
-   **/
+   *
+   * @param file the file path.
+   * @param fileSize file size.
+   * @return checksum length.
+   */
   public long getChecksumFileLength(Path file, long fileSize) {
     return getChecksumLength(fileSize, getBytesPerSum());
   }
 
-  /** Return the bytes Per Checksum */
+  /**
+   * Return the bytes Per Checksum.
+   *
+   * @return bytes per check sum.
+   */
   public int getBytesPerSum() {
     return bytesPerChecksum;
   }
@@ -123,24 +175,27 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
 
   /*******************************************************
    * For open()'s FSInputStream
-   * It verifies that data matches checksums.
+   * It verifies that data matches checksums iff the data
+   * file has matching checksums.
    *******************************************************/
-  private static class ChecksumFSInputChecker extends FSInputChecker {
+  private static class ChecksumFSInputChecker extends FSInputChecker implements
+      IOStatisticsSource, StreamCapabilities {
     private ChecksumFileSystem fs;
     private FSDataInputStream datas;
     private FSDataInputStream sums;
-    
+
     private static final int HEADER_LENGTH = 8;
-    
+
     private int bytesPerSum = 1;
-    
+    private long fileLen = -1L;
+
     public ChecksumFSInputChecker(ChecksumFileSystem fs, Path file)
       throws IOException {
       this(fs, file, fs.getConf().getInt(
-                       LocalFileSystemConfigKeys.LOCAL_FS_STREAM_BUFFER_SIZE_KEY, 
+                       LocalFileSystemConfigKeys.LOCAL_FS_STREAM_BUFFER_SIZE_KEY,
                        LocalFileSystemConfigKeys.LOCAL_FS_STREAM_BUFFER_SIZE_DEFAULT));
     }
-    
+
     public ChecksumFSInputChecker(ChecksumFileSystem fs, Path file, int bufferSize)
       throws IOException {
       super( file, fs.getFileStatus(file).getReplication() );
@@ -156,7 +211,8 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
         if (!Arrays.equals(version, CHECKSUM_VERSION))
           throw new IOException("Not a checksum file: "+sumFile);
         this.bytesPerSum = sums.readInt();
-        set(fs.verifyChecksum, DataChecksum.newCrc32(), bytesPerSum, 4);
+        set(fs.verifyChecksum, DataChecksum.newCrc32(), bytesPerSum,
+            FSInputChecker.CHECKSUM_SIZE);
       } catch (IOException e) {
         // mincing the message is terrible, but java throws permission
         // exceptions as FNF because that's all the method signatures allow!
@@ -168,21 +224,21 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
         set(fs.verifyChecksum, null, 1, 0);
       }
     }
-    
+
     private long getChecksumFilePos( long dataPos ) {
-      return HEADER_LENGTH + 4*(dataPos/bytesPerSum);
+      return HEADER_LENGTH + FSInputChecker.CHECKSUM_SIZE*(dataPos/bytesPerSum);
     }
-    
+
     @Override
     protected long getChunkPosition( long dataPos ) {
       return dataPos/bytesPerSum*bytesPerSum;
     }
-    
+
     @Override
     public int available() throws IOException {
       return datas.available() + super.available();
     }
-    
+
     @Override
     public int read(long position, byte[] b, int off, int len)
       throws IOException {
@@ -200,7 +256,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       }
       return nread;
     }
-    
+
     @Override
     public void close() throws IOException {
       datas.close();
@@ -209,7 +265,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       }
       set(fs.verifyChecksum, null, 1, 0);
     }
-    
+
 
     @Override
     public boolean seekToNewSource(long targetPos) throws IOException {
@@ -232,7 +288,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
         final int checksumsToRead = Math.min(
           len/bytesPerSum, // number of checksums based on len to read
           checksum.length / CHECKSUM_SIZE); // size of checksum buffer
-        long checksumPos = getChecksumFilePos(pos); 
+        long checksumPos = getChecksumFilePos(pos);
         if(checksumPos != sums.getPos()) {
           sums.seek(checksumPos);
         }
@@ -261,8 +317,235 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       }
       return nread;
     }
+
+    /**
+     * Get the IO Statistics of the nested stream, falling back to
+     * null if the stream does not implement the interface
+     * {@link IOStatisticsSource}.
+     * @return an IOStatistics instance or null
+     */
+    @Override
+    public IOStatistics getIOStatistics() {
+      return IOStatisticsSupport.retrieveIOStatistics(datas);
+    }
+
+    public static long findChecksumOffset(long dataOffset,
+                                          int bytesPerSum) {
+      return HEADER_LENGTH + (dataOffset/bytesPerSum) * FSInputChecker.CHECKSUM_SIZE;
+    }
+
+    /**
+     * Calculate length of file if not already cached.
+     * @return file length.
+     * @throws IOException any IOE.
+     */
+    private long getFileLength() throws IOException {
+      if (fileLen == -1L) {
+        fileLen = fs.getFileStatus(file).getLen();
+      }
+      return fileLen;
+    }
+
+    /**
+     * Find the checksum ranges that correspond to the given data ranges.
+     * @param dataRanges the input data ranges, which are assumed to be sorted
+     *                   and non-overlapping
+     * @return a list of AsyncReaderUtils.CombinedFileRange that correspond to
+     *         the checksum ranges
+     */
+    public static List<CombinedFileRange> findChecksumRanges(
+        List<? extends FileRange> dataRanges,
+        int bytesPerSum,
+        int minSeek,
+        int maxSize) {
+      List<CombinedFileRange> result = new ArrayList<>();
+      CombinedFileRange currentCrc = null;
+      for(FileRange range: dataRanges) {
+        long crcOffset = findChecksumOffset(range.getOffset(), bytesPerSum);
+        long crcEnd = findChecksumOffset(range.getOffset() + range.getLength() +
+                                             bytesPerSum - 1, bytesPerSum);
+        if (currentCrc == null ||
+                !currentCrc.merge(crcOffset, crcEnd, range, minSeek, maxSize)) {
+          currentCrc = new CombinedFileRange(crcOffset, crcEnd, range);
+          result.add(currentCrc);
+        }
+      }
+      return result;
+    }
+
+    /**
+     * Check the data against the checksums.
+     * @param sumsBytes the checksum data
+     * @param sumsOffset where from the checksum file this buffer started
+     * @param data the file data
+     * @param dataOffset where the file data started (must be a multiple of
+     *                  bytesPerSum)
+     * @param bytesPerSum how many bytes per a checksum
+     * @param file the path of the filename
+     * @return the data buffer
+     * @throws CompletionException if the checksums don't match
+     */
+    static ByteBuffer checkBytes(ByteBuffer sumsBytes,
+                                 long sumsOffset,
+                                 ByteBuffer data,
+                                 long dataOffset,
+                                 int bytesPerSum,
+                                 Path file) {
+      // determine how many bytes we need to skip at the start of the sums
+      int offset =
+          (int) (findChecksumOffset(dataOffset, bytesPerSum) - sumsOffset);
+      IntBuffer sums = sumsBytes.asIntBuffer();
+      sums.position(offset / FSInputChecker.CHECKSUM_SIZE);
+      ByteBuffer current = data.duplicate();
+      int numFullChunks = data.remaining() / bytesPerSum;
+      boolean partialChunk = ((data.remaining() % bytesPerSum) != 0);
+      int totalChunks = numFullChunks;
+      if (partialChunk) {
+        totalChunks++;
+      }
+      CRC32 crc = new CRC32();
+      // check each chunk to ensure they match
+      for(int c = 0; c < totalChunks; ++c) {
+        // set the buffer position to the start of every chunk.
+        current.position(c * bytesPerSum);
+
+        if (c == numFullChunks) {
+          // During last chunk, there may be less than chunk size
+          // data preset, so setting the limit accordingly.
+          int lastIncompleteChunk = data.remaining() % bytesPerSum;
+          current.limit((c * bytesPerSum) + lastIncompleteChunk);
+        } else {
+          // set the buffer limit to end of every chunk.
+          current.limit((c + 1) * bytesPerSum);
+        }
+
+        // compute the crc
+        crc.reset();
+        crc.update(current);
+        int expected = sums.get();
+        int calculated = (int) crc.getValue();
+
+        if (calculated != expected) {
+          // cast of c added to silence findbugs
+          long errPosn = dataOffset + (long) c * bytesPerSum;
+          throw new CompletionException(new ChecksumException(
+              "Checksum error: " + file + " at " + errPosn +
+                  " exp: " + expected + " got: " + calculated, errPosn));
+        }
+      }
+      // if everything matches, we return the data
+      return data;
+    }
+
+    /**
+     * Turn off range merging to make buffer recycling more likely (but not guaranteed).
+     * @return 0, always
+     */
+    @Override
+    public int maxReadSizeForVectorReads() {
+      return S_0;
+    }
+
+    /**
+     * Vectored read.
+     * <p>
+     * If the file has no checksums: delegate to the underlying stream.
+     * If the file is checksummed: calculate the checksum ranges as
+     * well as the data ranges, read both, and validate the checksums
+     * as well as returning the data.
+     * @param ranges the byte ranges to read
+     * @param allocate the function to allocate ByteBuffer
+     * @throws IOException
+     */
+    @Override
+    public void readVectored(List<? extends FileRange> ranges,
+                             IntFunction<ByteBuffer> allocate) throws IOException {
+      readVectored(ranges, allocate, (b) -> { });
+    }
+
+    @Override
+    public void readVectored(final List<? extends FileRange> ranges,
+        final IntFunction<ByteBuffer> allocate,
+        final Consumer<ByteBuffer> release) throws IOException {
+
+      // If the stream doesn't have checksums, just delegate.
+      if (dataStreamToHandleVectorIO()) {
+        LOG.debug("No checksums for vectored read, delegating to inner stream");
+        datas.readVectored(ranges, allocate);
+        return;
+      }
+      LOG.debug("Checksum vectored read for {} ranges", ranges.size());
+      final long length = getFileLength();
+      final List<? extends FileRange> sorted = validateAndSortRanges(ranges,
+          Optional.of(length));
+      int minSeek = minSeekForVectorReads();
+      int maxSize = maxReadSizeForVectorReads();
+      List<CombinedFileRange> dataRanges =
+          VectoredReadUtils.mergeSortedRanges(sorted, bytesPerSum,
+              minSeek, maxReadSizeForVectorReads());
+      // While merging the ranges above, they are rounded up based on the value of bytesPerSum
+      // which leads to some ranges crossing the EOF thus they need to be fixed else it will
+      // cause EOFException during actual reads.
+      for (CombinedFileRange range : dataRanges) {
+        if (range.getOffset() + range.getLength() > length) {
+          range.setLength((int) (length - range.getOffset()));
+        }
+      }
+      List<CombinedFileRange> checksumRanges = findChecksumRanges(dataRanges,
+          bytesPerSum, minSeek, maxSize);
+      sums.readVectored(checksumRanges, allocate, release);
+      datas.readVectored(dataRanges, allocate, release);
+      for(CombinedFileRange checksumRange: checksumRanges) {
+        for(FileRange dataRange: checksumRange.getUnderlying()) {
+          // when we have both the ranges, validate the checksum
+          CompletableFuture<ByteBuffer> result =
+              checksumRange.getData().thenCombineAsync(dataRange.getData(),
+                  (sumBuffer, dataBuffer) ->
+                      checkBytes(sumBuffer, checksumRange.getOffset(),
+                          dataBuffer, dataRange.getOffset(), bytesPerSum, file));
+          // Now, slice the read data range to the user's ranges
+          for(FileRange original: ((CombinedFileRange) dataRange).getUnderlying()) {
+            original.setData(result.thenApply(
+                (b) -> VectoredReadUtils.sliceTo(b, dataRange.getOffset(), original)));
+          }
+        }
+      }
+    }
+
+    /**
+     * Predicate to determine whether vector reads should be directly
+     * handled by the data stream, rather than processing
+     * the ranges in this class, processing which includes checksum validation.
+     * <p>
+     * Vector reading is delegated whenever there are no checksums for
+     * the data file, or when validating checksums has been delegated.
+     * @return true if vector reads are to be directly handled by
+     * the data stream.
+     */
+    private boolean dataStreamToHandleVectorIO() {
+      return sums == null;
+    }
+
+    /**
+     * For this stream, declare that range merging may take place;
+     * otherwise delegate to the inner stream.
+     * @param capability string to query the stream support for.
+     * @return true for sliced vector IO if checksum validation
+     * is taking place. False if no checksums are present for the validation.
+     * For all other probes: pass to the wrapped stream
+     */
+    @Override
+    public boolean hasCapability(String capability) {
+      switch (capability.toLowerCase(Locale.ENGLISH)) {
+        // slicing can take place during coalescing and checksumming
+      case StreamCapabilities.VECTOREDIO_BUFFERS_SLICED:
+        return !dataStreamToHandleVectorIO();
+      default:
+        return datas.hasCapability(capability);
+      }
+    }
   }
-  
+
   private static class FSDataBoundedInputStream extends FSDataInputStream {
     private FileSystem fs;
     private Path file;
@@ -273,12 +556,12 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       this.fs = fs;
       this.file = file;
     }
-    
+
     @Override
     public boolean markSupported() {
       return false;
     }
-    
+
     /* Return the file length */
     private long getFileLength() throws IOException {
       if( fileLen==-1L ) {
@@ -286,7 +569,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       }
       return fileLen;
     }
-    
+
     /**
      * Skips over and discards <code>n</code> bytes of data from the
      * input stream.
@@ -310,11 +593,11 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       }
       return super.skip(n);
     }
-    
+
     /**
      * Seek to the given position in the stream.
      * The next read() will be from that position.
-     * 
+     *
      * <p>This method does not allow seek past the end of the file.
      * This produces IOException.
      *
@@ -337,6 +620,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
    * Opens an FSDataInputStream at the indicated Path.
    * @param f the file name to open
    * @param bufferSize the size of the buffer to be used.
+   * @throws IOException if an I/O error occurs.
    */
   @Override
   public FSDataInputStream open(Path f, int bufferSize) throws IOException {
@@ -365,6 +649,12 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
         + "by ChecksumFileSystem");
   }
 
+  @Override
+  public void concat(final Path f, final Path[] psrcs) throws IOException {
+    throw new UnsupportedOperationException("Concat is not supported "
+        + "by ChecksumFileSystem");
+  }
+
   /**
    * Calculated the length of the checksum file in bytes.
    * @param size the length of the data file in bytes
@@ -373,21 +663,22 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
    */
   public static long getChecksumLength(long size, int bytesPerSum) {
     //the checksum length is equal to size passed divided by bytesPerSum +
-    //bytes written in the beginning of the checksum file.  
-    return ((size + bytesPerSum - 1) / bytesPerSum) * 4 +
-             CHECKSUM_VERSION.length + 4;  
+    //bytes written in the beginning of the checksum file.
+    return ((size + bytesPerSum - 1) / bytesPerSum) * FSInputChecker.CHECKSUM_SIZE +
+             ChecksumFSInputChecker.HEADER_LENGTH;
   }
 
   /** This class provides an output stream for a checksummed file.
    * It generates checksums for data. */
-  private static class ChecksumFSOutputSummer extends FSOutputSummer {
-    private FSDataOutputStream datas;    
+  private static class ChecksumFSOutputSummer extends FSOutputSummer
+      implements IOStatisticsSource, StreamCapabilities {
+    private FSDataOutputStream datas;
     private FSDataOutputStream sums;
     private static final float CHKSUM_AS_FRACTION = 0.01f;
     private boolean isClosed = false;
-    
-    public ChecksumFSOutputSummer(ChecksumFileSystem fs, 
-                          Path file, 
+
+    ChecksumFSOutputSummer(ChecksumFileSystem fs,
+                          Path file,
                           boolean overwrite,
                           int bufferSize,
                           short replication,
@@ -408,7 +699,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       sums.write(CHECKSUM_VERSION, 0, CHECKSUM_VERSION.length);
       sums.writeInt(bytesPerSum);
     }
-    
+
     @Override
     public void close() throws IOException {
       try {
@@ -419,7 +710,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
         isClosed = true;
       }
     }
-    
+
     @Override
     protected void writeChunk(byte[] b, int offset, int len, byte[] checksum,
         int ckoff, int cklen)
@@ -433,6 +724,31 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       if (isClosed) {
         throw new ClosedChannelException();
       }
+    }
+
+    /**
+     * Get the IO Statistics of the nested stream, falling back to
+     * null if the stream does not implement the interface
+     * {@link IOStatisticsSource}.
+     * @return an IOStatistics instance or null
+     */
+    @Override
+    public IOStatistics getIOStatistics() {
+      return IOStatisticsSupport.retrieveIOStatistics(datas);
+    }
+
+    /**
+     * Probe the inner stream for a capability.
+     * Syncable operations are rejected before being passed down.
+     * @param capability string to query the stream support for.
+     * @return true if a capability is known to be supported.
+     */
+    @Override
+    public boolean hasCapability(final String capability) {
+      if (isProbeForSyncable(capability)) {
+        return false;
+      }
+      return datas.hasCapability(capability);
     }
   }
 
@@ -484,10 +800,36 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
         blockSize, progress);
   }
 
+  @Override
+  public FSDataOutputStream create(final Path f,
+      final FsPermission permission,
+      final EnumSet<CreateFlag> flags,
+      final int bufferSize,
+      final short replication,
+      final long blockSize,
+      final Progressable progress,
+      final Options.ChecksumOpt checksumOpt) throws IOException {
+    return create(f, permission, flags.contains(CreateFlag.OVERWRITE),
+        bufferSize, replication, blockSize, progress);
+  }
+
+  @Override
+  public FSDataOutputStream createNonRecursive(final Path f,
+      final FsPermission permission,
+      final EnumSet<CreateFlag> flags,
+      final int bufferSize,
+      final short replication,
+      final long blockSize,
+      final Progressable progress) throws IOException {
+    return create(f, permission, flags.contains(CreateFlag.OVERWRITE),
+        false, bufferSize, replication,
+        blockSize, progress);
+  }
+
   abstract class FsOperation {
     boolean run(Path p) throws IOException {
       boolean status = apply(p);
-      if (status) {
+      if (status && !p.isRoot()) {
         Path checkFile = getChecksumFile(p);
         if (fs.exists(checkFile)) {
           apply(checkFile);
@@ -583,10 +925,10 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
 
   /**
    * Set replication for an existing file.
-   * Implement the abstract <tt>setReplication</tt> of <tt>FileSystem</tt>
+   * Implement the abstract <code>setReplication</code> of <code>FileSystem</code>
    * @param src file name
    * @param replication new replication
-   * @throws IOException
+   * @throws IOException if an I/O error occurs.
    * @return true if successful;
    *         false if file does not exist or is a directory
    */
@@ -624,7 +966,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
         value = fs.rename(srcCheckFile, dstCheckFile);
       } else if (fs.exists(dstCheckFile)) {
         // no src checksum, so remove dst checksum
-        value = fs.delete(dstCheckFile, true); 
+        value = fs.delete(dstCheckFile, true);
       }
 
       return value;
@@ -656,7 +998,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
       return fs.delete(f, true);
     }
   }
-    
+
   final private static PathFilter DEFAULT_FILTER = new PathFilter() {
     @Override
     public boolean accept(Path file) {
@@ -667,32 +1009,39 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
   /**
    * List the statuses of the files/directories in the given path if the path is
    * a directory.
-   * 
+   *
    * @param f
    *          given path
    * @return the statuses of the files/directories in the given path
-   * @throws IOException
+   * @throws IOException if an I/O error occurs.
    */
   @Override
   public FileStatus[] listStatus(Path f) throws IOException {
     return fs.listStatus(f, DEFAULT_FILTER);
   }
-  
+
+  @Override
+  public RemoteIterator<FileStatus> listStatusIterator(final Path p)
+      throws IOException {
+    // Not-using fs#listStatusIterator() since it includes crc files as well
+    return new DirListingIterator<>(p);
+  }
+
   /**
    * List the statuses of the files/directories in the given path if the path is
    * a directory.
-   * 
+   *
    * @param f
    *          given path
    * @return the statuses of the files/directories in the given patch
-   * @throws IOException
+   * @throws IOException if an I/O error occurs.
    */
   @Override
   public RemoteIterator<LocatedFileStatus> listLocatedStatus(Path f)
   throws IOException {
     return fs.listLocatedStatus(f, DEFAULT_FILTER);
   }
-  
+
   @Override
   public boolean mkdirs(Path f) throws IOException {
     return fs.mkdirs(f);
@@ -721,6 +1070,10 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
    * Copy it from FS control to the local dst name.
    * If src and dst are directories, the copyCrc parameter
    * determines whether to copy CRC files.
+   * @param src src path.
+   * @param dst dst path.
+   * @param copyCrc copy csc flag.
+   * @throws IOException if an I/O error occurs.
    */
   @SuppressWarnings("deprecation")
   public void copyToLocalFile(Path src, Path dst, boolean copyCrc)
@@ -742,7 +1095,7 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
     } else {
       FileStatus[] srcs = listStatus(src);
       for (FileStatus srcFile : srcs) {
-        copyToLocalFile(srcFile.getPath(), 
+        copyToLocalFile(srcFile.getPath(),
                         new Path(dst, srcFile.getPath().getName()), copyCrc);
       }
     }
@@ -773,4 +1126,79 @@ public abstract class ChecksumFileSystem extends FilterFileSystem {
                                        long inPos, FSDataInputStream sums, long sumsPos) {
     return false;
   }
+
+  /**
+   * This is overridden to ensure that this class's
+   * {@link #openFileWithOptions}() method is called, and so ultimately
+   * its {@link #open(Path, int)}.
+   *
+   * {@inheritDoc}
+   */
+  @Override
+  public FutureDataInputStreamBuilder openFile(final Path path)
+      throws IOException, UnsupportedOperationException {
+    return ((FutureDataInputStreamBuilderImpl)
+        createDataInputStreamBuilder(this, path)).getThisBuilder();
+  }
+
+  /**
+   * Open the file as a blocking call to {@link #open(Path, int)}.
+   *
+   * {@inheritDoc}
+   */
+  @Override
+  protected CompletableFuture<FSDataInputStream> openFileWithOptions(
+      final Path path,
+      final OpenFileParameters parameters) throws IOException {
+    AbstractFSBuilderImpl.rejectUnknownMandatoryKeys(
+        parameters.getMandatoryKeys(),
+        FS_OPTION_OPENFILE_STANDARD_OPTIONS,
+        "for " + path);
+    return LambdaUtils.eval(
+        new CompletableFuture<>(),
+        () -> open(path, parameters.getBufferSize()));
+  }
+
+  /**
+   * This is overridden to ensure that this class's create() method is
+   * ultimately called.
+   *
+   * {@inheritDoc}
+   */
+  public FSDataOutputStreamBuilder createFile(Path path) {
+    return createDataOutputStreamBuilder(this, path)
+        .create().overwrite(true);
+  }
+
+  /**
+   * This is overridden to ensure that this class's create() method is
+   * ultimately called.
+   *
+   * {@inheritDoc}
+   */
+  public FSDataOutputStreamBuilder appendFile(Path path) {
+    return createDataOutputStreamBuilder(this, path).append();
+  }
+
+  /**
+   * Disable those operations which the checksummed FS blocks.
+   * {@inheritDoc}
+   */
+  @Override
+  public boolean hasPathCapability(final Path path, final String capability)
+      throws IOException {
+    // query the superclass, which triggers argument validation.
+    final Path p = makeQualified(path);
+    switch (validatePathCapabilityArgs(p, capability)) {
+    case CommonPathCapabilities.FS_APPEND:
+    case CommonPathCapabilities.FS_CONCAT:
+      return false;
+    case StreamCapabilities.VECTOREDIO_BUFFERS_SLICED:
+      return getVerifyChecksum();
+
+    default:
+      return super.hasPathCapability(p, capability);
+    }
+  }
+
 }

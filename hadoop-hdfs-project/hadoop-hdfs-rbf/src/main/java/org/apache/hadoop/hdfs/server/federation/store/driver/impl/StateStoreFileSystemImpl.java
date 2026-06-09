@@ -24,30 +24,33 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedList;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Options;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys;
-import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hdfs.server.federation.store.driver.StateStoreDriver;
 import org.apache.hadoop.hdfs.server.federation.store.records.BaseRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * StateStoreDriver} implementation based on a filesystem. The most common uses
- * HDFS as a backend.
+ * {@link StateStoreDriver} implementation based on a filesystem. The common
+ * implementation uses HDFS as a backend. The path can be specified setting
+ * dfs.federation.router.store.driver.fs.path=hdfs://host:port/path/to/store.
  */
 public class StateStoreFileSystemImpl extends StateStoreFileBaseImpl {
 
   private static final Logger LOG =
       LoggerFactory.getLogger(StateStoreFileSystemImpl.class);
-
 
   /** Configuration keys. */
   public static final String FEDERATION_STORE_FS_PATH =
@@ -55,6 +58,7 @@ public class StateStoreFileSystemImpl extends StateStoreFileBaseImpl {
 
   /** File system to back the State Store. */
   private FileSystem fs;
+
   /** Working path in the filesystem. */
   private String workPath;
 
@@ -79,17 +83,8 @@ public class StateStoreFileSystemImpl extends StateStoreFileBaseImpl {
   @Override
   protected boolean rename(String src, String dst) {
     try {
-      if (fs instanceof DistributedFileSystem) {
-        DistributedFileSystem dfs = (DistributedFileSystem)fs;
-        dfs.rename(new Path(src), new Path(dst), Options.Rename.OVERWRITE);
-        return true;
-      } else {
-        // Replace should be atomic but not available
-        if (fs.exists(new Path(dst))) {
-          fs.delete(new Path(dst), true);
-        }
-        return fs.rename(new Path(src), new Path(dst));
-      }
+      FileUtil.rename(fs, new Path(src), new Path(dst), Options.Rename.OVERWRITE);
+      return true;
     } catch (Exception e) {
       LOG.error("Cannot rename {} to {}", src, dst, e);
       return false;
@@ -123,7 +118,14 @@ public class StateStoreFileSystemImpl extends StateStoreFileBaseImpl {
   }
 
   @Override
+  protected int getConcurrentFilesAccessNumThreads() {
+    return getConf().getInt(RBFConfigKeys.FEDERATION_STORE_FS_ASYNC_THREADS,
+        RBFConfigKeys.FEDERATION_STORE_FS_ASYNC_THREADS_DEFAULT);
+  }
+
+  @Override
   public void close() throws Exception {
+    super.close();
     if (fs != null) {
       fs.close();
     }
@@ -139,13 +141,14 @@ public class StateStoreFileSystemImpl extends StateStoreFileBaseImpl {
           new InputStreamReader(fdis, StandardCharsets.UTF_8);
       reader = new BufferedReader(isr);
     } catch (IOException ex) {
-      LOG.error("Cannot open read stream for {}", path);
+      LOG.error("Cannot open read stream for {}", path, ex);
     }
     return reader;
   }
 
   @Override
-  protected <T extends BaseRecord> BufferedWriter getWriter(String pathName) {
+  @VisibleForTesting
+  public <T extends BaseRecord> BufferedWriter getWriter(String pathName) {
     BufferedWriter writer = null;
     Path path = new Path(pathName);
     try {
@@ -154,25 +157,26 @@ public class StateStoreFileSystemImpl extends StateStoreFileBaseImpl {
           new OutputStreamWriter(fdos, StandardCharsets.UTF_8);
       writer = new BufferedWriter(osw);
     } catch (IOException ex) {
-      LOG.error("Cannot open write stream for {}", path);
+      LOG.error("Cannot open write stream for {}", path, ex);
     }
     return writer;
   }
 
   @Override
   protected List<String> getChildren(String pathName) {
-    List<String> ret = new LinkedList<>();
     Path path = new Path(workPath, pathName);
     try {
       FileStatus[] files = fs.listStatus(path);
+      List<String> ret = new ArrayList<>(files.length);
       for (FileStatus file : files) {
         Path filePath = file.getPath();
         String fileName = filePath.getName();
         ret.add(fileName);
       }
+      return ret;
     } catch (Exception e) {
       LOG.error("Cannot get children for {}", pathName, e);
+      return Collections.emptyList();
     }
-    return ret;
   }
 }

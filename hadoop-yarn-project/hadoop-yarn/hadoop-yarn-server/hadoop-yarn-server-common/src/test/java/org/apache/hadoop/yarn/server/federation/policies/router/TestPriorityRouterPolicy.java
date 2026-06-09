@@ -16,22 +16,24 @@
  */
 package org.apache.hadoop.yarn.server.federation.policies.router;
 
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.federation.policies.dao.WeightedPolicyInfo;
+import org.apache.hadoop.yarn.server.federation.policies.exceptions.FederationPolicyException;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterId;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterIdInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterState;
 import org.apache.hadoop.yarn.server.federation.utils.FederationPoliciesTestUtil;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Simple test class for the {@link PriorityRouterPolicy}. Tests that the
@@ -39,7 +41,7 @@ import org.junit.Test;
  */
 public class TestPriorityRouterPolicy extends BaseRouterPoliciesTest {
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     setPolicy(new PriorityRouterPolicy());
     setPolicyInfo(new WeightedPolicyInfo());
@@ -52,10 +54,11 @@ public class TestPriorityRouterPolicy extends BaseRouterPoliciesTest {
 
       // with 5% omit a subcluster
       if (getRand().nextFloat() < 0.95f || i == 5) {
-        SubClusterInfo sci = mock(SubClusterInfo.class);
-        when(sci.getState()).thenReturn(SubClusterState.SC_RUNNING);
-        when(sci.getSubClusterId()).thenReturn(sc.toId());
-        getActiveSubclusters().put(sc.toId(), sci);
+        long now = Time.now();
+        SubClusterInfo federationSubClusterInfo = SubClusterInfo.newInstance(
+            sc.toId(), "dns1:80", "dns1:81", "dns1:82", "dns1:83",
+            now - 1000, SubClusterState.SC_RUNNING, now - 2000, generateClusterMetricsInfo(i));
+        getActiveSubclusters().put(sc.toId(), federationSubClusterInfo);
       }
       float weight = getRand().nextFloat();
       if (i == 5) {
@@ -70,16 +73,42 @@ public class TestPriorityRouterPolicy extends BaseRouterPoliciesTest {
     }
     getPolicyInfo().setRouterPolicyWeights(routerWeights);
     getPolicyInfo().setAMRMPolicyWeights(amrmWeights);
-    FederationPoliciesTestUtil.initializePolicyContext(getPolicy(),
-        getPolicyInfo(), getActiveSubclusters());
 
+    setupContext();
   }
 
   @Test
   public void testPickLowestWeight() throws YarnException {
     SubClusterId chosen = ((FederationRouterPolicy) getPolicy())
         .getHomeSubcluster(getApplicationSubmissionContext(), null);
-    Assert.assertEquals("sc5", chosen.getId());
+    assertEquals("sc5", chosen.getId());
   }
+
+  @Test
+  public void testZeroSubClustersWithPositiveWeight() throws Exception {
+    Map<SubClusterIdInfo, Float> routerWeights = new HashMap<>();
+    Map<SubClusterIdInfo, Float> amrmWeights = new HashMap<>();
+    // Set negative value to all subclusters
+    for (int i = 0; i < 5; i++) {
+      SubClusterIdInfo sc = new SubClusterIdInfo("sc" + i);
+
+      SubClusterInfo sci = SubClusterInfo.newInstance(
+          sc.toId(), "dns1:80", "dns1:81", "dns1:82", "dns1:83", SubClusterState.SC_RUNNING,
+          System.currentTimeMillis(), "something");
+      getActiveSubclusters().put(sc.toId(), sci);
+      routerWeights.put(sc, 0.0f);
+      amrmWeights.put(sc, -1.0f);
+    }
+    getPolicyInfo().setRouterPolicyWeights(routerWeights);
+    getPolicyInfo().setAMRMPolicyWeights(amrmWeights);
+    FederationPoliciesTestUtil.initializePolicyContext(getPolicy(),
+        getPolicyInfo(), getActiveSubclusters());
+
+    intercept(FederationPolicyException.class,
+        "No Active Subcluster with weight vector greater than zero.",
+        () -> ((FederationRouterPolicy) getPolicy())
+            .getHomeSubcluster(getApplicationSubmissionContext(), null));
+  }
+
 
 }

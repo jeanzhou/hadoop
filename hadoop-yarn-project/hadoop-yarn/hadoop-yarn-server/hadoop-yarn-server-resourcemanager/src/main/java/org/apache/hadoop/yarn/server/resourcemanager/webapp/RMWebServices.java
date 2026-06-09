@@ -31,12 +31,18 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
+import javax.inject.Inject;
+import javax.inject.Singleton;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.Consumes;
@@ -51,13 +57,11 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
-import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.EnumUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.http.JettyUtils;
@@ -69,6 +73,7 @@ import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationHandler;
+import org.apache.hadoop.thirdparty.com.google.common.net.HttpHeaders;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.protocolrecords.CancelDelegationTokenRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.CancelDelegationTokenResponse;
@@ -95,6 +100,7 @@ import org.apache.hadoop.yarn.api.protocolrecords.ReservationListResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationPriorityRequest;
@@ -105,6 +111,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.api.records.ApplicationTimeoutType;
+import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerReport;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
@@ -118,18 +125,25 @@ import org.apache.hadoop.yarn.api.records.ReservationRequest;
 import org.apache.hadoop.yarn.api.records.ReservationRequestInterpreter;
 import org.apache.hadoop.yarn.api.records.ReservationRequests;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceOption;
+import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
+import org.apache.hadoop.yarn.nodelabels.RMNodeLabel;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceRequest;
+import org.apache.hadoop.yarn.server.resourcemanager.AdminService;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
+import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.RMServerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NodeLabelsUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
@@ -141,6 +155,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfigValidator;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.conf.YarnConfigurationStore.LogMutation;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
@@ -160,6 +176,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.CapacitySchedulerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterMetricsInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterUserInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.DelegationToken;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.FairSchedulerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.FifoSchedulerInfo;
@@ -173,6 +190,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntr
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntryList;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodesInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.PartitionInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.RMQueueAclInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDefinitionInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteResponseInfo;
@@ -183,33 +202,41 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationSubmi
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationUpdateRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationUpdateResponseInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ResourceInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ResourceOptionInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.BulkActivitiesInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerTypeInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.StatisticsItemInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ConfigVersionInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerOverviewInfo;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.server.webapp.WebServices;
 import org.apache.hadoop.yarn.server.webapp.dao.ContainerInfo;
 import org.apache.hadoop.yarn.server.webapp.dao.ContainersInfo;
 import org.apache.hadoop.yarn.util.AdHocLogDumper;
+import org.apache.hadoop.yarn.util.AppsCacheKey;
 import org.apache.hadoop.yarn.util.ConverterUtils;
+import org.apache.hadoop.yarn.util.LRUCache;
 import org.apache.hadoop.yarn.util.Times;
+import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
 import org.apache.hadoop.yarn.webapp.ForbiddenException;
 import org.apache.hadoop.yarn.webapp.NotFoundException;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+import org.apache.hadoop.yarn.webapp.dao.ConfInfo;
 import org.apache.hadoop.yarn.webapp.dao.SchedConfUpdateInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.inject.Inject;
-import com.google.inject.Singleton;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 @Singleton
 @Path(RMWSConsts.RM_WEB_SERVICE_PATH)
 public class RMWebServices extends WebServices implements RMWebServiceProtocol {
 
-  private static final Log LOG =
-      LogFactory.getLog(RMWebServices.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(RMWebServices.class.getName());
 
   private final ResourceManager rm;
   private static RecordFactory recordFactory =
@@ -224,21 +251,51 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   public static final String DEFAULT_START_TIME = "0";
   public static final String DEFAULT_END_TIME = "-1";
   public static final String DEFAULT_INCLUDE_RESOURCE = "false";
+  public static final String DEFAULT_SUMMARIZE = "false";
+  public static final String DEFAULT_ACTIVITIES_COUNT = "10";
+  public static final int MAX_ACTIVITIES_COUNT = 500;
+  private static final String ERROR_MSG = "Not Capacity Scheduler";
 
   @VisibleForTesting
   boolean isCentralizedNodeLabelConfiguration = true;
+  private boolean filterAppsByUser = false;
+  private boolean filterInvalidXMLChars = false;
+  private boolean enableRestAppSubmissions = true;
+  private LRUCache<AppsCacheKey, AppsInfo> appsLRUCache;
+  private AtomicLong getAppsSuccessTimes = new AtomicLong(0);
+  private AtomicLong hitAppsCacheTimes = new AtomicLong(0);
+  private boolean enableAppsCache = false;
 
   public final static String DELEGATION_TOKEN_HEADER =
       "Hadoop-YARN-RM-Delegation-Token";
 
   @Inject
-  public RMWebServices(final ResourceManager rm, Configuration conf) {
+  public RMWebServices(final @javax.inject.Named("rm") ResourceManager rm,
+      @javax.inject.Named("conf") Configuration conf) {
     // don't inject, always take appBaseRoot from RM.
     super(null);
     this.rm = rm;
     this.conf = conf;
     isCentralizedNodeLabelConfiguration =
         YarnConfiguration.isCentralizedNodeLabelConfiguration(conf);
+    this.filterAppsByUser  = conf.getBoolean(
+        YarnConfiguration.FILTER_ENTITY_LIST_BY_USER,
+        YarnConfiguration.DEFAULT_DISPLAY_APPS_FOR_LOGGED_IN_USER);
+    this.filterInvalidXMLChars = conf.getBoolean(
+        YarnConfiguration.FILTER_INVALID_XML_CHARS,
+        YarnConfiguration.DEFAULT_FILTER_INVALID_XML_CHARS);
+    this.enableRestAppSubmissions = conf.getBoolean(
+        YarnConfiguration.ENABLE_REST_APP_SUBMISSIONS,
+        YarnConfiguration.DEFAULT_ENABLE_REST_APP_SUBMISSIONS);
+    this.enableAppsCache = this.conf.getBoolean(YarnConfiguration.APPS_CACHE_ENABLE,
+        YarnConfiguration.DEFAULT_APPS_CACHE_ENABLE);
+    if (enableAppsCache) {
+      int cacheSize = this.conf.getInt(YarnConfiguration.APPS_CACHE_SIZE,
+          YarnConfiguration.DEFAULT_APPS_CACHE_SIZE);
+      long appsCacheTimeMs = this.conf.getTimeDuration(YarnConfiguration.APPS_CACHE_EXPIRE,
+          YarnConfiguration.DEFAULT_APPS_CACHE_EXPIRE, TimeUnit.MILLISECONDS);
+      appsLRUCache = new LRUCache<>(cacheSize, appsCacheTimeMs);
+    }
   }
 
   RMWebServices(ResourceManager rm, Configuration conf,
@@ -267,9 +324,49 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     return true;
   }
 
-  private void init() {
+  /**
+   * initForReadableEndpoints does the init for all readable REST end points.
+   */
+  private void initForReadableEndpoints() {
     // clear content type
     response.setContentType(null);
+  }
+
+  /**
+   * initForWritableEndpoints does the init and acls verification for all
+   * writable REST end points.
+   *
+   * @param callerUGI
+   *          remote caller who initiated the request
+   * @param doAdminACLsCheck
+   *          boolean flag to indicate whether ACLs check is needed
+   * @throws AuthorizationException
+   *           in case of no access to perform this op.
+   */
+  private void initForWritableEndpoints(UserGroupInformation callerUGI,
+      boolean doAdminACLsCheck) throws AuthorizationException {
+    // clear content type
+    response.setContentType(null);
+
+    if (callerUGI == null) {
+      String msg = "Unable to obtain user name, user not authenticated";
+      throw new AuthorizationException(msg);
+    }
+
+    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
+      String msg = "The default static user cannot carry out this operation.";
+      throw new ForbiddenException(msg);
+    }
+
+    if (doAdminACLsCheck) {
+      ApplicationACLsManager aclsManager = rm.getApplicationACLsManager();
+      if (aclsManager.areACLsEnabled()) {
+        if (!aclsManager.isAdmin(callerUGI)) {
+          String msg = "Only admins can carry out this operation.";
+          throw new ForbiddenException(msg);
+        }
+      }
+    }
   }
 
   @GET
@@ -286,8 +383,19 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
   public ClusterInfo getClusterInfo() {
-    init();
+    initForReadableEndpoints();
     return new ClusterInfo(this.rm);
+  }
+
+  @GET
+  @Path(RMWSConsts.CLUSTER_USER_INFO)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  @Override
+  public ClusterUserInfo getClusterUserInfo(@Context HttpServletRequest hsr) {
+    initForReadableEndpoints();
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    return new ClusterUserInfo(this.rm, callerUGI);
   }
 
   @GET
@@ -296,7 +404,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
   public ClusterMetricsInfo getClusterMetricsInfo() {
-    init();
+    initForReadableEndpoints();
     return new ClusterMetricsInfo(this.rm);
   }
 
@@ -306,7 +414,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
   public SchedulerTypeInfo getSchedulerInfo() {
-    init();
+    initForReadableEndpoints();
+
     ResourceScheduler rs = rm.getResourceScheduler();
     SchedulerInfo sinfo;
     if (rs instanceof CapacityScheduler) {
@@ -331,15 +440,9 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public String dumpSchedulerLogs(@FormParam(RMWSConsts.TIME) String time,
       @Context HttpServletRequest hsr) throws IOException {
-    init();
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    ApplicationACLsManager aclsManager = rm.getApplicationACLsManager();
-    if (aclsManager.areACLsEnabled()) {
-      if (callerUGI == null || !aclsManager.isAdmin(callerUGI)) {
-        String msg = "Only admins can carry out this operation.";
-        throw new ForbiddenException(msg);
-      }
-    }
+    initForWritableEndpoints(callerUGI, true);
+
     ResourceScheduler rs = rm.getResourceScheduler();
     int period = Integer.parseInt(time);
     if (period <= 0) {
@@ -365,7 +468,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
   public NodesInfo getNodes(@QueryParam(RMWSConsts.STATES) String states) {
-    init();
+    initForReadableEndpoints();
+
     ResourceScheduler sched = this.rm.getResourceScheduler();
     if (sched == null) {
       throw new NotFoundException("Null ResourceScheduler instance");
@@ -387,9 +491,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     NodesInfo nodesInfo = new NodesInfo();
     for (RMNode rmNode : rmNodes) {
       NodeInfo nodeInfo = new NodeInfo(rmNode, sched);
-      if (EnumSet
-          .of(NodeState.LOST, NodeState.DECOMMISSIONED, NodeState.REBOOTED)
-          .contains(rmNode.getState())) {
+      if (rmNode.getState().isInactiveState()) {
         nodeInfo.setNodeHTTPAddress(RMWSConsts.EMPTY);
       }
       nodesInfo.add(nodeInfo);
@@ -404,7 +506,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
   public NodeInfo getNode(@PathParam(RMWSConsts.NODEID) String nodeId) {
-    init();
+    initForReadableEndpoints();
+
     if (nodeId == null || nodeId.isEmpty()) {
       throw new NotFoundException("nodeId, " + nodeId + ", is empty or null");
     }
@@ -429,6 +532,96 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     return nodeInfo;
   }
 
+  @POST
+  @Path(RMWSConsts.NODE_RESOURCE)
+  @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public ResourceInfo updateNodeResource(
+      @Context HttpServletRequest hsr,
+      @PathParam(RMWSConsts.NODEID) String nodeId,
+      ResourceOptionInfo resourceOption) throws AuthorizationException {
+
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
+
+    RMNode rmNode = getRMNode(nodeId);
+    Map<NodeId, ResourceOption> nodeResourceMap =
+        Collections.singletonMap(
+            rmNode.getNodeID(), resourceOption.getResourceOption());
+    UpdateNodeResourceRequest updateRequest =
+        UpdateNodeResourceRequest.newInstance(nodeResourceMap);
+
+    try {
+      RMContext rmContext = this.rm.getRMContext();
+      AdminService admin = rmContext.getRMAdminService();
+      admin.updateNodeResource(updateRequest);
+    } catch (YarnException e) {
+      String message = "Failed to update the node resource " +
+          rmNode.getNodeID() + ".";
+      LOG.error(message, e);
+      throw new YarnRuntimeException(message, e);
+    } catch (IOException e) {
+      LOG.error("Failed to update the node resource {}.",
+          rmNode.getNodeID(), e);
+    }
+
+    return new ResourceInfo(rmNode.getTotalCapability());
+  }
+
+  /**
+   * Get the RMNode in the RM from the node identifier.
+   * @param nodeId Node identifier.
+   * @return The RMNode in the RM.
+   */
+  private RMNode getRMNode(final String nodeId) {
+    if (nodeId == null || nodeId.isEmpty()) {
+      throw new NotFoundException("nodeId, " + nodeId + ", is empty or null");
+    }
+    NodeId nid = NodeId.fromString(nodeId);
+    RMContext rmContext = this.rm.getRMContext();
+    RMNode ni = rmContext.getRMNodes().get(nid);
+    if (ni == null) {
+      ni = rmContext.getInactiveRMNodes().get(nid);
+      if (ni == null) {
+        throw new NotFoundException("nodeId, " + nodeId + ", is not found");
+      }
+    }
+    return ni;
+  }
+
+  /**
+   * This method ensures that the output String has only
+   * valid XML unicode characters as specified by the
+   * XML 1.0 standard. For reference, please see
+   * <a href="http://www.w3.org/TR/2000/REC-xml-20001006#NT-Char">
+   * the standard</a>.
+   *
+   * @param str The String whose invalid xml characters we want to escape.
+   * @return The str String after escaping invalid xml characters.
+   */
+  public static String escapeInvalidXMLCharacters(String str) {
+    StringBuilder out = new StringBuilder();
+    final int strlen = str.length();
+    final String substitute = "\uFFFD";
+    int idx = 0;
+    while (idx < strlen) {
+      final int cpt = str.codePointAt(idx);
+      idx += Character.isSupplementaryCodePoint(cpt) ? 2 : 1;
+      if ((cpt == 0x9) ||
+          (cpt == 0xA) ||
+          (cpt == 0xD) ||
+          ((cpt >= 0x20) && (cpt <= 0xD7FF)) ||
+          ((cpt >= 0xE000) && (cpt <= 0xFFFD)) ||
+          ((cpt >= 0x10000) && (cpt <= 0x10FFFF))) {
+        out.append(Character.toChars(cpt));
+      } else {
+        out.append(substitute);
+      }
+    }
+    return out.toString();
+  }
+
   @GET
   @Path(RMWSConsts.APPS)
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
@@ -440,144 +633,52 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @QueryParam(RMWSConsts.FINAL_STATUS) String finalStatusQuery,
       @QueryParam(RMWSConsts.USER) String userQuery,
       @QueryParam(RMWSConsts.QUEUE) String queueQuery,
-      @QueryParam(RMWSConsts.LIMIT) String count,
+      @QueryParam(RMWSConsts.LIMIT) String limit,
       @QueryParam(RMWSConsts.STARTED_TIME_BEGIN) String startedBegin,
       @QueryParam(RMWSConsts.STARTED_TIME_END) String startedEnd,
       @QueryParam(RMWSConsts.FINISHED_TIME_BEGIN) String finishBegin,
       @QueryParam(RMWSConsts.FINISHED_TIME_END) String finishEnd,
       @QueryParam(RMWSConsts.APPLICATION_TYPES) Set<String> applicationTypes,
       @QueryParam(RMWSConsts.APPLICATION_TAGS) Set<String> applicationTags,
+      @QueryParam(RMWSConsts.NAME) String name,
       @QueryParam(RMWSConsts.DESELECTS) Set<String> unselectedFields) {
-    boolean checkCount = false;
-    boolean checkStart = false;
-    boolean checkEnd = false;
-    boolean checkAppTypes = false;
-    boolean checkAppStates = false;
-    boolean checkAppTags = false;
-    long countNum = 0;
 
-    // set values suitable in case both of begin/end not specified
-    long sBegin = 0;
-    long sEnd = Long.MAX_VALUE;
-    long fBegin = 0;
-    long fEnd = Long.MAX_VALUE;
-
-    init();
-    if (count != null && !count.isEmpty()) {
-      checkCount = true;
-      countNum = Long.parseLong(count);
-      if (countNum <= 0) {
-        throw new BadRequestException("limit value must be greater then 0");
+    AppsCacheKey cacheKey = AppsCacheKey.newInstance(stateQuery, new HashSet<>(statesQuery),
+        finalStatusQuery, userQuery, queueQuery, limit, startedBegin, startedEnd, finishBegin,
+        finishEnd, new HashSet<>(applicationTypes), new HashSet<>(applicationTags), name,
+        unselectedFields);
+    if (this.enableAppsCache) {
+      long successTimes = getAppsSuccessTimes.incrementAndGet();
+      if (successTimes % 1000 == 0) {
+        LOG.debug("hit cache info: getAppsSuccessTimes={}, hitAppsCacheTimes={}",
+            successTimes, hitAppsCacheTimes.get());
+      }
+      AppsInfo appsInfo = appsLRUCache.get(cacheKey);
+      if (appsInfo != null) {
+        hitAppsCacheTimes.getAndIncrement();
+        return appsInfo;
       }
     }
 
-    if (startedBegin != null && !startedBegin.isEmpty()) {
-      checkStart = true;
-      sBegin = Long.parseLong(startedBegin);
-      if (sBegin < 0) {
-        throw new BadRequestException(
-            "startedTimeBegin must be greater than 0");
-      }
-    }
-    if (startedEnd != null && !startedEnd.isEmpty()) {
-      checkStart = true;
-      sEnd = Long.parseLong(startedEnd);
-      if (sEnd < 0) {
-        throw new BadRequestException("startedTimeEnd must be greater than 0");
-      }
-    }
-    if (sBegin > sEnd) {
-      throw new BadRequestException(
-          "startedTimeEnd must be greater than startTimeBegin");
-    }
+    initForReadableEndpoints();
 
-    if (finishBegin != null && !finishBegin.isEmpty()) {
-      checkEnd = true;
-      fBegin = Long.parseLong(finishBegin);
-      if (fBegin < 0) {
-        throw new BadRequestException("finishTimeBegin must be greater than 0");
-      }
-    }
-    if (finishEnd != null && !finishEnd.isEmpty()) {
-      checkEnd = true;
-      fEnd = Long.parseLong(finishEnd);
-      if (fEnd < 0) {
-        throw new BadRequestException("finishTimeEnd must be greater than 0");
-      }
-    }
-    if (fBegin > fEnd) {
-      throw new BadRequestException(
-          "finishTimeEnd must be greater than finishTimeBegin");
-    }
+    GetApplicationsRequest request =
+            ApplicationsRequestBuilder.create()
+                    .withStateQuery(stateQuery)
+                    .withStatesQuery(statesQuery)
+                    .withUserQuery(userQuery)
+                    .withQueueQuery(rm, queueQuery)
+                    .withLimit(limit)
+                    .withStartedTimeBegin(startedBegin)
+                    .withStartedTimeEnd(startedEnd)
+                    .withFinishTimeBegin(finishBegin)
+                    .withFinishTimeEnd(finishEnd)
+                    .withApplicationTypes(applicationTypes)
+                    .withApplicationTags(applicationTags)
+                    .withName(name)
+            .build();
 
-    Set<String> appTypes = parseQueries(applicationTypes, false);
-    if (!appTypes.isEmpty()) {
-      checkAppTypes = true;
-    }
-
-    Set<String> appTags = parseQueries(applicationTags, false);
-    if (!appTags.isEmpty()) {
-      checkAppTags = true;
-    }
-
-    // stateQuery is deprecated.
-    if (stateQuery != null && !stateQuery.isEmpty()) {
-      statesQuery.add(stateQuery);
-    }
-    Set<String> appStates = parseQueries(statesQuery, true);
-    if (!appStates.isEmpty()) {
-      checkAppStates = true;
-    }
-
-    GetApplicationsRequest request = GetApplicationsRequest.newInstance();
-
-    if (checkStart) {
-      request.setStartRange(sBegin, sEnd);
-    }
-
-    if (checkEnd) {
-      request.setFinishRange(fBegin, fEnd);
-    }
-
-    if (checkCount) {
-      request.setLimit(countNum);
-    }
-
-    if (checkAppTypes) {
-      request.setApplicationTypes(appTypes);
-    }
-
-    if (checkAppTags) {
-      request.setApplicationTags(appTags);
-    }
-
-    if (checkAppStates) {
-      request.setApplicationStates(appStates);
-    }
-
-    if (queueQuery != null && !queueQuery.isEmpty()) {
-      ResourceScheduler rs = rm.getResourceScheduler();
-      if (rs instanceof CapacityScheduler) {
-        CapacityScheduler cs = (CapacityScheduler) rs;
-        // validate queue exists
-        try {
-          cs.getQueueInfo(queueQuery, false, false);
-        } catch (IOException e) {
-          throw new BadRequestException(e.getMessage());
-        }
-      }
-      Set<String> queues = new HashSet<String>(1);
-      queues.add(queueQuery);
-      request.setQueues(queues);
-    }
-
-    if (userQuery != null && !userQuery.isEmpty()) {
-      Set<String> users = new HashSet<String>(1);
-      users.add(userQuery);
-      request.setUsers(users);
-    }
-
-    List<ApplicationReport> appReports = null;
+    List<ApplicationReport> appReports;
     try {
       appReports = rm.getClientRMService().getApplications(request)
           .getApplicationList();
@@ -607,9 +708,31 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       DeSelectFields deSelectFields = new DeSelectFields();
       deSelectFields.initFields(unselectedFields);
 
-      AppInfo app = new AppInfo(rm, rmapp, hasAccess(rmapp, hsr),
+      boolean allowAccess = hasAccess(rmapp, hsr);
+      // Given RM is configured to display apps per user, skip apps to which
+      // this caller doesn't have access to view.
+      if (filterAppsByUser && !allowAccess) {
+        continue;
+      }
+
+      AppInfo app = new AppInfo(rm, rmapp, allowAccess,
           WebAppUtils.getHttpSchemePrefix(conf), deSelectFields);
       allApps.add(app);
+    }
+
+    if (filterInvalidXMLChars) {
+      final String format = hsr.getHeader(HttpHeaders.ACCEPT);
+      if (format != null &&
+          format.toLowerCase().contains(MediaType.APPLICATION_XML)) {
+        for (AppInfo appInfo : allApps.getApps()) {
+          appInfo.setNote(escapeInvalidXMLCharacters(appInfo.getNote()));
+        }
+      }
+    }
+
+    if (enableAppsCache) {
+      appsLRUCache.put(cacheKey, allApps);
+      getAppsSuccessTimes.getAndIncrement();
     }
     return allApps;
   }
@@ -620,69 +743,135 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
   public ActivitiesInfo getActivities(@Context HttpServletRequest hsr,
-      @QueryParam(RMWSConsts.NODEID) String nodeId) {
-    YarnScheduler scheduler = rm.getRMContext().getScheduler();
+      @QueryParam(RMWSConsts.NODEID) String nodeId,
+      @QueryParam(RMWSConsts.GROUP_BY) String groupBy) {
 
-    if (scheduler instanceof AbstractYarnScheduler) {
-      String errMessage = "";
+    initForReadableEndpoints();
 
-      AbstractYarnScheduler abstractYarnScheduler =
-          (AbstractYarnScheduler) scheduler;
-
-      ActivitiesManager activitiesManager =
-          abstractYarnScheduler.getActivitiesManager();
-      if (null == activitiesManager) {
-        errMessage = "Not Capacity Scheduler";
-        return new ActivitiesInfo(errMessage, nodeId);
-      }
-
-      List<FiCaSchedulerNode> nodeList =
-          abstractYarnScheduler.getNodeTracker().getAllNodes();
-
-      boolean illegalInput = false;
-
-      if (nodeList.size() == 0) {
-        illegalInput = true;
-        errMessage = "No node manager running in the cluster";
-      } else {
-        if (nodeId != null) {
-          String hostName = nodeId;
-          String portName = "";
-          if (nodeId.contains(":")) {
-            int index = nodeId.indexOf(":");
-            hostName = nodeId.substring(0, index);
-            portName = nodeId.substring(index + 1);
-          }
-
-          boolean correctNodeId = false;
-          for (FiCaSchedulerNode node : nodeList) {
-            if ((portName.equals("")
-                && node.getRMNode().getHostName().equals(hostName))
-                || (!portName.equals("")
-                    && node.getRMNode().getHostName().equals(hostName)
-                    && String.valueOf(node.getRMNode().getCommandPort())
-                        .equals(portName))) {
-              correctNodeId = true;
-              nodeId = node.getNodeID().toString();
-              break;
-            }
-          }
-          if (!correctNodeId) {
-            illegalInput = true;
-            errMessage = "Cannot find node manager with given node id";
-          }
-        }
-      }
-
-      if (!illegalInput) {
-        activitiesManager.recordNextNodeUpdateActivities(nodeId);
-        return activitiesManager.getActivitiesInfo(nodeId);
-      }
-
-      // Return a activities info with error message
-      return new ActivitiesInfo(errMessage, nodeId);
+    ActivitiesManager activitiesManager = getActivitiesManager();
+    if (null == activitiesManager) {
+      return new ActivitiesInfo(ERROR_MSG, nodeId);
     }
 
+    RMWSConsts.ActivitiesGroupBy activitiesGroupBy;
+    try {
+      activitiesGroupBy = parseActivitiesGroupBy(groupBy);
+    } catch (IllegalArgumentException e) {
+      return new ActivitiesInfo(e.getMessage(), nodeId);
+    }
+
+    AbstractYarnScheduler abstractYarnScheduler =
+        (AbstractYarnScheduler) rm.getRMContext().getScheduler();
+
+    List<FiCaSchedulerNode> nodeList =
+        abstractYarnScheduler.getNodeTracker().getAllNodes();
+
+    boolean illegalInput = false;
+    String errMessage = "";
+
+    if (nodeList.size() == 0) {
+      illegalInput = true;
+      errMessage = "No node manager running in the cluster";
+    } else {
+      if (nodeId != null) {
+        String hostName = nodeId;
+        String portName = "";
+        if (nodeId.contains(":")) {
+          int index = nodeId.indexOf(":");
+          hostName = nodeId.substring(0, index);
+          portName = nodeId.substring(index + 1);
+        }
+
+        boolean correctNodeId = false;
+        for (FiCaSchedulerNode node : nodeList) {
+          if ((portName.equals("")
+              && node.getRMNode().getHostName().equals(hostName))
+              || (!portName.equals("")
+                  && node.getRMNode().getHostName().equals(hostName)
+                  && String.valueOf(node.getRMNode().getCommandPort())
+                  .equals(portName))) {
+            correctNodeId = true;
+            nodeId = node.getNodeID().toString();
+            break;
+          }
+        }
+        if (!correctNodeId) {
+          illegalInput = true;
+          errMessage = "Cannot find node manager with given node id";
+        }
+      }
+    }
+
+    if (!illegalInput) {
+      activitiesManager.recordNextNodeUpdateActivities(nodeId);
+      return activitiesManager.getActivitiesInfo(nodeId, activitiesGroupBy);
+    }
+
+    // Return an activities info with error message
+    return new ActivitiesInfo(errMessage, nodeId);
+  }
+
+
+  @GET
+  @Path(RMWSConsts.SCHEDULER_BULK_ACTIVITIES)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  @Override
+  public BulkActivitiesInfo getBulkActivities(
+      @Context HttpServletRequest hsr,
+      @QueryParam(RMWSConsts.GROUP_BY) String groupBy,
+      @QueryParam(RMWSConsts.ACTIVITIES_COUNT)
+      @DefaultValue(DEFAULT_ACTIVITIES_COUNT) int activitiesCount)
+      throws InterruptedException {
+
+    initForReadableEndpoints();
+
+    ActivitiesManager activitiesManager = getActivitiesManager();
+    if (null == activitiesManager) {
+      throw new BadRequestException(ERROR_MSG);
+    }
+
+    RMWSConsts.ActivitiesGroupBy activitiesGroupBy;
+    try {
+      activitiesGroupBy = parseActivitiesGroupBy(groupBy);
+    } catch (IllegalArgumentException e) {
+      throw new BadRequestException(e.getMessage());
+    }
+
+    AbstractYarnScheduler abstractYarnScheduler =
+        (AbstractYarnScheduler) rm.getRMContext().getScheduler();
+
+    List<FiCaSchedulerNode> nodeList =
+        abstractYarnScheduler.getNodeTracker().getAllNodes();
+    if (nodeList.size() == 0) {
+      throw new BadRequestException(
+          "No node manager running in the cluster");
+    }
+
+    if (activitiesCount <= 0) {
+      activitiesCount = Integer.parseInt(DEFAULT_ACTIVITIES_COUNT);
+    }
+    activitiesCount = Math.min(activitiesCount, MAX_ACTIVITIES_COUNT);
+
+    List<ActivitiesInfo> activitiesList = activitiesManager
+        .recordAndGetBulkActivitiesInfo(activitiesCount,
+        activitiesGroupBy);
+    BulkActivitiesInfo bulkActivitiesInfo = new
+        BulkActivitiesInfo();
+    bulkActivitiesInfo.addAll(activitiesList);
+
+    return bulkActivitiesInfo;
+  }
+
+  private ActivitiesManager getActivitiesManager() {
+    YarnScheduler scheduler = rm.getRMContext().getScheduler();
+    if (scheduler instanceof AbstractYarnScheduler) {
+      AbstractYarnScheduler abstractYarnScheduler =
+          (AbstractYarnScheduler) scheduler;
+      ActivitiesManager activitiesManager =
+          abstractYarnScheduler.getActivitiesManager();
+      return activitiesManager;
+    }
     return null;
   }
 
@@ -692,49 +881,151 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
   public AppActivitiesInfo getAppActivities(@Context HttpServletRequest hsr,
-      @QueryParam(RMWSConsts.APP_ID) String appId,
-      @QueryParam(RMWSConsts.MAX_TIME) String time) {
-    YarnScheduler scheduler = rm.getRMContext().getScheduler();
+      @PathParam(RMWSConsts.APPID) String appId,
+      @QueryParam(RMWSConsts.MAX_TIME) String time,
+      @QueryParam(RMWSConsts.REQUEST_PRIORITIES) Set<String> requestPriorities,
+      @QueryParam(RMWSConsts.ALLOCATION_REQUEST_IDS)
+          Set<String> allocationRequestIds,
+      @QueryParam(RMWSConsts.GROUP_BY) String groupBy,
+      @QueryParam(RMWSConsts.LIMIT) String limit,
+      @QueryParam(RMWSConsts.ACTIONS) Set<String> actions,
+      @QueryParam(RMWSConsts.SUMMARIZE) @DefaultValue(DEFAULT_SUMMARIZE)
+          boolean summarize) {
+    initForReadableEndpoints();
 
-    if (scheduler instanceof AbstractYarnScheduler) {
-      AbstractYarnScheduler abstractYarnScheduler =
-          (AbstractYarnScheduler) scheduler;
+    ActivitiesManager activitiesManager = getActivitiesManager();
+    if (null == activitiesManager) {
+      return new AppActivitiesInfo(ERROR_MSG, appId);
+    }
 
-      ActivitiesManager activitiesManager =
-          abstractYarnScheduler.getActivitiesManager();
-      if (null == activitiesManager) {
-        String errMessage = "Not Capacity Scheduler";
-        return new AppActivitiesInfo(errMessage, appId);
-      }
+    if (appId == null) {
+      String errMessage = "Must provide an application Id";
+      return new AppActivitiesInfo(errMessage, null);
+    }
 
-      if (appId == null) {
-        String errMessage = "Must provide an application Id";
-        return new AppActivitiesInfo(errMessage, null);
-      }
+    RMWSConsts.ActivitiesGroupBy activitiesGroupBy;
+    try {
+      activitiesGroupBy = parseActivitiesGroupBy(groupBy);
+    } catch (IllegalArgumentException e) {
+      return new AppActivitiesInfo(e.getMessage(), appId);
+    }
 
-      double maxTime = 3.0;
+    Set<RMWSConsts.AppActivitiesRequiredAction> requiredActions;
+    try {
+      requiredActions =
+          parseAppActivitiesRequiredActions(getFlatSet(actions));
+    } catch (IllegalArgumentException e) {
+      return new AppActivitiesInfo(e.getMessage(), appId);
+    }
 
-      if (time != null) {
-        if (time.contains(".")) {
-          maxTime = Double.parseDouble(time);
-        } else {
-          maxTime = Double.parseDouble(time + ".0");
-        }
-      }
+    Set<Integer> parsedRequestPriorities;
+    try {
+      parsedRequestPriorities = getFlatSet(requestPriorities).stream()
+          .map(e -> Integer.valueOf(e)).collect(Collectors.toSet());
+    } catch (NumberFormatException e) {
+      return new AppActivitiesInfo("request priorities must be integers!",
+          appId);
+    }
+    Set<Long> parsedAllocationRequestIds;
+    try {
+      parsedAllocationRequestIds = getFlatSet(allocationRequestIds).stream()
+          .map(e -> Long.valueOf(e)).collect(Collectors.toSet());
+    } catch (NumberFormatException e) {
+      return new AppActivitiesInfo(
+          "allocation request Ids must be integers!", appId);
+    }
 
-      ApplicationId applicationId;
+    int limitNum = -1;
+    if (limit != null) {
       try {
-        applicationId = ApplicationId.fromString(appId);
-        activitiesManager.turnOnAppActivitiesRecording(applicationId, maxTime);
-        AppActivitiesInfo appActivitiesInfo =
-            activitiesManager.getAppActivitiesInfo(applicationId);
-
-        return appActivitiesInfo;
-      } catch (Exception e) {
-        String errMessage = "Cannot find application with given appId";
-        return new AppActivitiesInfo(errMessage, appId);
+        limitNum = Integer.parseInt(limit);
+        if (limitNum <= 0) {
+          return new AppActivitiesInfo(
+              "limit must be greater than 0!", appId);
+        }
+      } catch (NumberFormatException e) {
+        return new AppActivitiesInfo("limit must be integer!", appId);
       }
+    }
 
+    double maxTime = 3.0;
+
+    if (time != null) {
+      if (time.contains(".")) {
+        maxTime = Double.parseDouble(time);
+      } else {
+        maxTime = Double.parseDouble(time + ".0");
+      }
+    }
+
+    ApplicationId applicationId;
+    try {
+      applicationId = ApplicationId.fromString(appId);
+      if (requiredActions
+          .contains(RMWSConsts.AppActivitiesRequiredAction.REFRESH)) {
+        activitiesManager
+            .turnOnAppActivitiesRecording(applicationId, maxTime);
+      }
+      if (requiredActions
+          .contains(RMWSConsts.AppActivitiesRequiredAction.GET)) {
+        AppActivitiesInfo appActivitiesInfo = activitiesManager
+            .getAppActivitiesInfo(applicationId, parsedRequestPriorities,
+            parsedAllocationRequestIds, activitiesGroupBy, limitNum,
+            summarize, maxTime);
+        return appActivitiesInfo;
+      }
+      return new AppActivitiesInfo("Successfully received "
+          + (actions.size() == 1 ? "action: " : "actions: ")
+          + StringUtils.join(',', actions), appId);
+    } catch (Exception e) {
+      String errMessage = "Cannot find application with given appId";
+      LOG.error(errMessage, e);
+      return new AppActivitiesInfo(errMessage, appId);
+    }
+  }
+
+  private Set<String> getFlatSet(Set<String> set) {
+    if (set == null) {
+      return null;
+    }
+    return set.stream()
+        .flatMap(e -> Arrays.asList(e.split(StringUtils.COMMA_STR)).stream())
+        .collect(Collectors.toSet());
+  }
+
+  private Set<RMWSConsts.AppActivitiesRequiredAction>
+      parseAppActivitiesRequiredActions(Set<String> actions) {
+    Set<RMWSConsts.AppActivitiesRequiredAction> requiredActions =
+        new HashSet<>();
+    if (actions == null || actions.isEmpty()) {
+      requiredActions.add(RMWSConsts.AppActivitiesRequiredAction.REFRESH);
+      requiredActions.add(RMWSConsts.AppActivitiesRequiredAction.GET);
+    } else {
+      for (String action : actions) {
+        if (!EnumUtils.isValidEnum(RMWSConsts.AppActivitiesRequiredAction.class,
+            action.toUpperCase())) {
+          String errMessage =
+              "Got invalid action: " + action + ", valid actions: " + Arrays
+                  .asList(RMWSConsts.AppActivitiesRequiredAction.values());
+          throw new IllegalArgumentException(errMessage);
+        }
+        requiredActions.add(RMWSConsts.AppActivitiesRequiredAction
+            .valueOf(action.toUpperCase()));
+      }
+    }
+    return requiredActions;
+  }
+
+  private RMWSConsts.ActivitiesGroupBy parseActivitiesGroupBy(String groupBy) {
+    if (groupBy != null) {
+      if (!EnumUtils.isValidEnum(RMWSConsts.ActivitiesGroupBy.class,
+          groupBy.toUpperCase())) {
+        String errMessage =
+            "Got invalid groupBy: " + groupBy + ", valid groupBy types: "
+                + Arrays.asList(RMWSConsts.ActivitiesGroupBy.values());
+        throw new IllegalArgumentException(errMessage);
+      }
+      return RMWSConsts.ActivitiesGroupBy.valueOf(groupBy.toUpperCase());
     }
     return null;
   }
@@ -748,7 +1039,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest hsr,
       @QueryParam(RMWSConsts.STATES) Set<String> stateQueries,
       @QueryParam(RMWSConsts.APPLICATION_TYPES) Set<String> typeQueries) {
-    init();
+    initForReadableEndpoints();
 
     // parse the params and build the scoreboard
     // converting state/type name to lowercase
@@ -835,7 +1126,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   public AppInfo getApp(@Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId,
       @QueryParam(RMWSConsts.DESELECTS) Set<String> unselectedFields) {
-    init();
+    initForReadableEndpoints();
+
     ApplicationId id = WebAppUtils.parseApplicationId(recordFactory, appId);
     RMApp app = rm.getRMContext().getRMApps().get(id);
     if (app == null) {
@@ -845,8 +1137,18 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     DeSelectFields deSelectFields = new DeSelectFields();
     deSelectFields.initFields(unselectedFields);
 
-    return new AppInfo(rm, app, hasAccess(app, hsr), hsr.getScheme() + "://",
-        deSelectFields);
+    AppInfo appInfo =  new AppInfo(rm, app, hasAccess(app, hsr),
+        hsr.getScheme() + "://", deSelectFields);
+
+    if (filterInvalidXMLChars) {
+      final String format = hsr.getHeader(HttpHeaders.ACCEPT);
+      if (format != null &&
+          format.toLowerCase().contains(MediaType.APPLICATION_XML)) {
+        appInfo.setNote(escapeInvalidXMLCharacters(appInfo.getNote()));
+      }
+    }
+
+    return appInfo;
   }
 
   @GET
@@ -856,8 +1158,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public AppAttemptsInfo getAppAttempts(@Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId) {
+    initForReadableEndpoints();
 
-    init();
     ApplicationId id = WebAppUtils.parseApplicationId(recordFactory, appId);
     RMApp app = rm.getRMContext().getRMApps().get(id);
     if (app == null) {
@@ -867,7 +1169,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     AppAttemptsInfo appAttemptsInfo = new AppAttemptsInfo();
     for (RMAppAttempt attempt : app.getAppAttempts().values()) {
       AppAttemptInfo attemptInfo = new AppAttemptInfo(rm, attempt,
-          app.getUser(), hsr.getScheme() + "://");
+          hasAccess(app, hsr), app.getUser(), hsr.getScheme() + "://");
       appAttemptsInfo.add(attemptInfo);
     }
 
@@ -883,7 +1185,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest req, @Context HttpServletResponse res,
       @PathParam(RMWSConsts.APPID) String appId,
       @PathParam(RMWSConsts.APPATTEMPTID) String appAttemptId) {
-    init(res);
+    initForReadableEndpoints(res);
     return super.getAppAttempt(req, res, appId, appAttemptId);
   }
 
@@ -896,12 +1198,12 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletResponse res,
       @PathParam(RMWSConsts.APPID) String appId,
       @PathParam(RMWSConsts.APPATTEMPTID) String appAttemptId) {
-    init(res);
+    initForReadableEndpoints(res);
     return super.getContainers(req, res, appId, appAttemptId);
   }
 
   @GET
-  @Path("/apps/{appid}/appattempts/{appattemptid}/containers/{containerid}")
+  @Path(RMWSConsts.GET_CONTAINER)
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
@@ -910,18 +1212,19 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @PathParam(RMWSConsts.APPID) String appId,
       @PathParam(RMWSConsts.APPATTEMPTID) String appAttemptId,
       @PathParam("containerid") String containerId) {
-    init(res);
+    initForReadableEndpoints(res);
     return super.getContainer(req, res, appId, appAttemptId, containerId);
   }
 
   @GET
-  @Path("/apps/{appid}/state")
+  @Path(RMWSConsts.APPS_APPID_STATE)
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
   public AppState getAppState(@Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId) throws AuthorizationException {
-    init();
+    initForReadableEndpoints();
+
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
     String userName = "";
     if (callerUGI != null) {
@@ -957,18 +1260,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId) throws AuthorizationException,
       YarnException, InterruptedException, IOException {
-
-    init();
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      String msg = "Unable to obtain user name, user not authenticated";
-      throw new AuthorizationException(msg);
-    }
-
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      String msg = "The default static user cannot carry out this operation.";
-      return Response.status(Status.FORBIDDEN).entity(msg).build();
-    }
+    initForWritableEndpoints(callerUGI, false);
 
     String userName = callerUGI.getUserName();
     RMApp app = null;
@@ -1007,7 +1300,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public NodeToLabelsInfo getNodeToLabels(@Context HttpServletRequest hsr)
       throws IOException {
-    init();
+    initForReadableEndpoints();
 
     NodeToLabelsInfo ntl = new NodeToLabelsInfo();
     HashMap<String, NodeLabelsInfo> ntlMap = ntl.getNodeToLabels();
@@ -1029,7 +1322,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public LabelsToNodesInfo getLabelsToNodes(
       @QueryParam(RMWSConsts.LABELS) Set<String> labels) throws IOException {
-    init();
+    initForReadableEndpoints();
 
     LabelsToNodesInfo lts = new LabelsToNodesInfo();
     Map<NodeLabelInfo, NodeIDsInfo> ltsMap = lts.getLabelsToNodes();
@@ -1047,8 +1340,10 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       for (NodeId nodeId : entry.getValue()) {
         nodeIdStrList.add(nodeId.toString());
       }
+      Resource resource = rm.getRMContext().getNodeLabelManager()
+          .getResourceByLabel(entry.getKey().getName(), Resources.none());
       ltsMap.put(new NodeLabelInfo(entry.getKey()),
-          new NodeIDsInfo(nodeIdStrList));
+          new NodeIDsInfo(nodeIdStrList, resource));
     }
     return lts;
   }
@@ -1061,6 +1356,9 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   public Response replaceLabelsOnNodes(
       final NodeToLabelsEntryList newNodeToLabels,
       @Context HttpServletRequest hsr) throws IOException {
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
+
     Map<NodeId, Set<String>> nodeIdToLabels =
         new HashMap<NodeId, Set<String>>();
 
@@ -1082,6 +1380,9 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @QueryParam("labels") Set<String> newNodeLabelsName,
       @Context HttpServletRequest hsr, @PathParam("nodeId") String nodeId)
       throws Exception {
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
+
     NodeId nid = ConverterUtils.toNodeIdWithDefaultPort(nodeId);
     Map<NodeId, Set<String>> newLabelsForNode =
         new HashMap<NodeId, Set<String>>();
@@ -1094,7 +1395,6 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   private Response replaceLabelsOnNode(
       Map<NodeId, Set<String>> newLabelsForNode, HttpServletRequest hsr,
       String operation) throws IOException {
-    init();
 
     NodeLabelsUtils.verifyCentralizedNodeLabelConfEnabled("replaceLabelsOnNode",
         isCentralizedNodeLabelConfiguration);
@@ -1128,13 +1428,47 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public NodeLabelsInfo getClusterNodeLabels(@Context HttpServletRequest hsr)
       throws IOException {
-    init();
+    initForReadableEndpoints();
 
     List<NodeLabel> nodeLabels =
         rm.getRMContext().getNodeLabelManager().getClusterNodeLabels();
-    NodeLabelsInfo ret = new NodeLabelsInfo(nodeLabels);
 
-    return ret;
+    ArrayList<NodeLabelInfo> nodeLabelsInfo = new ArrayList<NodeLabelInfo>();
+    for (NodeLabel label: nodeLabels) {
+      Resource resource = rm.getRMContext().getNodeLabelManager()
+          .getResourceByLabel(label.getName(), Resources.none());
+      PartitionInfo partitionInfo =
+          new PartitionInfo(new ResourceInfo(resource));
+      nodeLabelsInfo.add(new NodeLabelInfo(label, partitionInfo));
+    }
+
+    return new NodeLabelsInfo(nodeLabelsInfo);
+  }
+
+  @GET
+  @Path(RMWSConsts.GET_RM_NODE_LABELS)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public NodeLabelsInfo getRMNodeLabels(@Context HttpServletRequest hsr)
+      throws IOException {
+
+    initForReadableEndpoints();
+    RMNodeLabelsManager nlm = rm.getRMContext().getNodeLabelManager();
+
+    ArrayList<NodeLabelInfo> nodeLabelsInfo = new ArrayList<>();
+    for (RMNodeLabel info : nlm.pullRMNodeLabelsInfo()) {
+      String labelName = info.getLabelName().isEmpty() ?
+          NodeLabel.DEFAULT_NODE_LABEL_PARTITION : info.getLabelName();
+      int activeNMs = info.getNumActiveNMs();
+      PartitionInfo partitionInfo =
+          new PartitionInfo(new ResourceInfo(info.getResource()));
+      NodeLabel nodeLabel = NodeLabel.newInstance(labelName, info.getIsExclusive());
+      NodeLabelInfo nodeLabelInfo = new NodeLabelInfo(nodeLabel, partitionInfo);
+      nodeLabelInfo.setActiveNMs(activeNMs);
+      nodeLabelsInfo.add(nodeLabelInfo);
+    }
+
+    return new NodeLabelsInfo(nodeLabelsInfo);
   }
 
   @POST
@@ -1144,14 +1478,9 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public Response addToClusterNodeLabels(final NodeLabelsInfo newNodeLabels,
       @Context HttpServletRequest hsr) throws Exception {
-    init();
-
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      String msg = "Unable to obtain user name, user not authenticated for"
-          + " post to .../add-node-labels";
-      throw new AuthorizationException(msg);
-    }
+    initForWritableEndpoints(callerUGI, false);
+
     if (!rm.getRMContext().getNodeLabelManager().checkAccess(callerUGI)) {
       String msg = "User " + callerUGI.getShortUserName() + " not authorized"
           + " for post to .../add-node-labels ";
@@ -1174,17 +1503,12 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
-  public Response removeFromCluserNodeLabels(
+  public Response removeFromClusterNodeLabels(
       @QueryParam(RMWSConsts.LABELS) Set<String> oldNodeLabels,
       @Context HttpServletRequest hsr) throws Exception {
-    init();
-
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      String msg = "Unable to obtain user name, user not authenticated for"
-          + " post to .../remove-node-labels";
-      throw new AuthorizationException(msg);
-    }
+    initForWritableEndpoints(callerUGI, false);
+
     if (!rm.getRMContext().getNodeLabelManager().checkAccess(callerUGI)) {
       String msg = "User " + callerUGI.getShortUserName() + " not authorized"
           + " for post to .../remove-node-labels ";
@@ -1208,7 +1532,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public NodeLabelsInfo getLabelsOnNode(@Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.NODEID) String nodeId) throws IOException {
-    init();
+    initForReadableEndpoints();
 
     NodeId nid = ConverterUtils.toNodeIdWithDefaultPort(nodeId);
     List<NodeLabel> labels = new ArrayList<NodeLabel>(
@@ -1278,7 +1602,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public AppPriority getAppPriority(@Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId) throws AuthorizationException {
-    init();
+    initForReadableEndpoints();
+
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
     String userName = "UNKNOWN-USER";
     if (callerUGI != null) {
@@ -1310,21 +1635,11 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId) throws AuthorizationException,
       YarnException, InterruptedException, IOException {
-    init();
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
+
     if (targetPriority == null) {
       throw new YarnException("Target Priority cannot be null");
-    }
-
-    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      throw new AuthorizationException(
-          "Unable to obtain user name, user not authenticated");
-    }
-
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      return Response.status(Status.FORBIDDEN)
-          .entity("The default static user cannot carry out this operation.")
-          .build();
     }
 
     String userName = callerUGI.getUserName();
@@ -1395,7 +1710,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public AppQueue getAppQueue(@Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId) throws AuthorizationException {
-    init();
+    initForReadableEndpoints();
+
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
     String userName = "UNKNOWN-USER";
     if (callerUGI != null) {
@@ -1428,17 +1744,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @PathParam(RMWSConsts.APPID) String appId) throws AuthorizationException,
       YarnException, InterruptedException, IOException {
 
-    init();
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      String msg = "Unable to obtain user name, user not authenticated";
-      throw new AuthorizationException(msg);
-    }
-
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      String msg = "The default static user cannot carry out this operation.";
-      return Response.status(Status.FORBIDDEN).entity(msg).build();
-    }
+    initForWritableEndpoints(callerUGI, false);
 
     String userName = callerUGI.getUserName();
     RMApp app = null;
@@ -1549,16 +1856,12 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public Response createNewApplication(@Context HttpServletRequest hsr)
       throws AuthorizationException, IOException, InterruptedException {
-    init();
-    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      throw new AuthorizationException(
-          "Unable to obtain user name, " + "user not authenticated");
-    }
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      String msg = "The default static user cannot carry out this operation.";
+    if (!enableRestAppSubmissions) {
+      String msg = "App submission via REST is disabled.";
       return Response.status(Status.FORBIDDEN).entity(msg).build();
     }
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
 
     NewApplication appId = createNewApplication();
     return Response.status(Status.OK).entity(appId).build();
@@ -1577,18 +1880,13 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   public Response submitApplication(ApplicationSubmissionContextInfo newApp,
       @Context HttpServletRequest hsr)
       throws AuthorizationException, IOException, InterruptedException {
-
-    init();
-    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      throw new AuthorizationException(
-          "Unable to obtain user name, " + "user not authenticated");
-    }
-
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      String msg = "The default static user cannot carry out this operation.";
+    if (!enableRestAppSubmissions) {
+      String msg = "App submission via REST is disabled.";
       return Response.status(Status.FORBIDDEN).entity(msg).build();
     }
+
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
 
     ApplicationSubmissionContext appContext =
         RMWebAppUtil.createAppSubmissionContext(newApp, conf);
@@ -1642,14 +1940,9 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     return appId;
   }
 
-  private UserGroupInformation createKerberosUserGroupInformation(
-      HttpServletRequest hsr) throws AuthorizationException, YarnException {
-
-    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      String msg = "Unable to obtain user name, user not authenticated";
-      throw new AuthorizationException(msg);
-    }
+  private void createKerberosUserGroupInformation(HttpServletRequest hsr,
+      UserGroupInformation callerUGI)
+      throws AuthorizationException, YarnException {
 
     String authType = hsr.getAuthType();
     if (!KerberosAuthenticationHandler.TYPE.equalsIgnoreCase(authType)) {
@@ -1660,14 +1953,10 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     }
     if (hsr.getAttribute(
         DelegationTokenAuthenticationHandler.DELEGATION_TOKEN_UGI_ATTRIBUTE) != null) {
-      String msg =
-          "Delegation token operations cannot be carried out using delegation"
-              + " token authentication.";
+      String msg = "Delegation token operations cannot be carried out using "
+          + "delegation token authentication.";
       throw new YarnException(msg);
     }
-
-    callerUGI.setAuthenticationMethod(AuthenticationMethod.KERBEROS);
-    return callerUGI;
   }
 
   @POST
@@ -1680,10 +1969,12 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest hsr) throws AuthorizationException,
       IOException, InterruptedException, Exception {
 
-    init();
-    UserGroupInformation callerUGI;
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
+
     try {
-      callerUGI = createKerberosUserGroupInformation(hsr);
+      createKerberosUserGroupInformation(hsr, callerUGI);
+      callerUGI.setAuthenticationMethod(AuthenticationMethod.KERBEROS);
     } catch (YarnException ye) {
       return Response.status(Status.FORBIDDEN).entity(ye.getMessage()).build();
     }
@@ -1700,10 +1991,12 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       throws AuthorizationException, IOException, InterruptedException,
       Exception {
 
-    init();
-    UserGroupInformation callerUGI;
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
+
     try {
-      callerUGI = createKerberosUserGroupInformation(hsr);
+      createKerberosUserGroupInformation(hsr, callerUGI);
+      callerUGI.setAuthenticationMethod(AuthenticationMethod.KERBEROS);
     } catch (YarnException ye) {
       return Response.status(Status.FORBIDDEN).entity(ye.getMessage()).build();
     }
@@ -1815,10 +2108,12 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       throws AuthorizationException, IOException, InterruptedException,
       Exception {
 
-    init();
-    UserGroupInformation callerUGI;
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
+
     try {
-      callerUGI = createKerberosUserGroupInformation(hsr);
+      createKerberosUserGroupInformation(hsr, callerUGI);
+      callerUGI.setAuthenticationMethod(AuthenticationMethod.KERBEROS);
     } catch (YarnException ye) {
       return Response.status(Status.FORBIDDEN).entity(ye.getMessage()).build();
     }
@@ -1892,16 +2187,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public Response createNewReservation(@Context HttpServletRequest hsr)
       throws AuthorizationException, IOException, InterruptedException {
-    init();
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      throw new AuthorizationException(
-          "Unable to obtain user name, " + "user not authenticated");
-    }
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      String msg = "The default static user cannot carry out this operation.";
-      return Response.status(Status.FORBIDDEN).entity(msg).build();
-    }
+    initForWritableEndpoints(callerUGI, false);
 
     NewReservation reservationId = createNewReservation();
     return Response.status(Status.OK).entity(reservationId).build();
@@ -1941,16 +2228,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest hsr)
       throws AuthorizationException, IOException, InterruptedException {
 
-    init();
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      throw new AuthorizationException(
-          "Unable to obtain user name, " + "user not authenticated");
-    }
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      String msg = "The default static user cannot carry out this operation.";
-      return Response.status(Status.FORBIDDEN).entity(msg).build();
-    }
+    initForWritableEndpoints(callerUGI, false);
 
     final ReservationSubmissionRequest reservation =
         createReservationSubmissionRequest(resContext);
@@ -2039,16 +2318,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest hsr)
       throws AuthorizationException, IOException, InterruptedException {
 
-    init();
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      throw new AuthorizationException(
-          "Unable to obtain user name, " + "user not authenticated");
-    }
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      String msg = "The default static user cannot carry out this operation.";
-      return Response.status(Status.FORBIDDEN).entity(msg).build();
-    }
+    initForWritableEndpoints(callerUGI, false);
 
     final ReservationUpdateRequest reservation =
         createReservationUpdateRequest(resContext);
@@ -2096,7 +2367,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     }
     if (resContext.getReservationId() == null) {
       throw new BadRequestException(
-          "Update operations must specify an existing ReservaitonId");
+          "Update operations must specify an existing ReservationId");
     }
 
     ReservationRequestInterpreter[] values =
@@ -2138,16 +2409,8 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest hsr)
       throws AuthorizationException, IOException, InterruptedException {
 
-    init();
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      throw new AuthorizationException(
-          "Unable to obtain user name, " + "user not authenticated");
-    }
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      String msg = "The default static user cannot carry out this operation.";
-      return Response.status(Status.FORBIDDEN).entity(msg).build();
-    }
+    initForWritableEndpoints(callerUGI, false);
 
     final ReservationDeleteRequest reservation =
         createReservationDeleteRequest(resContext);
@@ -2195,7 +2458,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @QueryParam(RMWSConsts.END_TIME) @DefaultValue(DEFAULT_END_TIME) long endTime,
       @QueryParam(RMWSConsts.INCLUDE_RESOURCE) @DefaultValue(DEFAULT_INCLUDE_RESOURCE) boolean includeResourceAllocations,
       @Context HttpServletRequest hsr) throws Exception {
-    init();
+    initForReadableEndpoints();
 
     final ReservationListRequest request = ReservationListRequest.newInstance(
         queue, reservationId, startTime, endTime, includeResourceAllocations);
@@ -2241,7 +2504,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   public AppTimeoutInfo getAppTimeout(@Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId,
       @PathParam(RMWSConsts.TYPE) String type) throws AuthorizationException {
-    init();
+    initForReadableEndpoints();
     RMApp app = validateAppTimeoutRequest(hsr, appId);
 
     ApplicationTimeoutType appTimeoutType = parseTimeoutType(type);
@@ -2285,7 +2548,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public AppTimeoutsInfo getAppTimeouts(@Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId) throws AuthorizationException {
-    init();
+    initForReadableEndpoints();
 
     RMApp app = validateAppTimeoutRequest(hsr, appId);
 
@@ -2343,19 +2606,9 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       @Context HttpServletRequest hsr,
       @PathParam(RMWSConsts.APPID) String appId) throws AuthorizationException,
       YarnException, InterruptedException, IOException {
-    init();
 
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI == null) {
-      throw new AuthorizationException(
-          "Unable to obtain user name, user not authenticated");
-    }
-
-    if (UserGroupInformation.isSecurityEnabled() && isStaticUser(callerUGI)) {
-      return Response.status(Status.FORBIDDEN)
-          .entity("The default static user cannot carry out this operation.")
-          .build();
-    }
+    initForWritableEndpoints(callerUGI, false);
 
     String userName = callerUGI.getUserName();
     RMApp app = null;
@@ -2460,62 +2713,222 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     return rm.getClientRMService().getContainers(request).getContainerList();
   }
 
+  @GET
+  @Path(RMWSConsts.FORMAT_SCHEDULER_CONF)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public Response formatSchedulerConfiguration(@Context HttpServletRequest hsr)
+      throws AuthorizationException {
+    // Only admin user allowed to format scheduler conf in configuration store
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, true);
+
+    ResourceScheduler scheduler = rm.getResourceScheduler();
+    if (isConfigurationMutable(scheduler)) {
+      try {
+        MutableConfigurationProvider mutableConfigurationProvider =
+            ((MutableConfScheduler) scheduler).getMutableConfProvider();
+        mutableConfigurationProvider.formatConfigurationInStore(conf);
+        try {
+          rm.getRMContext().getRMAdminService().refreshQueues();
+        } catch (IOException | YarnException e) {
+          LOG.error("Exception thrown when formatting configuration.", e);
+          mutableConfigurationProvider.revertToOldConfig(conf);
+          throw e;
+        }
+        return Response.status(Status.OK).entity("Configuration under " +
+            "store successfully formatted.").build();
+      } catch (Exception e) {
+        LOG.error("Exception thrown when formatting configuration", e);
+        return Response.status(Status.BAD_REQUEST).entity(e.getMessage())
+            .build();
+      }
+    } else {
+      return Response.status(Status.BAD_REQUEST)
+          .entity("Scheduler Configuration format only supported by " +
+              MutableConfScheduler.class.getSimpleName()).build();
+    }
+  }
+
+  @POST
+  @Path(RMWSConsts.SCHEDULER_CONF_VALIDATE)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+          MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  public synchronized Response validateAndGetSchedulerConfiguration(
+          SchedConfUpdateInfo mutationInfo,
+          @Context HttpServletRequest hsr) throws AuthorizationException {
+    // Only admin user is allowed to read scheduler conf,
+    // in order to avoid leaking sensitive info, such as ACLs
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, true);
+    ResourceScheduler scheduler = rm.getResourceScheduler();
+    if (isConfigurationMutable(scheduler)) {
+      try {
+        MutableConfigurationProvider mutableConfigurationProvider =
+                ((MutableConfScheduler) scheduler).getMutableConfProvider();
+        Configuration schedulerConf = mutableConfigurationProvider
+                .getConfiguration();
+        Configuration newSchedulerConf = mutableConfigurationProvider
+                .applyChanges(schedulerConf, mutationInfo);
+        Configuration yarnConf = ((CapacityScheduler) scheduler).getConf();
+
+        Configuration newConfig = new Configuration(yarnConf);
+        Iterator<Map.Entry<String, String>> iter = newSchedulerConf.iterator();
+        Entry<String, String> e = null;
+        while (iter.hasNext()) {
+          e = iter.next();
+          newConfig.set(e.getKey(), e.getValue());
+        }
+        CapacitySchedulerConfigValidator.validateCSConfiguration(yarnConf,
+                newConfig, rm.getRMContext());
+
+        return Response.status(Status.OK)
+                .entity(new ConfInfo(newSchedulerConf))
+                .build();
+      } catch (Exception e) {
+        String errorMsg = "CapacityScheduler configuration validation failed:"
+                  + e.toString();
+        LOG.warn(errorMsg);
+        return Response.status(Status.BAD_REQUEST)
+                  .entity(errorMsg)
+                  .build();
+      }
+    } else {
+      String errorMsg = String.format("Configuration change validation only supported by %s.",
+          MutableConfScheduler.class.getSimpleName());
+      LOG.warn(errorMsg);
+      return Response.status(Status.BAD_REQUEST)
+              .entity(errorMsg)
+              .build();
+    }
+  }
+
   @PUT
-  @Path("/scheduler-conf")
+  @Path(RMWSConsts.SCHEDULER_CONF)
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
   public synchronized Response updateSchedulerConfiguration(SchedConfUpdateInfo
       mutationInfo, @Context HttpServletRequest hsr)
       throws AuthorizationException, InterruptedException {
-    init();
-
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    ApplicationACLsManager aclsManager = rm.getApplicationACLsManager();
-    if (aclsManager.areACLsEnabled()) {
-      if (callerUGI == null || !aclsManager.isAdmin(callerUGI)) {
-        String msg = "Only admins can carry out this operation.";
-        throw new ForbiddenException(msg);
-      }
-    }
+    initForWritableEndpoints(callerUGI, true);
 
     ResourceScheduler scheduler = rm.getResourceScheduler();
-    if (scheduler instanceof MutableConfScheduler && ((MutableConfScheduler)
-        scheduler).isConfigurationMutable()) {
+    if (!(scheduler instanceof MutableConfScheduler)) {
+      return Response.status(Status.BAD_REQUEST)
+          .entity("Configuration change only supported by MutableConfScheduler.").build();
+    } else if (!((MutableConfScheduler) scheduler).isConfigurationMutable()) {
+      return Response.status(Status.BAD_REQUEST)
+          .entity("Configuration change only supported by mutable configuration store.").build();
+    } else {
       try {
-        callerUGI.doAs(new PrivilegedExceptionAction<Void>() {
-          @Override
-          public Void run() throws Exception {
-            MutableConfigurationProvider provider = ((MutableConfScheduler)
-                scheduler).getMutableConfProvider();
-            if (!provider.getAclMutationPolicy().isMutationAllowed(callerUGI,
-                mutationInfo)) {
-              throw new org.apache.hadoop.security.AccessControlException("User"
-                  + " is not admin of all modified queues.");
-            }
-            provider.logAndApplyMutation(callerUGI, mutationInfo);
-            try {
-              rm.getRMContext().getRMAdminService().refreshQueues();
-            } catch (IOException | YarnException e) {
-              provider.confirmPendingMutation(false);
-              throw e;
-            }
-            provider.confirmPendingMutation(true);
-            return null;
-          }
+        callerUGI.doAs((PrivilegedExceptionAction<Void>) () -> {
+          MutableConfigurationProvider provider =
+              ((MutableConfScheduler) scheduler).getMutableConfProvider();
+          LogMutation logMutation = applyMutation(provider, callerUGI, mutationInfo);
+          return refreshQueues(provider, logMutation);
         });
       } catch (IOException e) {
         LOG.error("Exception thrown when modifying configuration.", e);
+        return Response.status(Status.BAD_REQUEST).entity(e.getMessage()).build();
+      }
+      return Response.status(Status.OK).entity("Configuration change successfully applied.")
+          .build();
+    }
+  }
+
+  private Void refreshQueues(MutableConfigurationProvider provider, LogMutation logMutation)
+      throws Exception {
+    try {
+      rm.getRMContext().getRMAdminService().refreshQueues();
+    } catch (IOException | YarnException e) {
+      provider.confirmPendingMutation(logMutation, false);
+      throw e;
+    }
+    provider.confirmPendingMutation(logMutation, true);
+    return null;
+  }
+
+  private LogMutation applyMutation(MutableConfigurationProvider provider,
+      UserGroupInformation callerUGI, SchedConfUpdateInfo mutationInfo) throws Exception {
+    if (!provider.getAclMutationPolicy().isMutationAllowed(callerUGI,
+        mutationInfo)) {
+      throw new org.apache.hadoop.security.AccessControlException("User"
+          + " is not admin of all modified queues.");
+    }
+    return provider.logAndApplyMutation(callerUGI,
+        mutationInfo);
+  }
+
+  private boolean isConfigurationMutable(ResourceScheduler scheduler) {
+    return scheduler instanceof MutableConfScheduler && ((MutableConfScheduler)
+        scheduler).isConfigurationMutable();
+  }
+
+  @GET
+  @Path(RMWSConsts.SCHEDULER_CONF)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public Response getSchedulerConfiguration(@Context HttpServletRequest hsr)
+      throws AuthorizationException {
+    // Only admin user is allowed to read scheduler conf,
+    // in order to avoid leaking sensitive info, such as ACLs
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, true);
+
+    ResourceScheduler scheduler = rm.getResourceScheduler();
+    if (isConfigurationMutable(scheduler)) {
+      MutableConfigurationProvider mutableConfigurationProvider =
+          ((MutableConfScheduler) scheduler).getMutableConfProvider();
+      // We load the cached configuration from configuration store,
+      // this should be the conf properties used by the scheduler.
+      Configuration schedulerConf = mutableConfigurationProvider
+          .getConfiguration();
+      return Response.status(Status.OK)
+          .entity(new ConfInfo(schedulerConf))
+          .build();
+    } else {
+      return Response.status(Status.BAD_REQUEST).entity(
+              String.format("This API only supports to retrieve scheduler configuration"
+                  + " from a mutable-conf scheduler, underneath scheduler %s"
+                  + " is not an instance of %s",
+                  scheduler.getClass().getSimpleName(),
+                  MutableConfScheduler.class.getSimpleName()))
+          .build();
+    }
+  }
+
+  @GET
+  @Path(RMWSConsts.SCHEDULER_CONF_VERSION)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public Response getSchedulerConfigurationVersion(@Context
+      HttpServletRequest hsr) throws AuthorizationException {
+    // Only admin user is allowed to get scheduler conf version
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, true);
+
+    ResourceScheduler scheduler = rm.getResourceScheduler();
+    if (isConfigurationMutable(scheduler)) {
+      MutableConfigurationProvider mutableConfigurationProvider =
+          ((MutableConfScheduler) scheduler).getMutableConfProvider();
+
+      try {
+        long configVersion = mutableConfigurationProvider
+            .getConfigVersion();
+        return Response.status(Status.OK)
+            .entity(new ConfigVersionInfo(configVersion)).build();
+      } catch (Exception e) {
+        LOG.error("Exception thrown when fetching configuration version.", e);
         return Response.status(Status.BAD_REQUEST).entity(e.getMessage())
             .build();
       }
-      return Response.status(Status.OK).entity("Configuration change " +
-          "successfully applied.").build();
     } else {
       return Response.status(Status.BAD_REQUEST)
-          .entity("Configuration change only supported by " +
-              "MutableConfScheduler.")
-          .build();
+          .entity(String.format("Configuration Version only supported by %s.",
+              MutableConfScheduler.class.getSimpleName())).build();
     }
   }
 
@@ -2523,50 +2936,99 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Path(RMWSConsts.CHECK_USER_ACCESS_TO_QUEUE)
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
                 MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
-  public Response checkUserAccessToQueue(
+  public RMQueueAclInfo checkUserAccessToQueue(
       @PathParam(RMWSConsts.QUEUE) String queue,
       @QueryParam(RMWSConsts.USER) String username,
       @QueryParam(RMWSConsts.QUEUE_ACL_TYPE)
         @DefaultValue("SUBMIT_APPLICATIONS") String queueAclType,
       @Context HttpServletRequest hsr) throws AuthorizationException {
-    init();
+    initForReadableEndpoints();
+
+    // For the user who invokes this REST call, he/she should have admin access
+    // to the queue. Otherwise, we will reject the call.
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    if (callerUGI != null && !this.rm.getResourceScheduler().checkAccess(
+        callerUGI, QueueACL.ADMINISTER_QUEUE, queue)) {
+      throw new ForbiddenException(
+          "User=" + callerUGI.getUserName() + " doesn't haven access to queue="
+              + queue + " so it cannot check ACLs for other users.");
+    }
+
+    // Create UGI for the to-be-checked user.
+    UserGroupInformation user = UserGroupInformation.createRemoteUser(username);
+    if (user == null) {
+      throw new ForbiddenException(
+          "Failed to retrieve UserGroupInformation for user=" + username);
+    }
 
     // Check if the specified queue acl is valid.
     QueueACL queueACL;
     try {
       queueACL = QueueACL.valueOf(queueAclType);
     } catch (IllegalArgumentException e) {
-      return Response.status(Status.BAD_REQUEST).entity(
-          "Specified queueAclType=" + queueAclType
-              + " is not a valid type, valid queue acl types={"
-              + "SUBMIT_APPLICATIONS/ADMINISTER_QUEUE}").build();
-    }
-
-    // For the user who invokes this REST call, he/she should have admin access
-    // to the queue. Otherwise we will reject the call.
-    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
-    if (callerUGI != null && !this.rm.getResourceScheduler().checkAccess(
-        callerUGI, QueueACL.ADMINISTER_QUEUE, queue)) {
-      return Response.status(Status.FORBIDDEN).entity(
-          "User=" + callerUGI.getUserName() + " doesn't haven access to queue="
-              + queue + " so it cannot check ACLs for other users.")
-          .build();
-    }
-
-    // Create UGI for the to-be-checked user.
-    UserGroupInformation user = UserGroupInformation.createRemoteUser(username);
-    if (user == null) {
-      return Response.status(Status.FORBIDDEN).entity(
-          "Failed to retrieve UserGroupInformation for user=" + username)
-          .build();
+      throw new BadRequestException("Specified queueAclType=" + queueAclType
+          + " is not a valid type, valid queue acl types={"
+          + "SUBMIT_APPLICATIONS/ADMINISTER_QUEUE}");
     }
 
     if (!this.rm.getResourceScheduler().checkAccess(user, queueACL, queue)) {
-      return Response.status(Status.FORBIDDEN).entity(
+      return new RMQueueAclInfo(false, user.getUserName(),
           "User=" + username + " doesn't have access to queue=" + queue
-              + " with acl-type=" + queueAclType).build();
+              + " with acl-type=" + queueAclType);
     }
 
-    return Response.status(Status.OK).build();
+    return new RMQueueAclInfo(true, user.getUserName(), "");
+  }
+
+  @POST
+  @Path(RMWSConsts.SIGNAL_TO_CONTAINER)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Override
+  public Response signalToContainer(
+      @PathParam(RMWSConsts.CONTAINERID) String containerId,
+      @PathParam(RMWSConsts.COMMAND) String command,
+      @Context HttpServletRequest hsr)
+      throws AuthorizationException {
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, false);
+    if (!EnumUtils.isValidEnum(
+        SignalContainerCommand.class, command.toUpperCase())) {
+      String errMsg =
+          "Invalid command: " + command.toUpperCase() + ", valid commands are: "
+              + Arrays.asList(SignalContainerCommand.values());
+      return Response.status(Status.BAD_REQUEST).entity(errMsg).build();
+    }
+    try {
+      ContainerId containerIdObj = ContainerId.fromString(containerId);
+      rm.getClientRMService().signalToContainer(SignalContainerRequest
+          .newInstance(containerIdObj,
+              SignalContainerCommand.valueOf(command.toUpperCase())));
+    } catch (Exception e) {
+      return Response.status(Status.INTERNAL_SERVER_ERROR)
+          .entity(e.getMessage()).build();
+    }
+    return Response.status(Status.OK).entity("signal success").build();
+  }
+
+  @GET
+  @Path(RMWSConsts.SCHEDULER_OVERVIEW)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public SchedulerOverviewInfo getSchedulerOverview() {
+    initForReadableEndpoints();
+    ResourceScheduler rs = rm.getResourceScheduler();
+    return new SchedulerOverviewInfo(rs);
+  }
+
+  @VisibleForTesting
+  public LRUCache<AppsCacheKey, AppsInfo> getAppsLRUCache(){
+    return appsLRUCache;
+  }
+
+  @VisibleForTesting
+  public void setResponse(HttpServletResponse response) {
+    this.response = response;
   }
 }

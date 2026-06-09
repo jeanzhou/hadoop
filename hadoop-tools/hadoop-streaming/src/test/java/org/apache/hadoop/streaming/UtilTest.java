@@ -26,13 +26,13 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 
 class UtilTest {
 
-  private static final Log LOG = LogFactory.getLog(UtilTest.class);
+  private static final Logger LOG = LoggerFactory.getLogger(UtilTest.class);
 
   /**
    * Utility routine to recurisvely delete a directory.
@@ -86,7 +86,7 @@ class UtilTest {
   }
 
   public static String collate(List<String> args, String sep) {
-    StringBuffer buf = new StringBuffer();
+    StringBuilder buf = new StringBuilder();
     Iterator<String> it = args.iterator();
     while (it.hasNext()) {
       if (buf.length() > 0) {

@@ -19,19 +19,26 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import java.io.*;
+import java.net.URI;
 import java.util.*;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.DF;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
-import org.junit.Test;
+import org.apache.hadoop.util.Shell;
+import org.opentest4j.TestAbortedException;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestDataDirs {
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testDataDirParsing() throws Throwable {
     Configuration conf = new Configuration();
     List<StorageLocation> locations;
@@ -43,32 +50,36 @@ public class TestDataDirs {
 
     File dir5 = new File("/dir5");
     File dir6 = new File("/dir6");
+    File dir7 = new File("/dir7");
     // Verify that a valid string is correctly parsed, and that storage
     // type is not case-sensitive and we are able to handle white-space between
     // storage type and URI.
     String locations1 = "[disk]/dir0,[DISK]/dir1,[sSd]/dir2,[disK]/dir3," +
-            "[ram_disk]/dir4,[disk]/dir5, [disk] /dir6, [disk] ";
+            "[ram_disk]/dir4,[disk]/dir5, [disk] /dir6, [disk] , [nvdimm]/dir7";
     conf.set(DFS_DATANODE_DATA_DIR_KEY, locations1);
     locations = DataNode.getStorageLocations(conf);
-    assertThat(locations.size(), is(8));
-    assertThat(locations.get(0).getStorageType(), is(StorageType.DISK));
-    assertThat(locations.get(0).getUri(), is(dir0.toURI()));
-    assertThat(locations.get(1).getStorageType(), is(StorageType.DISK));
-    assertThat(locations.get(1).getUri(), is(dir1.toURI()));
-    assertThat(locations.get(2).getStorageType(), is(StorageType.SSD));
-    assertThat(locations.get(2).getUri(), is(dir2.toURI()));
-    assertThat(locations.get(3).getStorageType(), is(StorageType.DISK));
-    assertThat(locations.get(3).getUri(), is(dir3.toURI()));
-    assertThat(locations.get(4).getStorageType(), is(StorageType.RAM_DISK));
-    assertThat(locations.get(4).getUri(), is(dir4.toURI()));
-    assertThat(locations.get(5).getStorageType(), is(StorageType.DISK));
-    assertThat(locations.get(5).getUri(), is(dir5.toURI()));
-    assertThat(locations.get(6).getStorageType(), is(StorageType.DISK));
-    assertThat(locations.get(6).getUri(), is(dir6.toURI()));
+    assertThat(locations.size()).isEqualTo(9);
+    assertThat(locations.get(0).getStorageType()).isEqualTo(StorageType.DISK);
+    assertThat(locations.get(0).getUri()).isEqualTo(dir0.toURI());
+    assertThat(locations.get(1).getStorageType()).isEqualTo(StorageType.DISK);
+    assertThat(locations.get(1).getUri()).isEqualTo(dir1.toURI());
+    assertThat(locations.get(2).getStorageType()).isEqualTo(StorageType.SSD);
+    assertThat(locations.get(2).getUri()).isEqualTo(dir2.toURI());
+    assertThat(locations.get(3).getStorageType()).isEqualTo(StorageType.DISK);
+    assertThat(locations.get(3).getUri()).isEqualTo(dir3.toURI());
+    assertThat(locations.get(4).getStorageType()).isEqualTo(StorageType.RAM_DISK);
+    assertThat(locations.get(4).getUri()).isEqualTo(dir4.toURI());
+    assertThat(locations.get(5).getStorageType()).isEqualTo(StorageType.DISK);
+    assertThat(locations.get(5).getUri()).isEqualTo(dir5.toURI());
+    assertThat(locations.get(6).getStorageType()).isEqualTo(StorageType.DISK);
+    assertThat(locations.get(6).getUri()).isEqualTo(dir6.toURI());
 
     // not asserting the 8th URI since it is incomplete and it in the
     // test set to make sure that we don't fail if we get URIs like that.
-    assertThat(locations.get(7).getStorageType(), is(StorageType.DISK));
+    assertThat(locations.get(7).getStorageType()).isEqualTo(StorageType.DISK);
+
+    assertThat(locations.get(8).getStorageType()).isEqualTo(StorageType.NVDIMM);
+    assertThat(locations.get(8).getUri()).isEqualTo(dir7.toURI());
 
     // Verify that an unrecognized storage type result in an exception.
     String locations2 = "[BadMediaType]/dir0,[ssd]/dir1,[disk]/dir2";
@@ -85,10 +96,69 @@ public class TestDataDirs {
     String locations3 = "/dir0,/dir1";
     conf.set(DFS_DATANODE_DATA_DIR_KEY, locations3);
     locations = DataNode.getStorageLocations(conf);
-    assertThat(locations.size(), is(2));
-    assertThat(locations.get(0).getStorageType(), is(StorageType.DISK));
-    assertThat(locations.get(0).getUri(), is(dir0.toURI()));
-    assertThat(locations.get(1).getStorageType(), is(StorageType.DISK));
-    assertThat(locations.get(1).getUri(), is(dir1.toURI()));
+    assertThat(locations.size()).isEqualTo(2);
+    assertThat(locations.get(0).getStorageType()).isEqualTo(StorageType.DISK);
+    assertThat(locations.get(0).getUri()).isEqualTo(dir0.toURI());
+    assertThat(locations.get(1).getStorageType()).isEqualTo(StorageType.DISK);
+    assertThat(locations.get(1).getUri()).isEqualTo(dir1.toURI());
+  }
+
+  @Test
+  public void testDataDirFileSystem() throws Exception {
+    if (Shell.MAC) {
+      throw new TestAbortedException("Not supported on MAC OS");
+    }
+    Configuration conf = new Configuration();
+    String archiveDir = "/home";
+    String location = "[DISK]/dir1,[ARCHIVE]" + archiveDir;
+    conf.set(DFS_DATANODE_DATA_DIR_KEY, location);
+
+    // NO any filesystem is set, should do as before
+    List<StorageLocation> locations = DataNode.getStorageLocations(conf);
+    assertEquals(2, locations.size());
+
+    // Set the filesystem of archive as NOT existing filesystem
+    // the archive directory should not be added.
+    conf.set("dfs.datanode.storagetype.ARCHIVE.filesystem",
+        "nothis_filesystem");
+    locations = DataNode.getStorageLocations(conf);
+    assertEquals(1, locations.size());
+
+    // Set the filesystem of archive as right filesystem
+    // the archive directory should be added.
+    DF df = new DF(new File(archiveDir), conf);
+    String fsInfo = df.getFilesystem();
+    conf.set("dfs.datanode.storagetype.ARCHIVE.filesystem", fsInfo);
+    locations = DataNode.getStorageLocations(conf);
+    assertEquals(2, locations.size());
+  }
+
+  @Test
+  public void testCapacityRatioForDataDir() {
+    // Good case
+    String config = "[0.9 ]/disk /2, [0.1]/disk2/1";
+    Map<URI, Double> map = StorageLocation.parseCapacityRatio(config);
+    assertEquals(0.9, map.get(new Path("/disk/2").toUri()), 0);
+    assertEquals(0.1, map.get(new Path("/disk2/1").toUri()), 0);
+
+    // config without capacity ratio
+    config = "[0.9 ]/disk /2, /disk2/1";
+    try {
+      StorageLocation.parseCapacityRatio(config);
+      fail("Should fail parsing");
+    } catch (IllegalArgumentException e) {
+      assertTrue(e.getMessage().contains(
+          "Capacity ratio config is not with correct form"));
+    }
+
+    // config with bad capacity ratio
+    config = "[11.1]/disk /2";
+    try {
+      StorageLocation.parseCapacityRatio(config);
+      fail("Should fail parsing");
+    } catch (IllegalArgumentException e) {
+      assertTrue(e.getMessage().contains("is not between 0 to 1"));
+    }
+
   }
 }

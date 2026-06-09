@@ -18,21 +18,22 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.webapp;
 
-import com.google.inject.Guice;
-import com.google.inject.servlet.ServletModule;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.ClientResponse.Status;
-import com.sun.jersey.api.client.GenericType;
-import com.sun.jersey.api.client.UniformInterfaceException;
-import com.sun.jersey.api.client.WebResource;
-import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
-import com.sun.jersey.test.framework.WebAppDescriptor;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+
+import org.apache.hadoop.yarn.server.nodemanager.api.deviceplugin.Device;
+import org.apache.hadoop.yarn.server.nodemanager.webapp.dao.NMDeviceResourceInfo;
+import org.apache.hadoop.yarn.server.nodemanager.webapp.jsonprovider.NMJsonProvider;
+import org.glassfish.jersey.internal.inject.AbstractBinder;
+import org.glassfish.jersey.server.ResourceConfig;
+import org.glassfish.jersey.test.TestProperties;
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.util.VersionInfo;
+import org.apache.hadoop.util.XMLUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -42,10 +43,10 @@ import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.logaggregation.ContainerLogAggregationType;
 import org.apache.hadoop.yarn.logaggregation.ContainerLogFileInfo;
+import org.apache.hadoop.yarn.logaggregation.ContainerLogMeta;
 import org.apache.hadoop.yarn.logaggregation.TestContainerLogsUtils;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
-import org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
 import org.apache.hadoop.yarn.server.nodemanager.ResourceView;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.ApplicationImpl;
@@ -55,6 +56,7 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.ResourcePluginManager;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu.AssignedGpuDevice;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu.GpuDevice;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.webapp.WebServer.NMWebApp;
 import org.apache.hadoop.yarn.server.nodemanager.webapp.dao.NMResourceInfo;
 import org.apache.hadoop.yarn.server.nodemanager.webapp.dao.gpu.GpuDeviceInformation;
@@ -66,43 +68,51 @@ import org.apache.hadoop.yarn.server.webapp.YarnWebServiceParams;
 import org.apache.hadoop.yarn.server.webapp.dao.ContainerLogsInfo;
 import org.apache.hadoop.yarn.util.YarnVersionInfo;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
-import org.apache.hadoop.yarn.webapp.GuiceServletConfig;
 import org.apache.hadoop.yarn.webapp.JerseyTestBase;
 import org.apache.hadoop.yarn.webapp.WebApp;
 import org.apache.hadoop.yarn.webapp.WebServicesTestUtils;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 
+import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.ws.rs.NotAcceptableException;
+import javax.ws.rs.NotFoundException;
+import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.Application;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.File;
-import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 
 import static org.apache.hadoop.yarn.webapp.WebServicesTestUtils.assertResponseStatusCode;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -111,12 +121,14 @@ import static org.mockito.Mockito.when;
  */
 public class TestNMWebServices extends JerseyTestBase {
 
+  private static final long NM_RESOURCE_VALUE = 1000L;
   private static NodeManager.NMContext nmContext;
   private static ResourceView resourceView;
   private static ApplicationACLsManager aclsManager;
   private static LocalDirsHandlerService dirsHandler;
   private static WebApp nmWebApp;
   private static final String LOGSERVICEWSADDR = "test:1234";
+  private static final String LOG_MESSAGE = "log message\n";
 
   private static final File testRootDir = new File("target",
       TestNMWebServices.class.getSimpleName());
@@ -125,42 +137,54 @@ public class TestNMWebServices extends JerseyTestBase {
   private static File testRemoteLogDir = new File("target",
       TestNMWebServices.class.getSimpleName() + "remote-log-dir");
 
-  private static class WebServletModule extends ServletModule {
+  @Override
+  protected Application configure() {
+    NMJsonProvider nmJsonProvider = new NMJsonProvider();
+
+    ResourceConfig config = new ResourceConfig();
+    config.register(new JerseyBinder());
+    config.register(NMWebServices.class);
+    config.register(GenericExceptionHandler.class);
+    config.register(nmJsonProvider);
+    config.register(JAXBContextResolver.class);
+    forceSet(TestProperties.CONTAINER_PORT, JERSEY_RANDOM_PORT);
+    return config;
+  }
+
+  private static class JerseyBinder extends AbstractBinder {
 
     @Override
-    protected void configureServlets() {
+    protected void configure() {
       Configuration conf = new Configuration();
       conf.set(YarnConfiguration.NM_LOCAL_DIRS, testRootDir.getAbsolutePath());
       conf.set(YarnConfiguration.NM_LOG_DIRS, testLogDir.getAbsolutePath());
       conf.setBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED, true);
-      conf.set(YarnConfiguration.NM_REMOTE_APP_LOG_DIR,
-          testRemoteLogDir.getAbsolutePath());
-      conf.set(YarnConfiguration.YARN_LOG_SERVER_WEBSERVICE_URL,
-          LOGSERVICEWSADDR);
+      conf.set(YarnConfiguration.NM_REMOTE_APP_LOG_DIR, testRemoteLogDir.getAbsolutePath());
+      conf.set(YarnConfiguration.YARN_LOG_SERVER_WEBSERVICE_URL, LOGSERVICEWSADDR);
       dirsHandler = new LocalDirsHandlerService();
-      NodeHealthCheckerService healthChecker = new NodeHealthCheckerService(
-          NodeManager.getNodeHealthScriptRunner(conf), dirsHandler);
+      NodeHealthCheckerService healthChecker = new NodeHealthCheckerService(dirsHandler);
       healthChecker.init(conf);
       aclsManager = new ApplicationACLsManager(conf);
       nmContext = new NodeManager.NMContext(null, null, dirsHandler,
           aclsManager, null, false, conf);
       NodeId nodeId = NodeId.newInstance("testhost.foo.com", 8042);
-      ((NodeManager.NMContext)nmContext).setNodeId(nodeId);
+      nmContext.setNodeId(nodeId);
+
       resourceView = new ResourceView() {
         @Override
         public long getVmemAllocatedForContainers() {
           // 15.5G in bytes
-          return new Long("16642998272");
+          return Long.parseLong("16642998272");
         }
 
         @Override
         public long getPmemAllocatedForContainers() {
           // 16G in bytes
-          return new Long("17179869184");
+          return Long.parseLong("17179869184");
         }
         @Override
         public long getVCoresAllocatedForContainers() {
-          return new Long("4000");
+          return Long.parseLong("4000");
         }
         @Override
         public boolean isVmemCheckEnabled() {
@@ -171,37 +195,112 @@ public class TestNMWebServices extends JerseyTestBase {
           return true;
         }
       };
+
       nmWebApp = new NMWebApp(resourceView, aclsManager, dirsHandler);
-      bind(JAXBContextResolver.class);
-      bind(NMWebServices.class);
-      bind(GenericExceptionHandler.class);
-      bind(Context.class).toInstance(nmContext);
-      bind(WebApp.class).toInstance(nmWebApp);
-      bind(ResourceView.class).toInstance(resourceView);
-      bind(ApplicationACLsManager.class).toInstance(aclsManager);
-      bind(LocalDirsHandlerService.class).toInstance(dirsHandler);
-
-      serve("/*").with(GuiceContainer.class);
+      final HttpServletRequest request = mock(HttpServletRequest.class);
+      when(request.getQueryString()).thenReturn("?user.name=user&nm.id=localhost:1111");
+      final HttpServletResponse response = mock(HttpServletResponse.class);
+      bind(nmContext).to(Context.class).named("nm");
+      bind(nmWebApp).to(WebApp.class).named("webapp");
+      bind(request).to(HttpServletRequest.class);
+      bind(response).to(HttpServletResponse.class);
+      bind(aclsManager).to(ApplicationACLsManager.class);
+      bind(dirsHandler).to(LocalDirsHandlerService.class);
+      bind(resourceView).to(ResourceView.class).named("view");
     }
-  };
-
-  static {
-    GuiceServletConfig.setInjector(
-        Guice.createInjector(new WebServletModule()));
   }
 
-  @Before
-  @Override
-  public void setUp() throws Exception {
-    super.setUp();
+  private void setupMockPluginsWithNmResourceInfo() throws YarnException {
+    ResourcePlugin mockPlugin1 = mock(ResourcePlugin.class);
+    NMResourceInfo nmResourceInfo1 = new NMResourceInfo();
+
+    when(mockPlugin1.getNMResourceInfo()).thenReturn(nmResourceInfo1);
+
+    ResourcePluginManager pluginManager = createResourceManagerWithPlugins(
+        ImmutableMap.<String, ResourcePlugin>builder()
+            .put("resource-1", mockPlugin1)
+            .put("yarn.io/resource-1", mockPlugin1)
+            .put("resource-2", mock(ResourcePlugin.class))
+            .build()
+    );
+
+    nmContext.setResourcePluginManager(pluginManager);
+  }
+
+  private void setupMockPluginsWithGpuResourceInfo() throws YarnException {
+    GpuDeviceInformation gpuDeviceInformation = new GpuDeviceInformation();
+    gpuDeviceInformation.setDriverVersion("1.2.3");
+    gpuDeviceInformation.setGpus(Collections.singletonList(new PerGpuDeviceInformation()));
+
+    ResourcePlugin mockPlugin1 = mock(ResourcePlugin.class);
+    List<GpuDevice> totalGpuDevices = Arrays.asList(
+        new GpuDevice(1, 1), new GpuDevice(2, 2), new GpuDevice(3, 3));
+    List<AssignedGpuDevice> assignedGpuDevices = Arrays.asList(
+        new AssignedGpuDevice(2, 2, createContainerId(1)),
+        new AssignedGpuDevice(3, 3, createContainerId(2)));
+
+    NMResourceInfo nmResourceInfo1 = new NMGpuResourceInfo(gpuDeviceInformation,
+        totalGpuDevices,
+        assignedGpuDevices);
+    when(mockPlugin1.getNMResourceInfo()).thenReturn(nmResourceInfo1);
+
+    NMDeviceResourceInfo nmDeviceResourceInfo = new NMDeviceResourceInfo();
+    nmDeviceResourceInfo.setTotalDevices(Collections.singletonList(
+        Device.Builder.newInstance()
+            .setId(42)
+            .build()
+    ));
+    ResourcePlugin mockPlugin2 = mock(ResourcePlugin.class);
+    when(mockPlugin2.getNMResourceInfo()).thenReturn(nmDeviceResourceInfo);
+
+
+
+    ResourcePluginManager pluginManager = createResourceManagerWithPlugins(
+        ImmutableMap.<String, ResourcePlugin>builder()
+            .put("resource-1", mockPlugin1)
+            .put("yarn.io/resource-1", mockPlugin1)
+            .put("resource-2", mock(ResourcePlugin.class))
+            .put("resource-3", mockPlugin2)
+            .build()
+    );
+
+    nmContext.setResourcePluginManager(pluginManager);
+  }
+
+  private ResourcePluginManager createResourceManagerWithPlugins(
+      Map<String, ResourcePlugin> plugins) {
+    ResourcePluginManager pluginManager = mock(ResourcePluginManager.class);
+    when(pluginManager.getNameToPlugins()).thenReturn(plugins);
+    return pluginManager;
+  }
+
+  private void assertNMResourceInfoResponse(Response response) {
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString(), "MediaType of the response is not the expected!");
+  }
+
+  private void assertEmptyNMResourceInfo(Response response) throws JSONException {
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString(),
+        "MediaType of the response is not the expected!");
+    JSONObject json = response.readEntity(JSONObject.class);
+    assertEquals(1, json.length(), "Unexpected value in the json response!");
+  }
+
+  private Response getNMResourceResponse(WebTarget target, String resourceName) {
+    return target.path("ws").path("v1").path("node").path("resources")
+        .path(resourceName).request(MediaType.APPLICATION_JSON)
+        .get();
+  }
+
+  @BeforeEach
+  public void before() throws Exception {
     testRemoteLogDir.mkdir();
     testRootDir.mkdirs();
     testLogDir.mkdir();
-    GuiceServletConfig.setInjector(
-        Guice.createInjector(new WebServletModule()));
   }
 
-  @AfterClass
+  @AfterAll
   static public void stop() {
     FileUtil.fullyDelete(testRootDir);
     FileUtil.fullyDelete(testLogDir);
@@ -209,24 +308,21 @@ public class TestNMWebServices extends JerseyTestBase {
   }
 
   public TestNMWebServices() {
-    super(new WebAppDescriptor.Builder(
-        "org.apache.hadoop.yarn.server.nodemanager.webapp")
-        .contextListenerClass(GuiceServletConfig.class)
-        .filterClass(com.google.inject.servlet.GuiceFilter.class)
-        .contextPath("jersey-guice-filter").servletPath("/").build());
   }
 
   @Test
   public void testInvalidUri() throws JSONException, Exception {
-    WebResource r = resource();
+    WebTarget r = target();
     String responseStr = "";
     try {
-      responseStr = r.path("ws").path("v1").path("node").path("bogus")
-          .accept(MediaType.APPLICATION_JSON).get(String.class);
-      fail("should have thrown exception on invalid uri");
-    } catch (UniformInterfaceException ue) {
-      ClientResponse response = ue.getResponse();
-      assertResponseStatusCode(Status.NOT_FOUND, response.getStatusInfo());
+      Response response = r.path("ws").path("v1").path("node").path("bogus").request()
+          .accept(MediaType.APPLICATION_JSON).get();
+      throw new NotFoundException(response);
+    } catch (NotFoundException ue) {
+      Response response = ue.getResponse();
+      responseStr = response.readEntity(String.class);
+      assertEquals(Response.Status.NOT_FOUND.getStatusCode(),
+          response.getStatusInfo().getStatusCode());
       WebServicesTestUtils.checkStringMatch(
           "error string exists and shouldn't", "", responseStr);
     }
@@ -234,31 +330,33 @@ public class TestNMWebServices extends JerseyTestBase {
 
   @Test
   public void testInvalidAccept() throws JSONException, Exception {
-    WebResource r = resource();
+    WebTarget r = target();
     String responseStr = "";
     try {
-      responseStr = r.path("ws").path("v1").path("node")
-          .accept(MediaType.TEXT_PLAIN).get(String.class);
-      fail("should have thrown exception on invalid uri");
-    } catch (UniformInterfaceException ue) {
-      ClientResponse response = ue.getResponse();
-      assertResponseStatusCode(Status.INTERNAL_SERVER_ERROR,
-          response.getStatusInfo());
-      WebServicesTestUtils.checkStringMatch(
-          "error string exists and shouldn't", "", responseStr);
+      Response response = r.path("ws").path("v1").path("node").request()
+          .accept(MediaType.TEXT_PLAIN).get();
+      throw new NotAcceptableException(response);
+    } catch (NotAcceptableException ue) {
+      Response response = ue.getResponse();
+      responseStr = response.readEntity(String.class);
+      assertEquals(Response.Status.NOT_ACCEPTABLE.getStatusCode(),
+          response.getStatusInfo().getStatusCode());
+      String reasonPhrase = response.getStatusInfo().getReasonPhrase();
+      assertEquals("Not Acceptable", reasonPhrase);
+      assertTrue(responseStr.contains("HTTP 406 Not Acceptable"));
     }
   }
 
   @Test
   public void testInvalidUri2() throws JSONException, Exception {
-    WebResource r = resource();
+    WebTarget r = target();
     String responseStr = "";
     try {
-      responseStr = r.accept(MediaType.APPLICATION_JSON).get(String.class);
-      fail("should have thrown exception on invalid uri");
-    } catch (UniformInterfaceException ue) {
-      ClientResponse response = ue.getResponse();
-      assertResponseStatusCode(Status.NOT_FOUND, response.getStatusInfo());
+      Response response = r.request().accept(MediaType.APPLICATION_JSON).get();
+      throw new NotFoundException(response);
+    } catch (NotFoundException ue) {
+      Response response = ue.getResponse();
+      assertResponseStatusCode(Response.Status.NOT_FOUND, response.getStatusInfo());
       WebServicesTestUtils.checkStringMatch(
           "error string exists and shouldn't", "", responseStr);
     }
@@ -266,114 +364,118 @@ public class TestNMWebServices extends JerseyTestBase {
 
   @Test
   public void testNode() throws JSONException, Exception {
-    WebResource r = resource();
-    ClientResponse response = r.path("ws").path("v1").path("node")
-        .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    JSONObject json = response.getEntity(JSONObject.class);
+    WebTarget r = targetWithJsonObject();
+    Response response = r.path("ws").path("v1").path("node").request()
+        .accept(MediaType.APPLICATION_JSON).get(Response.class);
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString());
+    JSONObject json = response.readEntity(JSONObject.class);
     verifyNodeInfo(json);
   }
 
   @Test
   public void testNodeSlash() throws JSONException, Exception {
-    WebResource r = resource();
-    ClientResponse response = r.path("ws").path("v1").path("node/")
-        .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    JSONObject json = response.getEntity(JSONObject.class);
+    WebTarget r = targetWithJsonObject();
+    Response response = r.path("ws").path("v1").path("node/").request()
+        .accept(MediaType.APPLICATION_JSON).get(Response.class);
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString());
+    JSONObject json = response.readEntity(JSONObject.class);
     verifyNodeInfo(json);
   }
 
   // make sure default is json output
   @Test
   public void testNodeDefault() throws JSONException, Exception {
-    WebResource r = resource();
-    ClientResponse response = r.path("ws").path("v1").path("node")
-        .get(ClientResponse.class);
-
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    JSONObject json = response.getEntity(JSONObject.class);
+    WebTarget r = targetWithJsonObject();
+    Response response = r.path("ws").path("v1").path("node").request()
+        .accept(MediaType.APPLICATION_JSON).get(Response.class);
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString());
+    JSONObject json = response.readEntity(JSONObject.class);
     verifyNodeInfo(json);
   }
 
   @Test
   public void testNodeInfo() throws JSONException, Exception {
-    WebResource r = resource();
-    ClientResponse response = r.path("ws").path("v1").path("node").path("info")
-        .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    JSONObject json = response.getEntity(JSONObject.class);
+    WebTarget r = targetWithJsonObject();
+    Response response = r.path("ws").path("v1").path("node").path("info").request()
+        .accept(MediaType.APPLICATION_JSON).get(Response.class);
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString());
+    JSONObject json = response.readEntity(JSONObject.class);
     verifyNodeInfo(json);
   }
 
   @Test
   public void testNodeInfoSlash() throws JSONException, Exception {
-    WebResource r = resource();
-    ClientResponse response = r.path("ws").path("v1").path("node")
-        .path("info/").accept(MediaType.APPLICATION_JSON)
-        .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    JSONObject json = response.getEntity(JSONObject.class);
+    WebTarget r = targetWithJsonObject();
+    Response response = r.path("ws").path("v1").path("node")
+        .path("info/").request().accept(MediaType.APPLICATION_JSON)
+        .get(Response.class);
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString());
+    JSONObject json = response.readEntity(JSONObject.class);
     verifyNodeInfo(json);
   }
 
   // make sure default is json output
   @Test
   public void testNodeInfoDefault() throws JSONException, Exception {
-    WebResource r = resource();
-    ClientResponse response = r.path("ws").path("v1").path("node").path("info")
-        .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    JSONObject json = response.getEntity(JSONObject.class);
+    WebTarget r = targetWithJsonObject();
+    Response response = r.path("ws").path("v1").path("node").path("info").request()
+        .get(Response.class);
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString());
+    JSONObject json = response.readEntity(JSONObject.class);
     verifyNodeInfo(json);
   }
 
   @Test
   public void testSingleNodesXML() throws JSONException, Exception {
-    WebResource r = resource();
-    ClientResponse response = r.path("ws").path("v1").path("node")
-        .path("info/").accept(MediaType.APPLICATION_XML)
-        .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_XML+ "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    String xml = response.getEntity(String.class);
-    DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+    WebTarget r = target();
+    Response response = r.path("ws").path("v1").path("node")
+        .path("info/").request(MediaType.APPLICATION_XML)
+        .get(Response.class);
+    assertEquals(MediaType.APPLICATION_XML+ ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString());
+    String xml = response.readEntity(String.class);
+    DocumentBuilderFactory dbf = XMLUtils.newSecureDocumentBuilderFactory();
     DocumentBuilder db = dbf.newDocumentBuilder();
-    InputSource is = new InputSource();
-    is.setCharacterStream(new StringReader(xml));
+    InputSource is = new InputSource(new StringReader(xml));
     Document dom = db.parse(is);
     NodeList nodes = dom.getElementsByTagName("nodeInfo");
-    assertEquals("incorrect number of elements", 1, nodes.getLength());
+    assertEquals(1, nodes.getLength(), "incorrect number of elements");
     verifyNodesXML(nodes);
   }
 
-  @Test (timeout = 5000)
-  public void testContainerLogsWithNewAPI() throws IOException, JSONException{
-    final ContainerId containerId = BuilderUtils.newContainerId(0, 0, 0, 0);
-    WebResource r = resource();
-    r = r.path("ws").path("v1").path("node").path("containers")
-        .path(containerId.toString()).path("logs");
-    testContainerLogs(r, containerId);
+  @Test
+  @Timeout(value = 5)
+  public void testContainerLogsWithNewAPI() throws Exception {
+    ContainerId containerId0 = BuilderUtils.newContainerId(0, 0, 0, 0);
+    WebTarget r0 = targetWithJsonObject();
+    r0 = r0.path("ws").path("v1").path("node").path("containers")
+        .path(containerId0.toString()).path("logs");
+    testContainerLogs(r0, containerId0, LOG_MESSAGE);
+
+    ContainerId containerId1 = BuilderUtils.newContainerId(0, 0, 0, 1);
+    WebTarget r1 = targetWithJsonObject();
+    r1 = r1.path("ws").path("v1").path("node").path("containers")
+        .path(containerId1.toString()).path("logs");
+    testContainerLogs(r1, containerId1, "");
   }
 
-  @Test (timeout = 5000)
-  public void testContainerLogsWithOldAPI() throws IOException, JSONException{
-    final ContainerId containerId = BuilderUtils.newContainerId(1, 1, 0, 1);
-    WebResource r = resource();
+  @Test
+  @Timeout(value = 5)
+  public void testContainerLogsWithOldAPI() throws Exception {
+    final ContainerId containerId2 = BuilderUtils.newContainerId(1, 1, 0, 2);
+    WebTarget r = targetWithJsonObject();
     r = r.path("ws").path("v1").path("node").path("containerlogs")
-        .path(containerId.toString());
-    testContainerLogs(r, containerId);
+        .path(containerId2.toString());
+    testContainerLogs(r, containerId2, LOG_MESSAGE);
   }
 
-  @Test (timeout = 10000)
+  @Test
   public void testNMRedirect() {
     ApplicationId noExistAppId = ApplicationId.newInstance(
         System.currentTimeMillis(), 2000);
@@ -382,16 +484,16 @@ public class TestNMWebServices extends JerseyTestBase {
     ContainerId noExistContainerId = ContainerId.newContainerId(
         noExistAttemptId, 250);
     String fileName = "syslog";
-    WebResource r = resource();
+    WebTarget r = target();
 
     // check the old api
     URI requestURI = r.path("ws").path("v1").path("node")
         .path("containerlogs").path(noExistContainerId.toString())
         .path(fileName).queryParam("user.name", "user")
         .queryParam(YarnWebServiceParams.NM_ID, "localhost:1111")
-        .getURI();
+        .getUri();
     String redirectURL = getRedirectURL(requestURI.toString());
-    assertTrue(redirectURL != null);
+    assertNotNull(redirectURL);
     assertTrue(redirectURL.contains(LOGSERVICEWSADDR));
     assertTrue(redirectURL.contains(noExistContainerId.toString()));
     assertTrue(redirectURL.contains("/logs/" + fileName));
@@ -405,9 +507,9 @@ public class TestNMWebServices extends JerseyTestBase {
         .path("containers").path(noExistContainerId.toString())
         .path("logs").path(fileName).queryParam("user.name", "user")
         .queryParam(YarnWebServiceParams.NM_ID, "localhost:1111")
-        .getURI();
+        .getUri();
     redirectURL = getRedirectURL(requestURI.toString());
-    assertTrue(redirectURL != null);
+    assertNotNull(redirectURL);
     assertTrue(redirectURL.contains(LOGSERVICEWSADDR));
     assertTrue(redirectURL.contains(noExistContainerId.toString()));
     assertTrue(redirectURL.contains("/logs/" + fileName));
@@ -420,9 +522,9 @@ public class TestNMWebServices extends JerseyTestBase {
         .path("containers").path(noExistContainerId.toString())
         .path("logs").queryParam("user.name", "user")
         .queryParam(YarnWebServiceParams.NM_ID, "localhost:1111")
-        .getURI();
+        .getUri();
     redirectURL = getRedirectURL(requestURI.toString());
-    assertTrue(redirectURL != null);
+    assertNotNull(redirectURL);
     assertTrue(redirectURL.contains(LOGSERVICEWSADDR));
     assertTrue(redirectURL.contains(noExistContainerId.toString()));
     assertTrue(redirectURL.contains("user.name=" + "user"));
@@ -432,120 +534,97 @@ public class TestNMWebServices extends JerseyTestBase {
   }
 
   @Test
-  public void testGetNMResourceInfo()
-      throws YarnException, InterruptedException, JSONException {
-    ResourcePluginManager rpm = mock(ResourcePluginManager.class);
-    Map<String, ResourcePlugin> namesToPlugins = new HashMap<>();
-    ResourcePlugin mockPlugin1 = mock(ResourcePlugin.class);
-    NMResourceInfo nmResourceInfo1 = new NMResourceInfo() {
-      public long a = 1000L;
-    };
-    when(mockPlugin1.getNMResourceInfo()).thenReturn(nmResourceInfo1);
-    namesToPlugins.put("resource-1", mockPlugin1);
-    namesToPlugins.put("yarn.io/resource-1", mockPlugin1);
-    ResourcePlugin mockPlugin2 = mock(ResourcePlugin.class);
-    namesToPlugins.put("resource-2", mockPlugin2);
-    when(rpm.getNameToPlugins()).thenReturn(namesToPlugins);
+  public void testGetNMResourceInfoSuccessful()
+      throws YarnException{
+    setupMockPluginsWithNmResourceInfo();
 
-    nmContext.setResourcePluginManager(rpm);
+    WebTarget r = targetWithJsonObject();
+    Response response = getNMResourceResponse(r, "resource-1");
+    assertNMResourceInfoResponse(response);
+  }
 
-    WebResource r = resource();
-    ClientResponse response = r.path("ws").path("v1").path("node").path(
-        "resources").path("resource-2").accept(MediaType.APPLICATION_JSON).get(
-        ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
+  @Test
+  public void testGetNMResourceInfoEncodedIsSuccessful()
+      throws YarnException{
+    setupMockPluginsWithNmResourceInfo();
 
-    // Access resource-2 should fail (empty NMResourceInfo returned).
-    JSONObject json = response.getEntity(JSONObject.class);
-    Assert.assertEquals(0, json.length());
+    //test encoded yarn.io/resource-1 path
+    WebTarget r = targetWithJsonObject();
+    Response response = getNMResourceResponse(r, "yarn.io%2Fresource-1");
+    assertNMResourceInfoResponse(response);
+  }
 
-    // Access resource-3 should fail (unknown plugin)
-    response = r.path("ws").path("v1").path("node").path(
-        "resources").path("resource-3").accept(MediaType.APPLICATION_JSON).get(
-        ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    json = response.getEntity(JSONObject.class);
-    Assert.assertEquals(0, json.length());
+  @Test
+  public void testGetNMResourceInfoFailBecauseOfEmptyResourceInfo()
+      throws YarnException, JSONException {
+    setupMockPluginsWithNmResourceInfo();
 
-    // Access resource-1 should success
-    response = r.path("ws").path("v1").path("node").path(
-        "resources").path("resource-1").accept(MediaType.APPLICATION_JSON).get(
-        ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    json = response.getEntity(JSONObject.class);
-    Assert.assertEquals(1000, json.get("a"));
+    WebTarget r = targetWithJsonObject();
+    Response response = getNMResourceResponse(r, "resource-2");
+    assertEmptyNMResourceInfo(response);
+  }
 
-    // Access resource-1 should success (encoded yarn.io/Fresource-1).
-    response = r.path("ws").path("v1").path("node").path("resources").path(
-        "yarn.io%2Fresource-1").accept(MediaType.APPLICATION_JSON).get(
-        ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    json = response.getEntity(JSONObject.class);
-    Assert.assertEquals(1000, json.get("a"));
+  @Test
+  public void testGetNMResourceInfoWhenPluginIsUnknown()
+      throws YarnException, JSONException {
+    setupMockPluginsWithNmResourceInfo();
+
+    WebTarget r = targetWithJsonObject();
+    Response response = getNMResourceResponse(r, "resource-3");
+    assertEmptyNMResourceInfo(response);
   }
 
   private ContainerId createContainerId(int id) {
     ApplicationId appId = ApplicationId.newInstance(0, 0);
     ApplicationAttemptId appAttemptId =
         ApplicationAttemptId.newInstance(appId, 1);
-    ContainerId containerId = ContainerId.newContainerId(appAttemptId, id);
-    return containerId;
+    return ContainerId.newContainerId(appAttemptId, id);
   }
 
   @Test
   public void testGetYarnGpuResourceInfo()
-      throws YarnException, InterruptedException, JSONException {
-    ResourcePluginManager rpm = mock(ResourcePluginManager.class);
-    Map<String, ResourcePlugin> namesToPlugins = new HashMap<>();
-    ResourcePlugin mockPlugin1 = mock(ResourcePlugin.class);
-    GpuDeviceInformation gpuDeviceInformation = new GpuDeviceInformation();
-    gpuDeviceInformation.setDriverVersion("1.2.3");
-    gpuDeviceInformation.setGpus(Arrays.asList(new PerGpuDeviceInformation()));
-    NMResourceInfo nmResourceInfo1 = new NMGpuResourceInfo(gpuDeviceInformation,
-        Arrays.asList(new GpuDevice(1, 1), new GpuDevice(2, 2),
-            new GpuDevice(3, 3)), Arrays
-        .asList(new AssignedGpuDevice(2, 2, createContainerId(1)),
-            new AssignedGpuDevice(3, 3, createContainerId(2))));
-    when(mockPlugin1.getNMResourceInfo()).thenReturn(nmResourceInfo1);
-    namesToPlugins.put("resource-1", mockPlugin1);
-    namesToPlugins.put("yarn.io/resource-1", mockPlugin1);
-    ResourcePlugin mockPlugin2 = mock(ResourcePlugin.class);
-    namesToPlugins.put("resource-2", mockPlugin2);
-    when(rpm.getNameToPlugins()).thenReturn(namesToPlugins);
-
-    nmContext.setResourcePluginManager(rpm);
-
-    WebResource r = resource();
-    ClientResponse response;
-    JSONObject json;
-
-    // Access resource-1 should success
-    response = r.path("ws").path("v1").path("node").path(
-        "resources").path("resource-1").accept(MediaType.APPLICATION_JSON).get(
-        ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    json = response.getEntity(JSONObject.class);
-    Assert.assertEquals("1.2.3",
-        json.getJSONObject("gpuDeviceInformation").get("driverVersion"));
-    Assert.assertEquals(3, json.getJSONArray("totalGpuDevices").length());
-    Assert.assertEquals(2, json.getJSONArray("assignedGpuDevices").length());
-    Assert.assertEquals(2, json.getJSONArray("assignedGpuDevices").length());
+          throws YarnException, JSONException {
+    setupMockPluginsWithGpuResourceInfo();
+    WebTarget r = targetWithJsonObject();
+    Response response = getNMResourceResponse(r, "resource-1");
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+            response.getMediaType().toString(), "MediaType of the response is not the expected!");
+    JSONObject json = response.readEntity(JSONObject.class);
+    assertEquals("1.2.3",
+            json.getJSONObject("gpuDeviceInformation").getString("driver_version"),
+            "Unexpected driverVersion in the json response!");
+    assertEquals(3, json.getJSONArray("totalGpuDevices").length(),
+            "Unexpected totalGpuDevices in the json response!");
+    assertEquals(2, json.getJSONArray("assignedGpuDevices").length(),
+            "Unexpected assignedGpuDevices in the json response!");
   }
 
-  private void testContainerLogs(WebResource r, ContainerId containerId)
-      throws IOException {
+  @Test
+  public void testGetDeviceResourceInfo()
+          throws YarnException, JSONException {
+    setupMockPluginsWithGpuResourceInfo();
+
+    WebTarget r = targetWithJsonObject();
+    Response response = getNMResourceResponse(r, "resource-3");
+    assertEquals(MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+            response.getMediaType().toString(),
+            "MediaType of the response is not the expected!");
+    JSONObject json = response.readEntity(JSONObject.class);
+    assertEquals(42,
+            json.getJSONArray("totalDevices")
+                    .getJSONObject(0)
+                    .get("id"), "Check the first Device ID");
+  }
+
+  @SuppressWarnings("checkstyle:methodlength")
+  private void testContainerLogs(WebTarget target, ContainerId containerId,
+      String logMessage) throws Exception {
     final String containerIdStr = containerId.toString();
     final ApplicationAttemptId appAttemptId = containerId
         .getApplicationAttemptId();
     final ApplicationId appId = appAttemptId.getApplicationId();
     final String appIdStr = appId.toString();
     final String filename = "logfile1";
-    final String logMessage = "log message\n";
     nmContext.getApplications().put(appId, new ApplicationImpl(null, "user",
         appId, null, nmContext));
     
@@ -555,21 +634,24 @@ public class TestNMWebServices extends JerseyTestBase {
     nmContext.getContainers().put(containerId, container);
     
     // write out log file
-    Path path = dirsHandler.getLogPathForWrite(
+    Path path1 = dirsHandler.getLogPathForWrite(
         ContainerLaunch.getRelativeContainerLogDir(
             appIdStr, containerIdStr) + "/" + filename, false);
-    
-    File logFile = new File(path.toUri().getPath());
-    logFile.deleteOnExit();
-    assertTrue("Failed to create log dir", logFile.getParentFile().mkdirs());
-    PrintWriter pw = new PrintWriter(logFile);
+
+    File logFile1 = new File(path1.toUri().getPath());
+    logFile1.deleteOnExit();
+    if (logFile1.getParentFile().exists()) {
+      FileUtils.deleteDirectory(logFile1.getParentFile());
+    }
+    assertTrue(logFile1.getParentFile().mkdirs(), "Failed to create log dir");
+    PrintWriter pw = new PrintWriter(logFile1);
     pw.print(logMessage);
     pw.close();
 
     // ask for it
-    ClientResponse response = r.path(filename)
-        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-    String responseText = response.getEntity(String.class);
+    Response response = target.path(filename)
+        .request(MediaType.TEXT_PLAIN).get(Response.class);
+    String responseText = response.readEntity(String.class);
     String responseLogMessage = getLogContext(responseText);
     assertEquals(logMessage, responseLogMessage);
     int fullTextSize = responseLogMessage.getBytes().length;
@@ -577,89 +659,93 @@ public class TestNMWebServices extends JerseyTestBase {
     // specify how many bytes we should get from logs
     // specify a position number, it would get the first n bytes from
     // container log
-    response = r.path(filename)
+    response = target.path(filename)
         .queryParam("size", "5")
-        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-    responseText = response.getEntity(String.class);
+        .request(MediaType.TEXT_PLAIN).get(Response.class);
+    responseText = response.readEntity(String.class);
     responseLogMessage = getLogContext(responseText);
-    assertEquals(5, responseLogMessage.getBytes().length);
-    assertEquals(new String(logMessage.getBytes(), 0, 5), responseLogMessage);
+    int truncatedLength = Math.min(5, logMessage.getBytes().length);
+    assertEquals(truncatedLength, responseLogMessage.getBytes().length);
+    assertEquals(new String(logMessage.getBytes(), 0, truncatedLength),
+        responseLogMessage);
     assertTrue(fullTextSize >= responseLogMessage.getBytes().length);
 
     // specify the bytes which is larger than the actual file size,
     // we would get the full logs
-    response = r.path(filename)
+    response = target.path(filename)
         .queryParam("size", "10000")
-        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-    responseText = response.getEntity(String.class);
+        .request(MediaType.TEXT_PLAIN).get(Response.class);
+    responseText = response.readEntity(String.class);
     responseLogMessage = getLogContext(responseText);
     assertEquals(fullTextSize, responseLogMessage.getBytes().length);
     assertEquals(logMessage, responseLogMessage);
 
     // specify a negative number, it would get the last n bytes from
     // container log
-    response = r.path(filename)
+    response = target.path(filename)
         .queryParam("size", "-5")
-        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-    responseText = response.getEntity(String.class);
+        .request(MediaType.TEXT_PLAIN).get(Response.class);
+    responseText = response.readEntity(String.class);
     responseLogMessage = getLogContext(responseText);
-    assertEquals(5, responseLogMessage.getBytes().length);
+    assertEquals(truncatedLength, responseLogMessage.getBytes().length);
     assertEquals(new String(logMessage.getBytes(),
-        logMessage.getBytes().length - 5, 5), responseLogMessage);
+        logMessage.getBytes().length - truncatedLength, truncatedLength),
+        responseLogMessage);
     assertTrue(fullTextSize >= responseLogMessage.getBytes().length);
 
-    response = r.path(filename)
+    response = target.path(filename)
         .queryParam("size", "-10000")
-        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-    responseText = response.getEntity(String.class);
+        .request(MediaType.TEXT_PLAIN).get(Response.class);
+    responseText = response.readEntity(String.class);
     responseLogMessage = getLogContext(responseText);
-    assertEquals("text/plain; charset=utf-8", response.getType().toString());
+    assertEquals("text/plain;charset=utf-8", response.getMediaType().toString());
     assertEquals(fullTextSize, responseLogMessage.getBytes().length);
     assertEquals(logMessage, responseLogMessage);
 
     // ask and download it
-    response = r.path(filename)
+    response = target.path(filename)
         .queryParam("format", "octet-stream")
-        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-    responseText = response.getEntity(String.class);
+        .request(MediaType.TEXT_PLAIN).get(Response.class);
+    responseText = response.readEntity(String.class);
     responseLogMessage = getLogContext(responseText);
     assertEquals(logMessage, responseLogMessage);
     assertEquals(200, response.getStatus());
-    assertEquals("application/octet-stream; charset=utf-8",
-        response.getType().toString());
+    assertEquals("application/octet-stream;charset=utf-8",
+        response.getMediaType().toString());
 
     // specify a invalid format value
-    response = r.path(filename)
+    response = target.path(filename)
         .queryParam("format", "123")
-        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-    responseText = response.getEntity(String.class);
+        .request(MediaType.TEXT_PLAIN).get(Response.class);
+    responseText = response.readEntity(String.class);
     assertEquals("The valid values for the parameter : format are "
         + WebAppUtils.listSupportedLogContentType(), responseText);
     assertEquals(400, response.getStatus());
 
     // ask for file that doesn't exist and it will re-direct to
     // the log server
-    URI requestURI = r.path("uhhh").getURI();
+    URI requestURI = target.path("uhhh").getUri();
     String redirectURL = getRedirectURL(requestURI.toString());
-    assertTrue(redirectURL != null);
+    assertNotNull(redirectURL);
     assertTrue(redirectURL.contains(LOGSERVICEWSADDR));
 
     // Get container log files' name
-    WebResource r1 = resource();
+    WebTarget r1 = targetWithJsonObject();
     response = r1.path("ws").path("v1").path("node")
         .path("containers").path(containerIdStr)
-        .path("logs").accept(MediaType.APPLICATION_JSON)
-        .get(ClientResponse.class);
+        .path("logs").request(MediaType.APPLICATION_JSON)
+        .get(Response.class);
     assertEquals(200, response.getStatus());
-    List<ContainerLogsInfo> responseList = response.getEntity(new GenericType<
-        List<ContainerLogsInfo>>(){});
-    assertTrue(responseList.size() == 1);
+    List<ContainerLogsInfo> responseList = readEntity(response);
+
+    assertEquals(1, responseList.size());
     assertEquals(responseList.get(0).getLogType(),
         ContainerLogAggregationType.LOCAL.toString());
+
     List<ContainerLogFileInfo> logMeta = responseList.get(0)
-        .getContainerLogsInfo();
-    assertTrue(logMeta.size() == 1);
-    assertEquals(logMeta.get(0).getFileName(), filename);
+            .getContainerLogsInfo();
+    assertEquals(1, logMeta.size());
+    assertThat(logMeta.get(0).getFileName()).isEqualTo(filename);
 
     // now create an aggregated log in Remote File system
     File tempLogDir = new File("target",
@@ -669,40 +755,42 @@ public class TestNMWebServices extends JerseyTestBase {
       String aggregatedLogMessage = "This is aggregated ;og.";
       TestContainerLogsUtils.createContainerLogFileInRemoteFS(
           nmContext.getConf(), FileSystem.get(nmContext.getConf()),
-          tempLogDir.getAbsolutePath(), containerId, nmContext.getNodeId(),
-          aggregatedLogFile, "user", aggregatedLogMessage, true);
-      r1 = resource();
+          tempLogDir.getAbsolutePath(), appId,
+          Collections.singletonMap(containerId, aggregatedLogMessage),
+          nmContext.getNodeId(), aggregatedLogFile, "user", true);
+      r1 = targetWithJsonObject();
       response = r1.path("ws").path("v1").path("node")
           .path("containers").path(containerIdStr)
-          .path("logs").accept(MediaType.APPLICATION_JSON)
-          .get(ClientResponse.class);
+          .path("logs").request(MediaType.APPLICATION_JSON)
+          .get(Response.class);
       assertEquals(200, response.getStatus());
-      responseList = response.getEntity(new GenericType<
-          List<ContainerLogsInfo>>(){});
-      assertEquals(responseList.size(), 2);
+      responseList = readEntity(response);
+
+      assertThat(responseList).hasSize(2);
       for (ContainerLogsInfo logInfo : responseList) {
         if(logInfo.getLogType().equals(
             ContainerLogAggregationType.AGGREGATED.toString())) {
           List<ContainerLogFileInfo> meta = logInfo.getContainerLogsInfo();
-          assertTrue(meta.size() == 1);
-          assertEquals(meta.get(0).getFileName(), aggregatedLogFile);
+          assertEquals(1, meta.size());
+          assertThat(meta.get(0).getFileName()).isEqualTo(aggregatedLogFile);
         } else {
           assertEquals(logInfo.getLogType(),
               ContainerLogAggregationType.LOCAL.toString());
           List<ContainerLogFileInfo> meta = logInfo.getContainerLogsInfo();
-          assertTrue(meta.size() == 1);
-          assertEquals(meta.get(0).getFileName(), filename);
+          assertEquals(1, meta.size());
+          assertThat(meta.get(0).getFileName()).isEqualTo(filename);
         }
       }
 
       // Test whether we could get aggregated log as well
       TestContainerLogsUtils.createContainerLogFileInRemoteFS(
           nmContext.getConf(), FileSystem.get(nmContext.getConf()),
-          tempLogDir.getAbsolutePath(), containerId, nmContext.getNodeId(),
-          filename, "user", aggregatedLogMessage, true);
-      response = r.path(filename)
-          .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-      responseText = response.getEntity(String.class);
+          tempLogDir.getAbsolutePath(), appId,
+          Collections.singletonMap(containerId, aggregatedLogMessage),
+          nmContext.getNodeId(), filename, "user", true);
+      response = target.path(filename)
+          .request(MediaType.TEXT_PLAIN).get(Response.class);
+      responseText = response.readEntity(String.class);
       assertTrue(responseText.contains("LogAggregationType: "
           + ContainerLogAggregationType.AGGREGATED));
       assertTrue(responseText.contains(aggregatedLogMessage));
@@ -714,15 +802,14 @@ public class TestNMWebServices extends JerseyTestBase {
     }
     // After container is completed, it is removed from nmContext
     nmContext.getContainers().remove(containerId);
-    Assert.assertNull(nmContext.getContainers().get(containerId));
-    response =
-        r.path(filename).accept(MediaType.TEXT_PLAIN)
-            .get(ClientResponse.class);
-    responseText = response.getEntity(String.class);
+    assertNull(nmContext.getContainers().get(containerId));
+    response = target.path(filename).request(MediaType.TEXT_PLAIN)
+        .get(Response.class);
+    responseText = response.readEntity((String.class));
     assertTrue(responseText.contains(logMessage));
   }
 
-  public void verifyNodesXML(NodeList nodes) throws JSONException, Exception {
+  public void verifyNodesXML(NodeList nodes) {
     for (int i = 0; i < nodes.getLength(); i++) {
       Element element = (Element) nodes.item(i);
 
@@ -751,9 +838,9 @@ public class TestNMWebServices extends JerseyTestBase {
   }
 
   public void verifyNodeInfo(JSONObject json) throws JSONException, Exception {
-    assertEquals("incorrect number of elements", 1, json.length());
+    assertEquals(1, json.length(), "incorrect number of elements");
     JSONObject info = json.getJSONObject("nodeInfo");
-    assertEquals("incorrect number of elements", 18, info.length());
+    assertEquals(18, info.length(), "incorrect number of elements");
     verifyNodeInfoGeneric(info.getString("id"), info.getString("healthReport"),
         info.getLong("totalVmemAllocatedContainersMB"),
         info.getLong("totalPmemAllocatedContainersMB"),
@@ -784,17 +871,17 @@ public class TestNMWebServices extends JerseyTestBase {
     WebServicesTestUtils.checkStringMatch("id", "testhost.foo.com:8042", id);
     WebServicesTestUtils.checkStringMatch("healthReport", "Healthy",
         healthReport);
-    assertEquals("totalVmemAllocatedContainersMB incorrect", 15872,
-        totalVmemAllocatedContainersMB);
-    assertEquals("totalPmemAllocatedContainersMB incorrect", 16384,
-        totalPmemAllocatedContainersMB);
-    assertEquals("totalVCoresAllocatedContainers incorrect", 4000,
-        totalVCoresAllocatedContainers);
-    assertEquals("vmemCheckEnabled incorrect",  true, vmemCheckEnabled);
-    assertEquals("pmemCheckEnabled incorrect",  true, pmemCheckEnabled);
-    assertTrue("lastNodeUpdateTime incorrect", lastNodeUpdateTime == nmContext
-        .getNodeHealthStatus().getLastHealthReportTime());
-    assertTrue("nodeHealthy isn't true", nodeHealthy);
+    assertEquals(15872,
+        totalVmemAllocatedContainersMB, "totalVmemAllocatedContainersMB incorrect");
+    assertEquals(16384,
+        totalPmemAllocatedContainersMB, "totalPmemAllocatedContainersMB incorrect");
+    assertEquals(4000,
+        totalVCoresAllocatedContainers, "totalVCoresAllocatedContainers incorrect");
+    assertTrue(vmemCheckEnabled, "vmemCheckEnabled incorrect");
+    assertTrue(pmemCheckEnabled, "pmemCheckEnabled incorrect");
+    assertEquals(lastNodeUpdateTime, nmContext
+        .getNodeHealthStatus().getLastHealthReportTime(), "lastNodeUpdateTime incorrect");
+    assertTrue(nodeHealthy, "nodeHealthy isn't true");
     WebServicesTestUtils.checkStringMatch("nodeHostName", "testhost.foo.com",
         nodeHostName);
 
@@ -838,5 +925,55 @@ public class TestNMWebServices extends JerseyTestBase {
       // throw new RuntimeException(e);
     }
     return redirectUrl;
+  }
+
+  private List<ContainerLogsInfo> readEntity(Response response) throws JSONException {
+    JSONObject jsonObject = response.readEntity(JSONObject.class);
+    List<ContainerLogsInfo> list = new ArrayList<>();
+
+    Object containerLogsTypeInfo = jsonObject.get("containerLogsInfo");
+
+    if (containerLogsTypeInfo instanceof JSONArray) {
+      JSONArray containerLogsInfoArr = (JSONArray) containerLogsTypeInfo;
+      for (int i = 0; i < containerLogsInfoArr.length(); i++) {
+        list.add(parseContainerLogsInfo(containerLogsInfoArr.getJSONObject(i)));
+      }
+    } else if (containerLogsTypeInfo instanceof JSONObject) {
+      list.add(parseContainerLogsInfo((JSONObject) containerLogsTypeInfo));
+    }
+
+    return list;
+  }
+
+  private ContainerLogsInfo parseContainerLogsInfo(JSONObject jsonLogsInfo)
+      throws JSONException {
+
+    String logAggregationType = jsonLogsInfo.getString("logAggregationType");
+    String containerId = jsonLogsInfo.getString("containerId");
+    String nodeId = jsonLogsInfo.getString("nodeId");
+
+    ContainerLogMeta containerLogMeta = new ContainerLogMeta(containerId, nodeId);
+
+    Object containerLogTypeInfo = jsonLogsInfo.get("containerLogInfo");
+    if (containerLogTypeInfo instanceof JSONArray) {
+      JSONArray containerLogInfoArr = (JSONArray) containerLogTypeInfo;
+      for (int i = 0; i < containerLogInfoArr.length(); i++) {
+        JSONObject logEntry = containerLogInfoArr.getJSONObject(i);
+        containerLogMeta.addLogMeta(
+                logEntry.getString("fileName"),
+                logEntry.getString("fileSize"),
+                logEntry.getString("lastModifiedTime")
+        );
+      }
+    } else if (containerLogTypeInfo instanceof JSONObject) {
+      JSONObject containerLogInfoObj = jsonLogsInfo.getJSONObject("containerLogInfo");
+      containerLogMeta.addLogMeta(
+              containerLogInfoObj.getString("fileName"),
+              containerLogInfoObj.getString("fileSize"),
+              containerLogInfoObj.getString("lastModifiedTime")
+      );
+    }
+
+    return new ContainerLogsInfo(containerLogMeta, logAggregationType);
   }
 }

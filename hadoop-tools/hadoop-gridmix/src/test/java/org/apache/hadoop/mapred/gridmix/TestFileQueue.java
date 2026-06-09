@@ -17,17 +17,18 @@
  */
 package org.apache.hadoop.mapred.gridmix;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import static org.junit.Assert.*;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -36,7 +37,7 @@ import org.apache.hadoop.mapreduce.lib.input.CombineFileSplit;
 
 public class TestFileQueue {
 
-  static final Log LOG = LogFactory.getLog(TestFileQueue.class);
+  static final Logger LOG = LoggerFactory.getLogger(TestFileQueue.class);
   static final int NFILES = 4;
   static final int BLOCK = 256;
   static final Path[] paths = new Path[NFILES];
@@ -44,7 +45,7 @@ public class TestFileQueue {
   static final long[] start = new long[NFILES];
   static final long[] len = new long[NFILES];
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws IOException {
     final Configuration conf = new Configuration();
     final FileSystem fs = FileSystem.getLocal(conf).getRaw();
@@ -67,7 +68,7 @@ public class TestFileQueue {
     }
   }
 
-  @AfterClass
+  @AfterAll
   public static void cleanup() throws IOException {
     final Configuration conf = new Configuration();
     final FileSystem fs = FileSystem.getLocal(conf).getRaw();

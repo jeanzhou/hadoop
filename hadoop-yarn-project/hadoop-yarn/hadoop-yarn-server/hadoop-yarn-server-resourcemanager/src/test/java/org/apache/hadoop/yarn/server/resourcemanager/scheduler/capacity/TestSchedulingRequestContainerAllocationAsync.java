@@ -18,8 +18,11 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import com.google.common.collect.ImmutableSet;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceSizing;
@@ -27,43 +30,64 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmissionData;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+
+/**
+ * Test SchedulingRequest With Asynchronous Scheduling.
+ */
 public class TestSchedulingRequestContainerAllocationAsync {
   private final int GB = 1024;
 
   private YarnConfiguration conf;
+  private String placementConstraintHandler;
 
   RMNodeLabelsManager mgr;
 
-  @Before
+  public static Collection<Object[]> placementConstarintHandlers() {
+    Object[][] params = new Object[][] {
+        {YarnConfiguration.PROCESSOR_RM_PLACEMENT_CONSTRAINTS_HANDLER},
+        {YarnConfiguration.SCHEDULER_RM_PLACEMENT_CONSTRAINTS_HANDLER} };
+    return Arrays.asList(params);
+  }
+
+  private void initTestSchedulingRequestContainerAllocationAsync(
+      String pPlacementConstraintHandler) throws Exception {
+    this.placementConstraintHandler = pPlacementConstraintHandler;
+    setUp();
+  }
+
   public void setUp() throws Exception {
     conf = new YarnConfiguration();
     conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class,
         ResourceScheduler.class);
+    conf.set(YarnConfiguration.RM_PLACEMENT_CONSTRAINTS_HANDLER,
+        this.placementConstraintHandler);
     mgr = new NullRMNodeLabelsManager();
     mgr.init(conf);
   }
 
+
   private void testIntraAppAntiAffinityAsync(int numThreads) throws Exception {
     Configuration csConf = TestUtils.getConfigurationWithMultipleQueues(
-        new Configuration());
+        conf);
     csConf.setInt(
         CapacitySchedulerConfiguration.SCHEDULE_ASYNCHRONOUSLY_MAXIMUM_THREAD,
         numThreads);
     csConf.setInt(CapacitySchedulerConfiguration.SCHEDULE_ASYNCHRONOUSLY_PREFIX
         + ".scheduling-interval-ms", 0);
-    csConf.set(YarnConfiguration.RM_PLACEMENT_CONSTRAINTS_HANDLER,
-        YarnConfiguration.SCHEDULER_RM_PLACEMENT_CONSTRAINTS_HANDLER);
 
     // inject node label manager
     MockRM rm1 = new MockRM(csConf) {
@@ -86,53 +110,74 @@ public class TestSchedulingRequestContainerAllocationAsync {
     }
 
     // app1 -> c
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "c");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("c")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nms[0]);
 
-    // app1 asks for 10 anti-affinity containers for the same app. It should
-    // only get 4 containers allocated because we only have 4 nodes.
+    // app1 asks for 1000 anti-affinity containers for the same app. It should
+    // only get 200 containers allocated because we only have 200 nodes.
     am1.allocateIntraAppAntiAffinity(
         ResourceSizing.newInstance(1000, Resource.newInstance(1024, 1)),
         Priority.newInstance(1), 1L, ImmutableSet.of("mapper"), "mapper");
 
-    CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
-
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < nNMs; j++) {
-        cs.handle(new NodeUpdateSchedulerEvent(rmNodes[j]));
-      }
-    }
-
-    // App1 should get #NM + 1 containers allocated (1 node each + 1 AM).
-    FiCaSchedulerApp schedulerApp = cs.getApplicationAttempt(
-        am1.getApplicationAttemptId());
-    Assert.assertEquals(nNMs + 1, schedulerApp.getLiveContainers().size());
+    List<Container> allocated = TestSchedulingRequestContainerAllocation.
+            waitForAllocation(nNMs, 6000, am1, nms);
+    assertEquals(nNMs, allocated.size());
+    assertEquals(nNMs, TestSchedulingRequestContainerAllocation.
+        getContainerNodesNum(allocated));
 
     rm1.close();
   }
 
-  @Test(timeout = 300000)
-  public void testSingleThreadAsyncContainerAllocation() throws Exception {
+  @Timeout(value = 300)
+  @ParameterizedTest
+  @MethodSource("placementConstarintHandlers")
+  public void testSingleThreadAsyncContainerAllocation(
+      String pPlacementConstraintHandler) throws Exception {
+    initTestSchedulingRequestContainerAllocationAsync(pPlacementConstraintHandler);
     testIntraAppAntiAffinityAsync(1);
   }
 
-  @Test(timeout = 300000)
-  public void testTwoThreadsAsyncContainerAllocation() throws Exception {
+  @Timeout(value = 300)
+  @ParameterizedTest
+  @MethodSource("placementConstarintHandlers")
+  public void testTwoThreadsAsyncContainerAllocation(
+      String pPlacementConstraintHandler) throws Exception {
+    initTestSchedulingRequestContainerAllocationAsync(pPlacementConstraintHandler);
     testIntraAppAntiAffinityAsync(2);
   }
 
-  @Test(timeout = 300000)
-  public void testThreeThreadsAsyncContainerAllocation() throws Exception {
+  @Timeout(value = 300)
+  @ParameterizedTest
+  @MethodSource("placementConstarintHandlers")
+  public void testThreeThreadsAsyncContainerAllocation(
+      String pPlacementConstraintHandler) throws Exception {
+    initTestSchedulingRequestContainerAllocationAsync(pPlacementConstraintHandler);
     testIntraAppAntiAffinityAsync(3);
   }
 
-  @Test(timeout = 300000)
-  public void testFourThreadsAsyncContainerAllocation() throws Exception {
+  @Timeout(value = 300)
+  @ParameterizedTest
+  @MethodSource("placementConstarintHandlers")
+  public void testFourThreadsAsyncContainerAllocation(
+      String pPlacementConstraintHandler) throws Exception {
+    initTestSchedulingRequestContainerAllocationAsync(pPlacementConstraintHandler);
     testIntraAppAntiAffinityAsync(4);
   }
 
-  @Test(timeout = 300000)
-  public void testFiveThreadsAsyncContainerAllocation() throws Exception {
+  @Timeout(value = 300)
+  @ParameterizedTest
+  @MethodSource("placementConstarintHandlers")
+  public void testFiveThreadsAsyncContainerAllocation(
+      String pPlacementConstraintHandler) throws Exception {
+    initTestSchedulingRequestContainerAllocationAsync(pPlacementConstraintHandler);
     testIntraAppAntiAffinityAsync(5);
   }
 }

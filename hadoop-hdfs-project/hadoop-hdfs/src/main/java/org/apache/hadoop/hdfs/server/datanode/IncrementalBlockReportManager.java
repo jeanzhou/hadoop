@@ -37,8 +37,8 @@ import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 /**
  * Manage Incremental Block Reports (IBRs).
@@ -128,8 +128,8 @@ class IncrementalBlockReportManager {
       = Maps.newHashMap();
 
   /**
-   * If this flag is set then an IBR will be sent immediately by the actor
-   * thread without waiting for the IBR timer to elapse.
+   * If this flag is set then an IBR will be sent by the actor
+   * thread after waiting for the IBR timer to elapse.
    */
   private volatile boolean readyToSend = false;
 
@@ -194,7 +194,7 @@ class IncrementalBlockReportManager {
 
   /** Send IBRs to namenode. */
   void sendIBRs(DatanodeProtocol namenode, DatanodeRegistration registration,
-      String bpid) throws IOException {
+      String bpid, String nnRpcLatencySuffix) throws IOException {
     // Generate a list of the pending reports for each storage under the lock
     final StorageReceivedDeletedBlocks[] reports = generateIBRs();
     if (reports.length == 0) {
@@ -214,13 +214,17 @@ class IncrementalBlockReportManager {
     } finally {
 
       if (success) {
-        dnMetrics.addIncrementalBlockReport(monotonicNow() - startTime);
+        dnMetrics.addIncrementalBlockReport(monotonicNow() - startTime,
+            nnRpcLatencySuffix);
         lastIBR = startTime;
       } else {
         // If we didn't succeed in sending the report, put all of the
         // blocks back onto our queue, but only in the case where we
         // didn't put something newer in the meantime.
         putMissing(reports);
+        LOG.warn("Failed to call blockReceivedAndDeleted: {}, nnId: {}"
+            + ", duration(ms): {}", Arrays.toString(reports),
+            nnRpcLatencySuffix, monotonicNow() - startTime);
       }
     }
   }

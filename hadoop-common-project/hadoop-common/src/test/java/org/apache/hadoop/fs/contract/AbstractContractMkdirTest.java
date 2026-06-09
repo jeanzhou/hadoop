@@ -22,10 +22,11 @@ import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.ParentNotDirectoryException;
 import org.apache.hadoop.fs.Path;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
+import static org.apache.hadoop.fs.contract.ContractTestUtils.assertMkdirs;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.createFile;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.dataset;
 
@@ -33,6 +34,9 @@ import static org.apache.hadoop.fs.contract.ContractTestUtils.dataset;
  * Test directory operations
  */
 public abstract class AbstractContractMkdirTest extends AbstractFSContractTestBase {
+
+  public static final String MKDIRS_NOT_FAILED_OVER_FILE =
+      "mkdirs did not fail over a file but returned ";
 
   @Test
   public void testMkDirRmDir() throws Throwable {
@@ -65,7 +69,7 @@ public abstract class AbstractContractMkdirTest extends AbstractFSContractTestBa
     createFile(getFileSystem(), path, false, dataset);
     try {
       boolean made = fs.mkdirs(path);
-      fail("mkdirs did not fail over a file but returned " + made
+      fail(MKDIRS_NOT_FAILED_OVER_FILE + made
             + "; " + ls(path));
     } catch (ParentNotDirectoryException | FileAlreadyExistsException e) {
       //parent is a directory
@@ -92,7 +96,7 @@ public abstract class AbstractContractMkdirTest extends AbstractFSContractTestBa
     Path child = new Path(path,"child-to-mkdir");
     try {
       boolean made = fs.mkdirs(child);
-      fail("mkdirs did not fail over a file but returned " + made
+      fail(MKDIRS_NOT_FAILED_OVER_FILE + made
            + "; " + ls(path));
     } catch (ParentNotDirectoryException | FileAlreadyExistsException e) {
       //parent is a directory
@@ -175,4 +179,11 @@ public abstract class AbstractContractMkdirTest extends AbstractFSContractTestBa
     }
   }
 
+  @Test
+  public void testCreateDirWithExistingDir() throws Exception {
+    Path path = path("testCreateDirWithExistingDir");
+    final FileSystem fs = getFileSystem();
+    assertMkdirs(fs, path);
+    assertMkdirs(fs, path);
+  }
 }

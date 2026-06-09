@@ -17,10 +17,14 @@
  */
 package org.apache.hadoop.hdfs;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Maps;
-import com.google.common.primitives.SignedBytes;
+import org.apache.commons.collections4.list.TreeList;
+import org.apache.hadoop.ipc.RpcNoSuchMethodException;
+import org.apache.hadoop.net.DomainNameResolver;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.SignedBytes;
+import java.net.URISyntaxException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
@@ -28,20 +32,25 @@ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.apache.hadoop.hdfs.client.impl.SnapshotDiffReportGenerator;
 import org.apache.hadoop.hdfs.net.BasicInetPeer;
 import org.apache.hadoop.hdfs.net.NioInetPeer;
 import org.apache.hadoop.hdfs.net.Peer;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.EncryptionZone;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair;
 import org.apache.hadoop.hdfs.protocol.ReconfigurationProtocol;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing;
 import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataEncryptionKeyFactory;
 import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing.DiffReportListingEntry;
 import org.apache.hadoop.hdfs.protocolPB.ClientDatanodeProtocolTranslatorPB;
 import org.apache.hadoop.hdfs.protocolPB.ReconfigurationProtocolTranslatorPB;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
@@ -52,7 +61,9 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.net.NodeBase;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.util.ChunkedArrayList;
 import org.apache.hadoop.util.Daemon;
+import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,6 +81,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -92,7 +104,11 @@ import java.util.Arrays;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATA_TRANSFER_CLIENT_TCPNODELAY_DEFAULT;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATA_TRANSFER_CLIENT_TCPNODELAY_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_NAMENODE_RPC_ADDRESS_AUXILIARY_KEY;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_NAMESERVICES;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Failover.DFS_CLIENT_LAZY_RESOLVED;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Failover.DFS_CLIENT_LAZY_RESOLVED_DEFAULT;
 
 @InterfaceAudience.Private
 public class DFSUtilClient {
@@ -139,7 +155,10 @@ public class DFSUtilClient {
    */
   public static byte[][] bytes2byteArray(byte[] bytes, int len,
       byte separator) {
-    Preconditions.checkPositionIndex(len, bytes.length);
+    if (len < 0 || len > bytes.length) {
+      throw new IndexOutOfBoundsException(
+          "Incorrect index [len, size] [" + len + ", " + bytes.length + "]");
+    }
     if (len == 0) {
       return new byte[][]{null};
     }
@@ -191,7 +210,7 @@ public class DFSUtilClient {
   /**
    * Returns collection of nameservice Ids from the configuration.
    * @param conf configuration
-   * @return collection of nameservice Ids, or null if not specified
+   * @return collection of nameservice Ids. Empty list if unspecified.
    */
   public static Collection<String> getNameServiceIds(Configuration conf) {
     return conf.getTrimmedStringCollection(DFS_NAMESERVICES);
@@ -266,8 +285,8 @@ public class DFSUtilClient {
   }
 
   /**
-   * Convert a List<LocatedBlock> to BlockLocation[]
-   * @param blocks A List<LocatedBlock> to be converted
+   * Convert a List to BlockLocation[]
+   * @param blocks A List to be converted
    * @return converted array of BlockLocation
    */
   public static BlockLocation[] locatedBlocks2Locations(
@@ -352,6 +371,13 @@ public class DFSUtilClient {
   }
 
   /**
+   * Given a list of path components returns a string.
+   */
+  public static String byteArray2String(byte[][] pathComponents) {
+    return bytes2String(byteArray2bytes(pathComponents));
+  }
+
+  /**
    * Decode a specific range of bytes of the given byte array to a string
    * using UTF8.
    *
@@ -396,10 +422,82 @@ public class DFSUtilClient {
    * @param keys Set of keys to look for in the order of preference
    * @return a map(nameserviceId to map(namenodeId to InetSocketAddress))
    */
-  static Map<String, Map<String, InetSocketAddress>> getAddresses(
+  public static Map<String, Map<String, InetSocketAddress>> getAddresses(
       Configuration conf, String defaultAddress, String... keys) {
     Collection<String> nameserviceIds = getNameServiceIds(conf);
     return getAddressesForNsIds(conf, nameserviceIds, defaultAddress, keys);
+  }
+
+  /**
+   * Use DNS record to resolve NN and return resolved FQDN.
+   *
+   * @param conf Configuration
+   * @param nsId Nameservice Id to resolve
+   * @param dnr  Class used to resolve DNS
+   * @param defaultValue default address to return in case key is not found.
+   * @param keys Set of keys to look for in the order of preference
+   * @return a map(namenodeId to InetSocketAddress),
+   *         where namenodeId is combination of nsId,
+   *         resolved hostname and port.
+   */
+  static Map<String, InetSocketAddress> getResolvedAddressesForNsId(
+      Configuration conf, String nsId, DomainNameResolver dnr,
+      String defaultValue, String... keys) {
+    Collection<String> nnIds = getNameNodeIds(conf, nsId);
+    Map<String, InetSocketAddress> ret = Maps.newLinkedHashMap();
+    for (String nnId : emptyAsSingletonNull(nnIds)) {
+      Map<String, InetSocketAddress> resolvedAddressesForNnId =
+          getResolvedAddressesForNnId(conf, nsId, nnId, dnr, defaultValue, keys);
+      ret.putAll(resolvedAddressesForNnId);
+    }
+    return ret;
+  }
+
+  public static Map<String, InetSocketAddress> getResolvedAddressesForNnId(
+      Configuration conf, String nsId, String nnId,
+      DomainNameResolver dnr, String defaultValue,
+      String... keys) {
+    String suffix = concatSuffixes(nsId, nnId);
+    String address = checkKeysAndProcess(defaultValue, suffix, conf, keys);
+    Map<String, InetSocketAddress> ret = Maps.newLinkedHashMap();
+    if (address != null) {
+      InetSocketAddress isa = NetUtils.createSocketAddr(address);
+      try {
+        String[] resolvedHostNames = dnr
+            .getAllResolvedHostnameByDomainName(isa.getHostName(), true);
+        int port = isa.getPort();
+        for (String hostname : resolvedHostNames) {
+          InetSocketAddress inetSocketAddress = new InetSocketAddress(
+              hostname, port);
+          // Concat nn info with host info to make uniq ID
+          String concatId = getConcatNnId(nsId, nnId, hostname, port);
+          ret.put(concatId, inetSocketAddress);
+        }
+      } catch (UnknownHostException e) {
+        LOG.error("Failed to resolve address: {}", address);
+      }
+    }
+    return ret;
+  }
+
+  /**
+   * Concat nn info with host info to make uniq ID.
+   * This is mainly used when configured nn is
+   * a domain record that has multiple hosts behind it.
+   *
+   * @param nsId      nsId to be concatenated to a uniq ID.
+   * @param nnId      nnId to be concatenated to a uniq ID.
+   * @param hostname  hostname to be concatenated to a uniq ID.
+   * @param port      port to be concatenated to a uniq ID.
+   * @return          Concatenated uniq id.
+   */
+  private static String getConcatNnId(String nsId, String nnId, String hostname, int port) {
+    if (nnId == null || nnId.isEmpty()) {
+      return String
+          .join("-", nsId, hostname, String.valueOf(port));
+    }
+    return String
+          .join("-", nsId, nnId, hostname, String.valueOf(port));
   }
 
   /**
@@ -426,24 +524,111 @@ public class DFSUtilClient {
     return ret;
   }
 
-  static Map<String, InetSocketAddress> getAddressesForNameserviceId(
+  public static Map<String, InetSocketAddress> getAddressesForNameserviceId(
       Configuration conf, String nsId, String defaultValue, String... keys) {
     Collection<String> nnIds = getNameNodeIds(conf, nsId);
     Map<String, InetSocketAddress> ret = Maps.newLinkedHashMap();
     for (String nnId : emptyAsSingletonNull(nnIds)) {
       String suffix = concatSuffixes(nsId, nnId);
-      String address = getConfValue(defaultValue, suffix, conf, keys);
+      String address = checkKeysAndProcess(defaultValue, suffix, conf, keys);
       if (address != null) {
-        InetSocketAddress isa = NetUtils.createSocketAddr(address);
-        if (isa.isUnresolved()) {
-          LOG.warn("Namenode for {} remains unresolved for ID {}. Check your "
-              + "hdfs-site.xml file to ensure namenodes are configured "
-              + "properly.", nsId, nnId);
+        InetSocketAddress isa = null;
+        // There is no need to resolve host->ip in advance.
+        // Delay the resolution until the host is used.
+        if (conf.getBoolean(DFS_CLIENT_LAZY_RESOLVED, DFS_CLIENT_LAZY_RESOLVED_DEFAULT)) {
+          isa = NetUtils.createSocketAddrUnresolved(address);
+        }else {
+          isa = NetUtils.createSocketAddr(address);
+          if (isa.isUnresolved()) {
+            LOG.warn("Namenode for {} remains unresolved for ID {}. Check your "
+                + "hdfs-site.xml file to ensure namenodes are configured "
+                + "properly.", nsId, nnId);
+          }
         }
         ret.put(nnId, isa);
       }
     }
     return ret;
+  }
+
+  /**
+   * Return address from configuration. Take a list of keys as preference.
+   * If the address to be returned is the value of DFS_NAMENODE_RPC_ADDRESS_KEY,
+   * will check to see if auxiliary ports are enabled. If so, call to replace
+   * address port with auxiliary port. If the address is not the value of
+   * DFS_NAMENODE_RPC_ADDRESS_KEY, return the original address. If failed to
+   * find any address, return the given default value.
+   *
+   * @param defaultValue the default value if no values found for given keys
+   * @param suffix suffix to append to keys
+   * @param conf the configuration
+   * @param keys a list of keys, ordered by preference
+   * @return
+   */
+  private static String checkKeysAndProcess(String defaultValue, String suffix,
+      Configuration conf, String... keys) {
+    String succeededKey = null;
+    String address = null;
+    for (String key : keys) {
+      address = getConfValue(null, suffix, conf, key);
+      if (address != null) {
+        succeededKey = key;
+        break;
+      }
+    }
+    String ret;
+    if (address == null) {
+      ret = defaultValue;
+    } else if(DFS_NAMENODE_RPC_ADDRESS_KEY.equals(succeededKey))  {
+      ret = checkRpcAuxiliary(conf, suffix, address);
+    } else {
+      ret = address;
+    }
+    return ret;
+  }
+
+  /**
+   * Check if auxiliary port is enabled, if yes, check if the given address
+   * should have its port replaced by an auxiliary port. If the given address
+   * does not contain a port, append the auxiliary port to enforce using it.
+   *
+   * @param conf configuration.
+   * @param address the address to check and modify (if needed).
+   * @return the new modified address containing auxiliary port, or original
+   * address if auxiliary port not enabled.
+   */
+  private static String checkRpcAuxiliary(Configuration conf, String suffix,
+      String address) {
+    String key = DFS_NAMENODE_RPC_ADDRESS_AUXILIARY_KEY;
+    key = addSuffix(key, suffix);
+    int[] ports = conf.getInts(key);
+    if (ports == null || ports.length == 0) {
+      return address;
+    }
+    LOG.info("Using server auxiliary ports {}", Arrays.toString(ports));
+    URI uri;
+    try {
+      uri = new URI(address);
+    } catch (URISyntaxException e) {
+      // return the original address untouched if it is not a valid URI. This
+      // happens in unit test, as MiniDFSCluster sets the value to
+      // 127.0.0.1:0, without schema (i.e. "hdfs://"). While in practice, this
+      // should not be the case. So log a warning message here.
+      LOG.warn("NameNode address is not a valid uri:{}", address);
+      return address;
+    }
+    // Ignore the port, only take the schema(e.g. hdfs) and host (e.g.
+    // localhost), then append port
+    // TODO : revisit if there is a better way
+    StringBuilder sb = new StringBuilder();
+    sb.append(uri.getScheme())
+        .append("://")
+        .append(uri.getHost())
+        .append(":");
+    // TODO : currently, only the very first auxiliary port is being used.
+    // But actually NN supports running multiple auxiliary
+    sb.append(ports[0]);
+    return sb.toString();
   }
 
   /**
@@ -485,6 +670,10 @@ public class DFSUtilClient {
     String[] components = StringUtils.split(src, '/');
     for (int i = 0; i < components.length; i++) {
       String element = components[i];
+      // For Windows, we must allow the : in the drive letter.
+      if (Shell.WINDOWS && i == 1 && element.endsWith(":")) {
+        continue;
+      }
       if (element.equals(".")  ||
           (element.contains(":"))  ||
           (element.contains("/"))) {
@@ -558,13 +747,13 @@ public class DFSUtilClient {
     InetAddress addr = targetAddr.getAddress();
     Boolean cached = localAddrMap.get(addr.getHostAddress());
     if (cached != null) {
-      LOG.trace("Address {} is {} local", targetAddr, (cached ? "" : "not"));
+      LOG.trace("Address {} is{} local", targetAddr, (cached ? "" : " not"));
       return cached;
     }
 
     boolean local = NetUtils.isLocalAddress(addr);
 
-    LOG.trace("Address {} is {} local", targetAddr, (local ? "" : "not"));
+    LOG.trace("Address {} is{} local", targetAddr, (local ? "" : " not"));
     localAddrMap.put(addr.getHostAddress(), local);
     return local;
   }
@@ -649,7 +838,7 @@ public class DFSUtilClient {
       return peer;
     } finally {
       if (!success) {
-        IOUtilsClient.cleanup(null, peer);
+        IOUtilsClient.cleanupWithLogger(LOG, peer);
       }
     }
   }
@@ -751,14 +940,14 @@ public class DFSUtilClient {
   public static class CorruptedBlocks {
     private Map<ExtendedBlock, Set<DatanodeInfo>> corruptionMap;
 
-    public CorruptedBlocks() {
-      this.corruptionMap = new HashMap<>();
-    }
-
     /**
      * Indicate a block replica on the specified datanode is corrupted
      */
     public void addCorruptedBlock(ExtendedBlock blk, DatanodeInfo node) {
+      if (corruptionMap == null) {
+        corruptionMap = new HashMap<>();
+      }
+
       Set<DatanodeInfo> dnSet = corruptionMap.get(blk);
       if (dnSet == null) {
         dnSet = new HashSet<>();
@@ -770,7 +959,8 @@ public class DFSUtilClient {
     }
 
     /**
-     * @return the map that contains all the corruption entries.
+     * @return the map that contains all the corruption entries, or null if
+     * there were no corrupted entries
      */
     public Map<ExtendedBlock, Set<DatanodeInfo>> getCorruptionMap() {
       return corruptionMap;
@@ -880,8 +1070,8 @@ public class DFSUtilClient {
         @Override
         public void rejectedExecution(Runnable runnable,
             ThreadPoolExecutor e) {
-          LOG.info(threadNamePrefix + " task is rejected by " +
-                  "ThreadPoolExecutor. Executing it in current thread.");
+          LOG.info("{} task is rejected by " +
+              "ThreadPoolExecutor. Executing it in current thread.", threadNamePrefix);
           // will run in the current thread
           super.rejectedExecution(runnable, e);
         }
@@ -910,4 +1100,125 @@ public class DFSUtilClient {
     return new Path(sb.toString());
   }
 
+  /**
+   * Returns current user home directory under a home directory prefix.
+   * The home directory prefix can be defined by
+   * {@link HdfsClientConfigKeys#DFS_USER_HOME_DIR_PREFIX_KEY}.
+   * User info is obtained from given {@link UserGroupInformation}.
+   * @param conf configuration
+   * @param ugi {@link UserGroupInformation} of current user.
+   * @return the home directory of current user.
+   */
+  public static String getHomeDirectory(Configuration conf,
+      UserGroupInformation ugi) {
+    String userHomePrefix = HdfsClientConfigKeys
+        .DFS_USER_HOME_DIR_PREFIX_DEFAULT;
+    if (conf != null) {
+      userHomePrefix = conf.get(
+          HdfsClientConfigKeys.DFS_USER_HOME_DIR_PREFIX_KEY,
+          HdfsClientConfigKeys.DFS_USER_HOME_DIR_PREFIX_DEFAULT);
+    }
+    return userHomePrefix + Path.SEPARATOR + ugi.getShortUserName();
+  }
+
+  /**
+   * Returns trash root in non-encryption zone.
+   * @param conf configuration.
+   * @param ugi user of trash owner.
+   * @return unqualified path of trash root.
+   */
+  public static String getTrashRoot(Configuration conf,
+      UserGroupInformation ugi) {
+    return getHomeDirectory(conf, ugi)
+        + Path.SEPARATOR + FileSystem.TRASH_PREFIX;
+  }
+
+  /**
+   * Returns trash root in encryption zone.
+   * @param ez encryption zone.
+   * @param ugi user of trash owner.
+   * @return unqualified path of trash root.
+   */
+  public static String getEZTrashRoot(EncryptionZone ez,
+      UserGroupInformation ugi) {
+    String ezpath = ez.getPath();
+    return (ezpath.equals("/") ? ezpath : ezpath + Path.SEPARATOR)
+        + FileSystem.TRASH_PREFIX + Path.SEPARATOR + ugi.getShortUserName();
+  }
+
+  /**
+   * Returns trash root in a snapshottable directory.
+   * @param ssRoot String of path to a snapshottable directory root.
+   * @param ugi user of trash owner.
+   * @return unqualified path of trash root.
+   */
+  public static String getSnapshotTrashRoot(String ssRoot,
+      UserGroupInformation ugi) {
+    return (ssRoot.equals("/") ? ssRoot : ssRoot + Path.SEPARATOR)
+        + FileSystem.TRASH_PREFIX + Path.SEPARATOR + ugi.getShortUserName();
+  }
+
+  /**
+   * Returns true if the name of snapshot is vlaid.
+   * @param snapshotName name of the snapshot.
+   * @return true if the name of snapshot is vlaid.
+   */
+  public static boolean isValidSnapshotName(String snapshotName) {
+    // If any of the snapshots specified in the getSnapshotDiffReport call
+    // is null or empty, it points to the current tree.
+    return (snapshotName != null && !snapshotName.isEmpty());
+  }
+
+  public static SnapshotDiffReport getSnapshotDiffReport(
+      String snapshotDir, String fromSnapshot, String toSnapshot,
+      SnapshotDiffReportFunction withoutListing,
+      SnapshotDiffReportListingFunction withListing) throws IOException {
+    // In case the diff needs to be computed between a snapshot and the current
+    // tree, we should not do iterative diffReport computation as the iterative
+    // approach might fail if in between the rpc calls the current tree
+    // changes in absence of the global fsn lock.
+    if (!isValidSnapshotName(fromSnapshot) || !isValidSnapshotName(toSnapshot)) {
+      return withoutListing.apply(snapshotDir, fromSnapshot, toSnapshot);
+    }
+    byte[] startPath = EMPTY_BYTES;
+    int index = -1;
+    SnapshotDiffReportGenerator snapshotDiffReport;
+    List<DiffReportListingEntry> modifiedList = new TreeList();
+    List<DiffReportListingEntry> createdList = new ChunkedArrayList<>();
+    List<DiffReportListingEntry> deletedList = new ChunkedArrayList<>();
+    SnapshotDiffReportListing report;
+    do {
+      try {
+        report = withListing.apply(snapshotDir, fromSnapshot, toSnapshot, startPath, index);
+      } catch (RpcNoSuchMethodException|UnsupportedOperationException e) {
+        // In case the server doesn't support getSnapshotDiffReportListing,
+        // fallback to getSnapshotDiffReport.
+        LOG.warn("Falling back to getSnapshotDiffReport {}", e.getMessage());
+        return withoutListing.apply(snapshotDir, fromSnapshot, toSnapshot);
+      }
+      startPath = report.getLastPath();
+      index = report.getLastIndex();
+      modifiedList.addAll(report.getModifyList());
+      createdList.addAll(report.getCreateList());
+      deletedList.addAll(report.getDeleteList());
+    } while (!(Arrays.equals(startPath, EMPTY_BYTES)
+        && index == -1));
+    snapshotDiffReport =
+        new SnapshotDiffReportGenerator(snapshotDir, fromSnapshot, toSnapshot,
+            report.getIsFromEarlier(), modifiedList, createdList, deletedList);
+    return snapshotDiffReport.generateReport();
+  }
+
+  @FunctionalInterface
+  public interface SnapshotDiffReportFunction {
+    SnapshotDiffReport apply(String snapshotDir, String fromSnapshot, String toSnapshot)
+        throws IOException;
+  }
+
+  @FunctionalInterface
+  public interface SnapshotDiffReportListingFunction {
+    SnapshotDiffReportListing apply(String snapshotDir, String fromSnapshot, String toSnapshot,
+        byte[] startPath, int index)
+        throws IOException;
+  }
 }

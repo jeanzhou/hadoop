@@ -30,8 +30,9 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.RoundRobinVolumeChoosingPolicy;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.VolumeChoosingPolicy;
 import org.apache.hadoop.net.Node;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -42,9 +43,9 @@ import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test to ensure that the StorageType and StorageID sent from Namenode
@@ -58,7 +59,7 @@ public class TestNamenodeStorageDirectives {
 
   private MiniDFSCluster cluster;
 
-  @After
+  @AfterEach
   public void tearDown() {
     shutdown();
   }
@@ -192,7 +193,8 @@ public class TestNamenodeStorageDirectives {
    * Types.
    * @throws IOException
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 120)
   public void testTargetStorageTypes() throws ReconfigurationException,
       InterruptedException, TimeoutException, IOException {
     // DISK and not anything else.
@@ -201,7 +203,8 @@ public class TestNamenodeStorageDirectives {
             {StorageType.SSD, StorageType.DISK}},
         "ONE_SSD",
         new StorageType[]{StorageType.SSD, StorageType.DISK},
-        new StorageType[]{StorageType.RAM_DISK, StorageType.ARCHIVE});
+        new StorageType[]{StorageType.RAM_DISK, StorageType.ARCHIVE,
+            StorageType.NVDIMM});
     // only on SSD.
     testStorageTypes(new StorageType[][]{
             {StorageType.SSD, StorageType.DISK},
@@ -209,7 +212,7 @@ public class TestNamenodeStorageDirectives {
         "ALL_SSD",
         new StorageType[]{StorageType.SSD},
         new StorageType[]{StorageType.RAM_DISK, StorageType.DISK,
-            StorageType.ARCHIVE});
+            StorageType.ARCHIVE, StorageType.NVDIMM});
     // only on SSD.
     testStorageTypes(new StorageType[][]{
             {StorageType.SSD, StorageType.DISK, StorageType.DISK},
@@ -218,7 +221,7 @@ public class TestNamenodeStorageDirectives {
         "ALL_SSD",
         new StorageType[]{StorageType.SSD},
         new StorageType[]{StorageType.RAM_DISK, StorageType.DISK,
-            StorageType.ARCHIVE});
+            StorageType.ARCHIVE, StorageType.NVDIMM});
 
     // DISK and not anything else.
     testStorageTypes(new StorageType[][] {
@@ -228,7 +231,7 @@ public class TestNamenodeStorageDirectives {
         "HOT",
         new StorageType[]{StorageType.DISK},
         new StorageType[] {StorageType.RAM_DISK, StorageType.SSD,
-            StorageType.ARCHIVE});
+            StorageType.ARCHIVE, StorageType.NVDIMM});
 
     testStorageTypes(new StorageType[][] {
             {StorageType.RAM_DISK, StorageType.SSD},
@@ -237,7 +240,8 @@ public class TestNamenodeStorageDirectives {
             {StorageType.ARCHIVE, StorageType.ARCHIVE}},
         "WARM",
         new StorageType[]{StorageType.DISK, StorageType.ARCHIVE},
-        new StorageType[]{StorageType.RAM_DISK, StorageType.SSD});
+        new StorageType[]{StorageType.RAM_DISK, StorageType.SSD,
+            StorageType.NVDIMM});
 
     testStorageTypes(new StorageType[][] {
             {StorageType.RAM_DISK, StorageType.SSD},
@@ -247,7 +251,7 @@ public class TestNamenodeStorageDirectives {
         "COLD",
         new StorageType[]{StorageType.ARCHIVE},
         new StorageType[]{StorageType.RAM_DISK, StorageType.SSD,
-            StorageType.DISK});
+            StorageType.DISK, StorageType.NVDIMM});
 
     // We wait for Lasy Persist to write to disk.
     testStorageTypes(new StorageType[][] {
@@ -257,7 +261,15 @@ public class TestNamenodeStorageDirectives {
         "LAZY_PERSIST",
         new StorageType[]{StorageType.DISK},
         new StorageType[]{StorageType.RAM_DISK, StorageType.SSD,
-            StorageType.ARCHIVE});
+            StorageType.ARCHIVE, StorageType.NVDIMM});
+
+    testStorageTypes(new StorageType[][] {
+            {StorageType.NVDIMM, StorageType.DISK, StorageType.SSD},
+            {StorageType.NVDIMM, StorageType.DISK, StorageType.SSD}},
+            "ALL_NVDIMM",
+            new StorageType[]{StorageType.NVDIMM},
+            new StorageType[]{StorageType.RAM_DISK, StorageType.SSD,
+                StorageType.DISK, StorageType.ARCHIVE});
   }
 
   /**
@@ -301,7 +313,8 @@ public class TestNamenodeStorageDirectives {
     return dnManager.getDatanode(dnId).getStorageInfos()[0];
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testStorageIDBlockPlacementSpecific()
       throws ReconfigurationException, InterruptedException, TimeoutException,
       IOException {

@@ -20,9 +20,8 @@ package org.apache.hadoop.security.token.delegation.web;
 import java.io.IOException;
 import java.io.Writer;
 import java.text.MessageFormat;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -54,12 +53,12 @@ import org.slf4j.LoggerFactory;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * An {@link AuthenticationHandler} that implements Kerberos SPNEGO mechanism
  * for HTTP and supports Delegation Token functionality.
- * <p/>
+ * <p>
  * In addition to the wrapped {@link AuthenticationHandler} configuration
  * properties, this handler supports the following properties prefixed
  * with the type of the wrapped <code>AuthenticationHandler</code>:
@@ -90,7 +89,7 @@ public abstract class DelegationTokenAuthenticationHandler
 
   public static final String TOKEN_KIND = PREFIX + "token-kind";
 
-  private static final Set<String> DELEGATION_TOKEN_OPS = new HashSet<String>();
+  private static final Set<String> DELEGATION_TOKEN_OPS = new HashSet<>();
 
   public static final String DELEGATION_TOKEN_UGI_ATTRIBUTE =
       "hadoop.security.delegation-token.ugi";
@@ -135,7 +134,7 @@ public abstract class DelegationTokenAuthenticationHandler
   /**
    * Sets an external <code>DelegationTokenSecretManager</code> instance to
    * manage creation and verification of Delegation Tokens.
-   * <p/>
+   * <p>
    * This is useful for use cases where secrets must be shared across multiple
    * services.
    *
@@ -301,8 +300,7 @@ public abstract class DelegationTokenAuthenticationHandler
                   dt.decodeFromUrlString(tokenToRenew);
                   long expirationTime = tokenManager.renewToken(dt,
                       requestUgi.getShortUserName());
-                  map = new HashMap();
-                  map.put("long", expirationTime);
+                  map = Collections.singletonMap("long", expirationTime);
                 } catch (IOException ex) {
                   throw new AuthenticationException(ex.toString(), ex);
                 }
@@ -358,13 +356,11 @@ public abstract class DelegationTokenAuthenticationHandler
 
   @SuppressWarnings("unchecked")
   private static Map delegationTokenToJSON(Token token) throws IOException {
-    Map json = new LinkedHashMap();
-    json.put(
+    Map json = Collections.singletonMap(
         KerberosDelegationTokenAuthenticator.DELEGATION_TOKEN_URL_STRING_JSON,
         token.encodeToUrlString());
-    Map response = new LinkedHashMap();
-    response.put(KerberosDelegationTokenAuthenticator.DELEGATION_TOKEN_JSON,
-        json);
+    Map response = Collections.singletonMap(
+        KerberosDelegationTokenAuthenticator.DELEGATION_TOKEN_JSON, json);
     return response;
   }
 

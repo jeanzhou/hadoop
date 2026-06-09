@@ -19,52 +19,122 @@
 package org.apache.hadoop.fs.s3a;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.contract.AbstractFSContract;
 import org.apache.hadoop.fs.contract.AbstractFSContractTestBase;
 import org.apache.hadoop.fs.contract.ContractTestUtils;
 import org.apache.hadoop.fs.contract.s3a.S3AContract;
+import org.apache.hadoop.fs.statistics.IOStatisticsSnapshot;
+import org.apache.hadoop.fs.statistics.IOStatisticsContext;
+import org.apache.hadoop.fs.store.audit.AuditSpan;
+import org.apache.hadoop.fs.store.audit.AuditSpanSource;
 import org.apache.hadoop.io.IOUtils;
-import org.junit.Before;
+import org.apache.hadoop.test.tags.IntegrationTest;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.hadoop.fs.contract.ContractTestUtils.dataset;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.writeDataset;
-import static org.apache.hadoop.fs.s3a.S3ATestUtils.maybeEnableS3Guard;
-import static org.apache.hadoop.fs.s3a.commit.CommitConstants.MAGIC_COMMITTER_ENABLED;
+import static org.apache.hadoop.fs.statistics.IOStatisticsLogging.ioStatisticsToPrettyString;
+import static org.apache.hadoop.fs.statistics.IOStatisticsSupport.snapshotIOStatistics;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * An extension of the contract test base set up for S3A tests.
  */
+@IntegrationTest
 public abstract class AbstractS3ATestBase extends AbstractFSContractTestBase
     implements S3ATestConstants {
-
   protected static final Logger LOG =
       LoggerFactory.getLogger(AbstractS3ATestBase.class);
 
-  @Override
-  protected AbstractFSContract createContract(Configuration conf) {
-    return new S3AContract(conf);
+  /**
+   * FileSystem statistics are collected across every test case.
+   */
+  protected static final IOStatisticsSnapshot FILESYSTEM_IOSTATS =
+      snapshotIOStatistics();
+
+  /**
+   * Source of audit spans.
+   */
+  private AuditSpanSource spanSource;
+
+  /**
+   * Atomic references to be used to re-throw an Exception or an ASE
+   * caught inside a lambda function.
+   */
+  private static final AtomicReference<Exception> FUTURE_EXCEPTION =
+      new AtomicReference<>();
+  private static final AtomicReference<AssertionError> FUTURE_ASE =
+      new AtomicReference<>();
+
+  /**
+   * Get the source.
+   * @return span source
+   */
+  protected AuditSpanSource getSpanSource() {
+    return spanSource;
+  }
+
+  /**
+   * Set the span source.
+   * @param spanSource new value.
+   */
+  protected void setSpanSource(final AuditSpanSource spanSource) {
+    this.spanSource = spanSource;
   }
 
   @Override
+  protected AbstractFSContract createContract(Configuration conf) {
+    return new S3AContract(conf, false);
+  }
+
+  @BeforeEach
+  @Override
+  public void setup() throws Exception {
+    Thread.currentThread().setName("setup");
+    // force load the local FS -not because we want the FS, but we need all
+    // filesystems which add default configuration resources to do it before
+    // our tests start adding/removing options. See HADOOP-16626.
+    FileSystem.getLocal(new Configuration());
+    // Force deprecated key load through the
+    // static initializers. See: HADOOP-17385
+    S3AFileSystem.initializeClass();
+    super.setup();
+    setSpanSource(getFileSystem());
+    // Reset the current context's thread IOStatistics.`
+    // this ensures that the context stats will always be from the test case
+    IOStatisticsContext.getCurrentIOStatisticsContext().reset();
+  }
+
+  @AfterEach
+  @Override
   public void teardown() throws Exception {
+    Thread.currentThread().setName("teardown");
+
     super.teardown();
+    if (getFileSystem() != null) {
+      FILESYSTEM_IOSTATS.aggregate(getFileSystem().getIOStatistics());
+    }
     describe("closing file system");
     IOUtils.closeStream(getFileSystem());
   }
 
-  @Before
-  public void nameThread() {
-    Thread.currentThread().setName("JUnit-" + getMethodName());
-  }
-
-  protected String getMethodName() {
-    return methodName.getMethodName();
+  /**
+   * Dump the filesystem statistics after the class.
+   */
+  @AfterAll
+  public static void dumpFileSystemIOStatistics() {
+    LOG.info("Aggregate FileSystem Statistics {}",
+        ioStatisticsToPrettyString(FILESYSTEM_IOSTATS));
   }
 
   @Override
@@ -73,28 +143,13 @@ public abstract class AbstractS3ATestBase extends AbstractFSContractTestBase
   }
 
   /**
-   * Create a configuration, possibly patching in S3Guard options.
+   * Create a configuration.
    * @return a configuration
    */
   @Override
   protected Configuration createConfiguration() {
     Configuration conf = super.createConfiguration();
-    // patch in S3Guard options
-    maybeEnableS3Guard(conf);
-    // set hadoop temp dir to a default value
-    String testUniqueForkId =
-        System.getProperty(TEST_UNIQUE_FORK_ID);
-    String tmpDir = conf.get(Constants.HADOOP_TMP_DIR, "target/build/test");
-    if (testUniqueForkId != null) {
-      // patch temp dir for the specific branch
-      tmpDir = tmpDir + File.pathSeparatorChar + testUniqueForkId;
-      conf.set(Constants.HADOOP_TMP_DIR, tmpDir);
-    }
-    conf.set(Constants.BUFFER_DIR, tmpDir);
-    // add this so that even on tests where the FS is shared,
-    // the FS is always "magic"
-    conf.setBoolean(MAGIC_COMMITTER_ENABLED, true);
-    return conf;
+    return S3ATestUtils.prepareTestConfiguration(conf);
   }
 
   protected Configuration getConfiguration() {
@@ -110,6 +165,14 @@ public abstract class AbstractS3ATestBase extends AbstractFSContractTestBase
     return (S3AFileSystem) super.getFileSystem();
   }
 
+  /**
+   * Get the {@link S3AInternals} internal access for the
+   * test filesystem.
+   * @return internals.
+   */
+  public S3AInternals getS3AInternals() {
+    return getFileSystem().getS3AInternals();
+  }
   /**
    * Describe a test in the logs.
    * @param text text to print
@@ -149,15 +212,81 @@ public abstract class AbstractS3ATestBase extends AbstractFSContractTestBase
   }
 
   /**
-   * Assert that an exception failed with a specific status code.
-   * @param e exception
-   * @param code expected status code
-   * @throws AWSS3IOException rethrown if the status code does not match.
+   * Create a span from the source; returns a no-op if
+   * creation fails or the source is null.
+   * Uses the test method name for the span.
+   * @return a span.
    */
-  protected void assertStatusCode(AWSS3IOException e, int code)
-      throws AWSS3IOException {
-    if (e.getStatusCode() != code) {
-      throw e;
+  protected AuditSpan span() throws IOException {
+    return span(getSpanSource());
+  }
+
+  /**
+   * Create a span from the source; returns a no-op if
+   * creation fails or the source is null.
+   * Uses the test method name for the span.
+   * @param source source of spans; can be an S3A FS
+   * @return a span.
+   */
+  protected AuditSpan span(AuditSpanSource source) throws IOException {
+
+    return source.createSpan(getMethodName(), null, null);
+  }
+
+  /**
+   *  Method to assume that S3 client side encryption is disabled on a test.
+   */
+  public void skipIfClientSideEncryption() {
+    assumeTrue(!getFileSystem().isCSEEnabled(),
+        "Skipping test if CSE is enabled");
+  }
+
+  /**
+   * If an exception is caught while doing some work in a Lambda function,
+   * store it in an atomic reference to be thrown later on.
+   * @param exception Exception caught.
+   */
+  public static void setFutureException(Exception exception) {
+    FUTURE_EXCEPTION.set(exception);
+  }
+
+  /**
+   * If an Assertion is caught while doing some work in a Lambda function,
+   * store it in an atomic reference to be thrown later on.
+   *
+   * @param ase Assertion Error caught.
+   */
+  public static void setFutureAse(AssertionError ase) {
+    FUTURE_ASE.set(ase);
+  }
+
+  /**
+   * throw the caught exception from the atomic reference and also clear the
+   * atomic reference so that we don't rethrow in another test.
+   *
+   * @throws Exception the exception caught.
+   */
+  public static void maybeReThrowFutureException() throws Exception {
+    if (FUTURE_EXCEPTION.get() != null) {
+      Exception exceptionToThrow = FUTURE_EXCEPTION.get();
+      // reset the atomic ref before throwing.
+      setFutureAse(null);
+      throw exceptionToThrow;
+    }
+  }
+
+  /**
+   * throw the Assertion error from the atomic reference and also clear the
+   * atomic reference so that we don't rethrow in another test.
+   *
+   * @throws Exception Assertion error caught.
+   */
+  public static void maybeReThrowFutureASE() throws Exception {
+    if (FUTURE_ASE.get() != null) {
+      AssertionError aseToThrow = FUTURE_ASE.get();
+      // reset the atomic ref before throwing.
+      setFutureAse(null);
+      throw aseToThrow;
     }
   }
 }

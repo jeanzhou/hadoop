@@ -21,36 +21,37 @@ package org.apache.hadoop.hdfs.server.datanode;
 import java.io.IOException;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.*;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
-import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.StorageBlockReport;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY;
 import org.apache.hadoop.test.GenericTestUtils;
 
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
-import static org.mockito.Matchers.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.times;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests that the DataNode respects
  * {@link DFSConfigKeys#DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY}
  */
 public class TestDnRespectsBlockReportSplitThreshold {
-  public static final Log LOG = LogFactory.getLog(TestStorageReport.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestStorageReport.class);
 
   private static final int BLOCK_SIZE = 1024;
   private static final short REPL_FACTOR = 1;
@@ -72,7 +73,7 @@ public class TestDnRespectsBlockReportSplitThreshold {
     bpid = cluster.getNamesystem().getBlockPoolId();
   }
 
-  @After
+  @AfterEach
   public void shutDownCluster() throws IOException {
     if (cluster != null) {
       fs.close();
@@ -96,7 +97,7 @@ public class TestDnRespectsBlockReportSplitThreshold {
     List<StorageBlockReport[]> listOfReports = captor.getAllValues();
     int numBlocksReported = 0;
     for (StorageBlockReport[] reports : listOfReports) {
-      assertThat(reports.length, is(expectedReportsPerCall));
+      assertThat(reports.length).isEqualTo(expectedReportsPerCall);
 
       for (StorageBlockReport report : reports) {
         BlockListAsLongs blockList = report.getBlocks();
@@ -111,7 +112,8 @@ public class TestDnRespectsBlockReportSplitThreshold {
    * Test that if splitThreshold is zero, then we always get a separate
    * call per storage.
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testAlwaysSplit() throws IOException, InterruptedException {
     startUpCluster(0);
     NameNode nn = cluster.getNameNode();
@@ -134,7 +136,7 @@ public class TestDnRespectsBlockReportSplitThreshold {
     Mockito.verify(nnSpy, times(cluster.getStoragesPerDatanode())).blockReport(
         any(DatanodeRegistration.class),
         anyString(),
-        captor.capture(), Mockito.<BlockReportContext>anyObject());
+        captor.capture(), any());
 
     verifyCapturedArguments(captor, 1, BLOCKS_IN_FILE);
   }
@@ -143,7 +145,8 @@ public class TestDnRespectsBlockReportSplitThreshold {
    * Tests the behavior when the count of blocks is exactly one less than
    * the threshold.
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testCornerCaseUnderThreshold() throws IOException, InterruptedException {
     startUpCluster(BLOCKS_IN_FILE + 1);
     NameNode nn = cluster.getNameNode();
@@ -166,7 +169,7 @@ public class TestDnRespectsBlockReportSplitThreshold {
     Mockito.verify(nnSpy, times(1)).blockReport(
         any(DatanodeRegistration.class),
         anyString(),
-        captor.capture(), Mockito.<BlockReportContext>anyObject());
+        captor.capture(), any());
 
     verifyCapturedArguments(captor, cluster.getStoragesPerDatanode(), BLOCKS_IN_FILE);
   }
@@ -175,7 +178,8 @@ public class TestDnRespectsBlockReportSplitThreshold {
    * Tests the behavior when the count of blocks is exactly equal to the
    * threshold.
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testCornerCaseAtThreshold() throws IOException, InterruptedException {
     startUpCluster(BLOCKS_IN_FILE);
     NameNode nn = cluster.getNameNode();
@@ -198,7 +202,7 @@ public class TestDnRespectsBlockReportSplitThreshold {
     Mockito.verify(nnSpy, times(cluster.getStoragesPerDatanode())).blockReport(
         any(DatanodeRegistration.class),
         anyString(),
-        captor.capture(), Mockito.<BlockReportContext>anyObject());
+        captor.capture(), any());
 
     verifyCapturedArguments(captor, 1, BLOCKS_IN_FILE);
   }

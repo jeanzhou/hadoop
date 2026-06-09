@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.commons.collections4.MapUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.registry.client.api.BindFlags;
@@ -40,7 +41,7 @@ import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Helper class that handles reads and writes to Yarn Registry to support UAM HA
@@ -78,7 +79,7 @@ public class FederationRegistryClient {
    *
    * @return the list of known applications
    */
-  public List<String> getAllApplications() {
+  public synchronized List<String> getAllApplications() {
     // Suppress the exception here because it is valid that the entry does not
     // exist
     List<String> applications = null;
@@ -99,7 +100,7 @@ public class FederationRegistryClient {
    * For testing, delete all application records in registry.
    */
   @VisibleForTesting
-  public void cleanAllApplications() {
+  public synchronized void cleanAllApplications() {
     try {
       removeKeyRegistry(this.registry, this.user, getRegistryKey(null, null),
           true, false);
@@ -111,11 +112,12 @@ public class FederationRegistryClient {
   /**
    * Write/update the UAM token for an application and a sub-cluster.
    *
+   * @param appId ApplicationId.
    * @param subClusterId sub-cluster id of the token
    * @param token the UAM of the application
    * @return whether the amrmToken is added or updated to a new value
    */
-  public boolean writeAMRMTokenForUAM(ApplicationId appId,
+  public synchronized boolean writeAMRMTokenForUAM(ApplicationId appId,
       String subClusterId, Token<AMRMTokenIdentifier> token) {
     Map<String, Token<AMRMTokenIdentifier>> subClusterTokenMap =
         this.appSubClusterTokenMap.get(appId);
@@ -141,9 +143,7 @@ public class FederationRegistryClient {
       // Then update the subClusterTokenMap
       subClusterTokenMap.put(subClusterId, token);
     } catch (YarnException | IOException e) {
-      LOG.error(
-          "Failed writing AMRMToken to registry for subcluster " + subClusterId,
-          e);
+      LOG.error("Failed writing AMRMToken to registry for subcluster {}.", subClusterId, e);
     }
     return update;
   }
@@ -154,7 +154,7 @@ public class FederationRegistryClient {
    * @param appId application id
    * @return the sub-cluster to UAM token mapping
    */
-  public Map<String, Token<AMRMTokenIdentifier>>
+  public synchronized Map<String, Token<AMRMTokenIdentifier>>
       loadStateFromRegistry(ApplicationId appId) {
     Map<String, Token<AMRMTokenIdentifier>> retMap = new HashMap<>();
     // Suppress the exception here because it is valid that the entry does not
@@ -188,8 +188,7 @@ public class FederationRegistryClient {
 
         retMap.put(scId, amrmToken);
       } catch (Exception e) {
-        LOG.error("Failed reading registry key " + key
-            + ", skipping subcluster " + scId, e);
+        LOG.error("Failed reading registry key {}, skipping subcluster {}.",  key, scId, e);
       }
     }
 
@@ -201,24 +200,39 @@ public class FederationRegistryClient {
   /**
    * Remove an application from registry.
    *
-   * @param appId application id
+   * @param appId application id.
    */
-  public void removeAppFromRegistry(ApplicationId appId) {
+  public synchronized void removeAppFromRegistry(ApplicationId appId) {
+    removeAppFromRegistry(appId, false);
+  }
+
+  /**
+   * Remove an application from registry.
+   *
+   * @param appId application id
+   * @param ignoreMemoryState whether to ignore the memory data in terms of
+   *      known application
+   */
+  public synchronized void removeAppFromRegistry(ApplicationId appId,
+      boolean ignoreMemoryState) {
     Map<String, Token<AMRMTokenIdentifier>> subClusterTokenMap =
         this.appSubClusterTokenMap.get(appId);
-    LOG.info("Removing all registry entries for {}", appId);
-
-    if (subClusterTokenMap == null || subClusterTokenMap.size() == 0) {
-      return;
+    if (!ignoreMemoryState) {
+      if (MapUtils.isEmpty(subClusterTokenMap)) {
+        return;
+      }
     }
+    LOG.info("Removing all registry entries for {}.", appId);
 
     // Lastly remove the application directory
     String key = getRegistryKey(appId, null);
     try {
       removeKeyRegistry(this.registry, this.user, key, true, true);
-      subClusterTokenMap.clear();
+      if (subClusterTokenMap != null) {
+        subClusterTokenMap.clear();
+      }
     } catch (YarnException e) {
-      LOG.error("Failed removing registry directory key " + key, e);
+      LOG.error("Failed removing registry directory key {}.", key, e);
     }
   }
 
@@ -246,7 +260,7 @@ public class FederationRegistryClient {
           }
         } catch (Throwable e) {
           if (throwIfFails) {
-            LOG.error("Registry resolve key " + key + " failed", e);
+            LOG.error("Registry resolve key {} failed.", key, e);
           }
         }
         return null;
@@ -270,7 +284,7 @@ public class FederationRegistryClient {
           return true;
         } catch (Throwable e) {
           if (throwIfFails) {
-            LOG.error("Registry remove key " + key + " failed", e);
+            LOG.error("Registry remove key {} failed.", key, e);
           }
         }
         return false;
@@ -299,7 +313,7 @@ public class FederationRegistryClient {
           return true;
         } catch (Throwable e) {
           if (throwIfFails) {
-            LOG.error("Registry write key " + key + " failed", e);
+            LOG.error("Registry write key {} failed.", key, e);
           }
         }
         return false;
@@ -316,18 +330,15 @@ public class FederationRegistryClient {
   private List<String> listDirRegistry(final RegistryOperations registryImpl,
       UserGroupInformation ugi, final String key, final boolean throwIfFails)
       throws YarnException {
-    List<String> result = ugi.doAs(new PrivilegedAction<List<String>>() {
-      @Override
-      public List<String> run() {
-        try {
-          return registryImpl.list(key);
-        } catch (Throwable e) {
-          if (throwIfFails) {
-            LOG.error("Registry list key " + key + " failed", e);
-          }
+    List<String> result = ugi.doAs((PrivilegedAction<List<String>>) () -> {
+      try {
+        return registryImpl.list(key);
+      } catch (Throwable e) {
+        if (throwIfFails) {
+          LOG.error("Registry list key {} failed.", key, e);
         }
-        return null;
       }
+      return null;
     });
     if (result == null && throwIfFails) {
       throw new YarnException("Registry list key " + key + " failed");

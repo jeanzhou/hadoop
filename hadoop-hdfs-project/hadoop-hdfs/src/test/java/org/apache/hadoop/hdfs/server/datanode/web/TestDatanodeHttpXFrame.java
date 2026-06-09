@@ -23,65 +23,76 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.http.HttpServer2;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 /**
  * Test that X-Frame-Options works correctly with DatanodeHTTPServer.
  */
 public class TestDatanodeHttpXFrame {
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
+
+  private MiniDFSCluster cluster = null;
+
+  @AfterEach
+  public void cleanUp() {
+    if (cluster != null) {
+      cluster.shutdown();
+      cluster = null;
+    }
+  }
 
   @Test
   public void testDataNodeXFrameOptionsEnabled() throws Exception {
     boolean xFrameEnabled = true;
-    MiniDFSCluster cluster = createCluster(xFrameEnabled, null);
+    cluster = createCluster(xFrameEnabled, null);
     HttpURLConnection conn = getConn(cluster);
     String xfoHeader = conn.getHeaderField("X-FRAME-OPTIONS");
-    Assert.assertTrue("X-FRAME-OPTIONS is absent in the header",
-        xfoHeader != null);
-    Assert.assertTrue(xfoHeader.endsWith(HttpServer2.XFrameOption
+    assertNotNull(xfoHeader, "X-FRAME-OPTIONS is absent in the header");
+    assertTrue(xfoHeader.endsWith(HttpServer2.XFrameOption
         .SAMEORIGIN.toString()));
   }
 
   @Test
   public void testNameNodeXFrameOptionsDisabled() throws Exception {
     boolean xFrameEnabled = false;
-    MiniDFSCluster cluster = createCluster(xFrameEnabled, null);
+    cluster = createCluster(xFrameEnabled, null);
     HttpURLConnection conn = getConn(cluster);
     String xfoHeader = conn.getHeaderField("X-FRAME-OPTIONS");
-    Assert.assertTrue("unexpected X-FRAME-OPTION in header", xfoHeader == null);
+    assertNull(xfoHeader, "unexpected X-FRAME-OPTION in header");
   }
 
   @Test
   public void testDataNodeXFramewithInvalidOptions() throws Exception {
-    exception.expect(IllegalArgumentException.class);
-    createCluster(false, "Hadoop");
+    assertThrows(IllegalArgumentException.class, () -> {
+      cluster = createCluster(false, "Hadoop");
+    });
   }
 
-  private MiniDFSCluster createCluster(boolean enabled, String
+  private static MiniDFSCluster createCluster(boolean enabled, String
       value) throws IOException {
     Configuration conf = new HdfsConfiguration();
     conf.setBoolean(DFSConfigKeys.DFS_XFRAME_OPTION_ENABLED, enabled);
     if (value != null) {
       conf.set(DFSConfigKeys.DFS_XFRAME_OPTION_VALUE, value);
     }
-    MiniDFSCluster cluster =
+    MiniDFSCluster dfsCluster =
         new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
-    cluster.waitActive();
-    return cluster;
+    dfsCluster.waitActive();
+    return dfsCluster;
   }
 
-  private HttpURLConnection getConn(MiniDFSCluster cluster)
+  private static HttpURLConnection getConn(MiniDFSCluster dfsCluster)
       throws IOException {
-    DataNode datanode = cluster.getDataNodes().get(0);
+    DataNode datanode = dfsCluster.getDataNodes().get(0);
     URL newURL = new URL("http://localhost:" + datanode.getInfoPort());
     HttpURLConnection conn = (HttpURLConnection) newURL.openConnection();
     conn.connect();

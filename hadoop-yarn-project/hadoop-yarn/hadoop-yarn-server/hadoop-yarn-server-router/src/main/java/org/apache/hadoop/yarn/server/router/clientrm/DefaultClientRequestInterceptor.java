@@ -39,8 +39,12 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAttributesToNodesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAttributesToNodesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeAttributesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeAttributesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodesRequest;
@@ -57,6 +61,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToAttributesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToAttributesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoRequest;
@@ -91,7 +97,9 @@ import org.apache.hadoop.yarn.client.ClientRMProxy;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Extends the {@code AbstractRequestInterceptorClient} class and provides an
@@ -101,25 +109,26 @@ import com.google.common.annotations.VisibleForTesting;
  */
 public class DefaultClientRequestInterceptor
     extends AbstractClientRequestInterceptor {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(DefaultClientRequestInterceptor.class);
   private ApplicationClientProtocol clientRMProxy;
 
   @Override
   public void init(String userName) {
     super.init(userName);
-
-    final Configuration conf = this.getConf();
     try {
-      clientRMProxy =
-          user.doAs(new PrivilegedExceptionAction<ApplicationClientProtocol>() {
-            @Override
-            public ApplicationClientProtocol run() throws Exception {
-              return ClientRMProxy.createRMProxy(conf,
-                  ApplicationClientProtocol.class);
-            }
-          });
+      final Configuration conf = this.getConf();
+      clientRMProxy = user.doAs(
+          (PrivilegedExceptionAction<ApplicationClientProtocol>) () ->
+               ClientRMProxy.createRMProxy(conf, ApplicationClientProtocol.class));
     } catch (Exception e) {
-      throw new YarnRuntimeException(
-          "Unable to create the interface to reach the YarnRM", e);
+      StringBuilder message = new StringBuilder();
+      message.append("Error while creating Router RMClient Service");
+      if (user != null) {
+        message.append(", user: " + user);
+      }
+      LOG.error(message.toString(), e);
+      throw new YarnRuntimeException(message.toString(), e);
     }
   }
 
@@ -327,9 +336,27 @@ public class DefaultClientRequestInterceptor
     return clientRMProxy.getResourceTypeInfo(request);
   }
 
+  @Override
+  public GetAttributesToNodesResponse getAttributesToNodes(
+      GetAttributesToNodesRequest request) throws YarnException, IOException {
+    return clientRMProxy.getAttributesToNodes(request);
+  }
+
+  @Override
+  public GetClusterNodeAttributesResponse getClusterNodeAttributes(
+      GetClusterNodeAttributesRequest request)
+      throws YarnException, IOException {
+    return clientRMProxy.getClusterNodeAttributes(request);
+  }
+
+  @Override
+  public GetNodesToAttributesResponse getNodesToAttributes(
+      GetNodesToAttributesRequest request) throws YarnException, IOException {
+    return clientRMProxy.getNodesToAttributes(request);
+  }
+
   @VisibleForTesting
   public void setRMClient(ApplicationClientProtocol clientRM) {
     this.clientRMProxy = clientRM;
-
   }
 }

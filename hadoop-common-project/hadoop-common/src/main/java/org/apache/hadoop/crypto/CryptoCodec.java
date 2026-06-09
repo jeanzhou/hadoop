@@ -26,13 +26,13 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.PerformanceAdvisory;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Splitter;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_KEY_PREFIX;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_CRYPTO_CIPHER_SUITE_KEY;
@@ -101,7 +101,7 @@ public abstract class CryptoCodec implements Configurable, Closeable {
         HADOOP_SECURITY_CRYPTO_CIPHER_SUITE_DEFAULT);
     return getInstance(conf, CipherSuite.convert(name));
   }
-  
+
   private static List<Class<? extends CryptoCodec>> getCodecClasses(
       Configuration conf, CipherSuite cipherSuite) {
     List<Class<? extends CryptoCodec>> result = Lists.newArrayList();
@@ -112,6 +112,10 @@ public abstract class CryptoCodec implements Configurable, Closeable {
         .HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_AES_CTR_NOPADDING_KEY)) {
       codecString = conf.get(configName, CommonConfigurationKeysPublic
           .HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_AES_CTR_NOPADDING_DEFAULT);
+    } else if (configName.equals(CommonConfigurationKeysPublic
+            .HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_SM4_CTR_NOPADDING_KEY)){
+      codecString = conf.get(configName, CommonConfigurationKeysPublic
+              .HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_SM4_CTR_NOPADDING_DEFAULT);
     } else {
       codecString = conf.get(configName);
     }
@@ -141,14 +145,18 @@ public abstract class CryptoCodec implements Configurable, Closeable {
   public abstract CipherSuite getCipherSuite();
 
   /**
-   * Create a {@link org.apache.hadoop.crypto.Encryptor}. 
-   * @return Encryptor the encryptor
+   * Create a {@link org.apache.hadoop.crypto.Encryptor}.
+   *
+   * @return Encryptor the encryptor.
+   * @throws GeneralSecurityException thrown if create encryptor error.
    */
   public abstract Encryptor createEncryptor() throws GeneralSecurityException;
-  
+
   /**
    * Create a {@link org.apache.hadoop.crypto.Decryptor}.
+   *
    * @return Decryptor the decryptor
+   * @throws GeneralSecurityException thrown if create decryptor error.
    */
   public abstract Decryptor createDecryptor() throws GeneralSecurityException;
   
@@ -158,14 +166,15 @@ public abstract class CryptoCodec implements Configurable, Closeable {
    * For example a {@link javax.crypto.Cipher} will maintain its encryption 
    * context internally when we do encryption/decryption using the 
    * Cipher#update interface. 
-   * <p/>
+   * <p>
    * Encryption/Decryption is not always on the entire file. For example,
    * in Hadoop, a node may only decrypt a portion of a file (i.e. a split).
    * In these situations, the counter is derived from the file position.
-   * <p/>
+   * <p>
    * The IV can be calculated by combining the initial IV and the counter with 
    * a lossless operation (concatenation, addition, or XOR).
-   * @see http://en.wikipedia.org/wiki/Block_cipher_mode_of_operation#Counter_.28CTR.29
+   * See http://en.wikipedia.org/wiki/Block_cipher_mode_of_operation#Counter_
+   * .28CTR.29
    * 
    * @param initIV initial IV
    * @param counter counter for input stream position 

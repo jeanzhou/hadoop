@@ -17,11 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.snapshot;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.File;
 import java.io.IOException;
@@ -39,6 +40,7 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -47,7 +49,6 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.client.HdfsDataOutputStream;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
@@ -59,21 +60,22 @@ import org.apache.hadoop.hdfs.tools.offlineImageViewer.PBImageXmlWriter;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * This class tests snapshot functionality. One or multiple snapshots are
  * created. The snapshotted directory is changed and verification is done to
  * ensure snapshots remain unchanges.
  */
+@Tag("slow")
 public class TestSnapshot {
   {
-    GenericTestUtils.setLogLevel(INode.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(INode.LOG, Level.TRACE);
     SnapshotTestHelper.disableLogs();
   }
 
@@ -99,9 +101,6 @@ public class TestSnapshot {
   
   private static final String testDir =
       GenericTestUtils.getTestDir().getAbsolutePath();
-
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
   
   /**
    * The list recording all previous snapshots. Each element in the array
@@ -113,7 +112,7 @@ public class TestSnapshot {
    */
   private TestDirectoryTree dirTree;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCKSIZE);
@@ -127,7 +126,7 @@ public class TestSnapshot {
     dirTree = new TestDirectoryTree(DIRECTORY_TREE_LEVEL, hdfs);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -207,9 +206,9 @@ public class TestSnapshot {
     SnapshotTestHelper.dumpTree2File(fsdir, fsnMiddle);
    
     // save namespace and restart cluster
-    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.setSafeMode(SafeModeAction.ENTER);
     hdfs.saveNamespace();
-    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    hdfs.setSafeMode(SafeModeAction.LEAVE);
     cluster.shutdown();
     cluster = new MiniDFSCluster.Builder(conf).format(false)
         .numDataNodes(REPLICATION).build();
@@ -255,8 +254,8 @@ public class TestSnapshot {
     File originalFsimage = FSImageTestUtil.findLatestImageFile(
         FSImageTestUtil.getFSImage(
         cluster.getNameNode()).getStorage().getStorageDir(0));
-    assertNotNull("Didn't generate or can't find fsimage", originalFsimage);
-    PrintStream o = new PrintStream(NullOutputStream.NULL_OUTPUT_STREAM);
+    assertNotNull(originalFsimage, "Didn't generate or can't find fsimage");
+    PrintStream o = new PrintStream(NullOutputStream.INSTANCE);
     PBImageXmlWriter v = new PBImageXmlWriter(new Configuration(), o);
     v.visit(new RandomAccessFile(originalFsimage, "r"));
   }
@@ -303,7 +302,8 @@ public class TestSnapshot {
    * A simple test that updates a sub-directory of a snapshottable directory
    * with snapshots
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testUpdateDirectory() throws Exception {
     Path dir = new Path("/dir");
     Path sub = new Path(dir, "sub");
@@ -357,7 +357,8 @@ public class TestSnapshot {
   /**
    * Creating snapshots for a directory that is not snapshottable must fail.
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSnapshottableDirectory() throws Exception {
     Path dir = new Path("/TestSnapshot/sub");
     Path file0 = new Path(dir, "file0");
@@ -454,6 +455,120 @@ public class TestSnapshot {
     rootNode = fsdir.getINode4Write(root.toString()).asDirectory();
     assertTrue(rootNode.isSnapshottable());
     assertEquals(0, rootNode.getDirectorySnapshottableFeature().getSnapshotQuota());
+  }
+
+  @Test
+  @Timeout(value = 60)
+  public void testSnapshotMtime() throws Exception {
+    Path dir = new Path("/dir");
+    Path sub = new Path(dir, "sub");
+    Path subFile = new Path(sub, "file");
+    DFSTestUtil.createFile(hdfs, subFile, BLOCKSIZE, REPLICATION, seed);
+
+    hdfs.allowSnapshot(dir);
+    Path snapshotPath = hdfs.createSnapshot(dir, "s1");
+    FileStatus oldSnapshotStatus = hdfs.getFileStatus(snapshotPath);
+    cluster.restartNameNodes();
+    FileStatus newSnapshotStatus = hdfs.getFileStatus(snapshotPath);
+    assertEquals(oldSnapshotStatus.getModificationTime(),
+        newSnapshotStatus.getModificationTime());
+  }
+
+  @Test
+  @Timeout(value = 60)
+  public void testRenameSnapshotMtime() throws Exception {
+    Path dir = new Path("/dir");
+    Path sub = new Path(dir, "sub");
+    Path subFile = new Path(sub, "file");
+    DFSTestUtil.createFile(hdfs, subFile, BLOCKSIZE, REPLICATION, seed);
+
+    hdfs.allowSnapshot(dir);
+    Path snapshotPath = hdfs.createSnapshot(dir, "s1");
+    FileStatus oldSnapshotStatus = hdfs.getFileStatus(snapshotPath);
+    hdfs.renameSnapshot(dir, "s1", "s2");
+    Path snapshotRenamePath = new Path("/dir/.snapshot/s2");
+    FileStatus newSnapshotStatus = hdfs.getFileStatus(snapshotRenamePath);
+    assertNotEquals(oldSnapshotStatus.getModificationTime(),
+        newSnapshotStatus.getModificationTime());
+  }
+
+  /**
+   * Test snapshot directory mtime after snapshot deletion.
+   */
+  @Test
+  @Timeout(value = 60)
+  public void testDeletionSnapshotMtime() throws Exception {
+    Path dir = new Path("/dir");
+    Path sub = new Path(dir, "sub");
+    Path subFile = new Path(sub, "file");
+    DFSTestUtil.createFile(hdfs, subFile, BLOCKSIZE, REPLICATION, seed);
+
+    hdfs.allowSnapshot(dir);
+    Path snapshotPath = hdfs.createSnapshot(dir, "s1");
+    FileStatus oldSnapshotStatus = hdfs.getFileStatus(snapshotPath);
+    hdfs.deleteSnapshot(dir, "s1");
+    FileStatus dirStatus = hdfs.getFileStatus(dir);
+    assertNotEquals(dirStatus.getModificationTime(),
+        oldSnapshotStatus.getModificationTime());
+    cluster.restartNameNodes();
+    FileStatus newSnapshotStatus = hdfs.getFileStatus(dir);
+    assertEquals(dirStatus.getModificationTime(),
+        newSnapshotStatus.getModificationTime());
+  }
+
+  /**
+   * HDFS-15446 - ensure that snapshot operations on /.reserved/raw
+   * paths work and the NN can load the resulting edits.
+   */
+  @Test
+  @Timeout(value = 60)
+  public void testSnapshotOpsOnReservedPath() throws Exception {
+    Path dir = new Path("/dir");
+    Path nestedDir = new Path("/nested/dir");
+    Path sub = new Path(dir, "sub");
+    Path subFile = new Path(sub, "file");
+    Path nestedFile = new Path(nestedDir, "file");
+    DFSTestUtil.createFile(hdfs, subFile, BLOCKSIZE, REPLICATION, seed);
+    DFSTestUtil.createFile(hdfs, nestedFile, BLOCKSIZE, REPLICATION, seed);
+
+    hdfs.allowSnapshot(dir);
+    hdfs.allowSnapshot(nestedDir);
+    Path reservedDir = new Path("/.reserved/raw/dir");
+    Path reservedNestedDir = new Path("/.reserved/raw/nested/dir");
+    hdfs.createSnapshot(reservedDir, "s1");
+    hdfs.createSnapshot(reservedNestedDir, "s1");
+    hdfs.renameSnapshot(reservedDir, "s1", "s2");
+    hdfs.renameSnapshot(reservedNestedDir, "s1", "s2");
+    hdfs.deleteSnapshot(reservedDir, "s2");
+    hdfs.deleteSnapshot(reservedNestedDir, "s2");
+    // The original problem with reserved path, is that the NN was unable to
+    // replay the edits, therefore restarting the NN to ensure it starts
+    // and no exceptions are raised.
+    cluster.restartNameNode(true);
+  }
+
+  /**
+   * HDFS-15446 - ensure that snapshot operations on /.reserved/raw
+   * paths work and the NN can load the resulting edits. This test if for
+   * snapshots at the root level.
+   */
+  @Test
+  @Timeout(value = 120)
+  public void testSnapshotOpsOnRootReservedPath() throws Exception {
+    Path dir = new Path("/");
+    Path sub = new Path(dir, "sub");
+    Path subFile = new Path(sub, "file");
+    DFSTestUtil.createFile(hdfs, subFile, BLOCKSIZE, REPLICATION, seed);
+
+    hdfs.allowSnapshot(dir);
+    Path reservedDir = new Path("/.reserved/raw");
+    hdfs.createSnapshot(reservedDir, "s1");
+    hdfs.renameSnapshot(reservedDir, "s1", "s2");
+    hdfs.deleteSnapshot(reservedDir, "s2");
+    // The original problem with reserved path, is that the NN was unable to
+    // replay the edits, therefore restarting the NN to ensure it starts
+    // and no exceptions are raised.
+    cluster.restartNameNode(true);
   }
 
   /**
@@ -639,7 +754,7 @@ public class TestSnapshot {
             
             SnapshotTestHelper.dumpTree(s, cluster);
           }
-          assertEquals(s, currentStatus.toString(), originalStatus.toString());
+          assertEquals(currentStatus.toString(), originalStatus.toString(), s);
         }
       }
     }
@@ -750,7 +865,7 @@ public class TestSnapshot {
               + "\n\nsnapshotFile: " + fsdir.getINode(snapshotFile.toString()).toDetailString();
           SnapshotTestHelper.dumpTree(s, cluster);
         }
-        assertEquals(s, originalSnapshotFileLen, currentSnapshotFileLen);
+        assertEquals(originalSnapshotFileLen, currentSnapshotFileLen, s);
         // Read the snapshot file out of the boundary
         if (currentSnapshotFileLen != -1L
             && !(this instanceof FileAppendNotClose)) {
@@ -765,7 +880,7 @@ public class TestSnapshot {
                 + "\n\nsnapshotFile: " + fsdir.getINode(snapshotFile.toString()).toDetailString();
             SnapshotTestHelper.dumpTree(s, cluster);
           }
-          assertEquals(s, -1, readLen);
+          assertEquals(-1, readLen, s);
           input.close();
         }
       }

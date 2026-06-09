@@ -17,17 +17,20 @@
  */
 package org.apache.hadoop.util;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
 
-import org.junit.Test;
-import org.mockito.Mockito;
+import org.apache.hadoop.thirdparty.com.google.common.net.InetAddresses;
+import org.junit.jupiter.api.Test;
 
 public class TestMachineList {
   private static String IP_LIST = "10.119.103.110,10.119.103.112,10.119.103.114";
@@ -43,10 +46,40 @@ public class TestMachineList {
   private static String HOSTNAME_IP_CIDR_LIST =
     "host1,10.222.0.0/16,10.119.103.110,10.119.103.112,10.119.103.114,10.241.23.0/24,host4,";
 
+  class TestAddressFactory extends MachineList.InetAddressFactory {
+    private Map<String, InetAddress> cache = new HashMap<>();
+    InetAddress put(String ip) throws UnknownHostException {
+      return put(ip, ip);
+    }
+    InetAddress put(String ip, String... hosts) throws UnknownHostException {
+      InetAddress addr = InetAddress.getByName(ip);
+      for (String host : hosts) {
+        addr = InetAddress.getByAddress(host, addr.getAddress());
+        cache.put(host, addr);
+        // last host wins the PTR lookup.
+        cache.put(ip, addr);
+      }
+      return addr;
+    }
+    @Override
+    public InetAddress getByName(String host) throws UnknownHostException {
+      InetAddress addr = cache.get(host);
+      if (addr == null) {
+        if (!InetAddresses.isInetAddress(host)) {
+          throw new UnknownHostException(host);
+        }
+        // ip resolves to itself to fake being unresolvable.
+        addr = InetAddress.getByName(host);
+        addr = InetAddress.getByAddress(host, addr.getAddress());
+      }
+      return addr;
+    }
+  }
+
   @Test
   public void testWildCard() {
     //create MachineList with a list of of IPs
-    MachineList ml = new MachineList("*");
+    MachineList ml = new MachineList("*", new TestAddressFactory());
 
     //test for inclusion with any IP
     assertTrue(ml.includes("10.119.103.112"));
@@ -56,7 +89,7 @@ public class TestMachineList {
   @Test
   public void testIPList() {
     //create MachineList with a list of of IPs
-    MachineList ml = new MachineList(IP_LIST);
+    MachineList ml = new MachineList(IP_LIST, new TestAddressFactory());
 
     //test for inclusion with an known IP
     assertTrue(ml.includes("10.119.103.112"));
@@ -68,7 +101,7 @@ public class TestMachineList {
   @Test
   public void testIPListSpaces() {
     //create MachineList with a ip string which has duplicate ip and spaces
-    MachineList ml = new MachineList(IP_LIST_SPACES);
+    MachineList ml = new MachineList(IP_LIST_SPACES, new TestAddressFactory());
 
     //test for inclusion with an known IP
     assertTrue(ml.includes("10.119.103.112"));
@@ -79,42 +112,28 @@ public class TestMachineList {
 
   @Test
   public void testStaticIPHostNameList()throws UnknownHostException {
-    //create MachineList with a list of of Hostnames
-    InetAddress addressHost1 = InetAddress.getByName("1.2.3.1");
-    InetAddress addressHost4 = InetAddress.getByName("1.2.3.4");
-
-    MachineList.InetAddressFactory addressFactory = 
-      Mockito.mock(MachineList.InetAddressFactory.class);
-    Mockito.when(addressFactory.getByName("host1")).thenReturn(addressHost1);
-    Mockito.when(addressFactory.getByName("host4")).thenReturn(addressHost4);
+    // create MachineList with a list of of Hostnames
+    TestAddressFactory addressFactory = new TestAddressFactory();
+    addressFactory.put("1.2.3.1", "host1");
+    addressFactory.put("1.2.3.4", "host4");
 
     MachineList ml = new MachineList(
         StringUtils.getTrimmedStringCollection(HOST_LIST), addressFactory);
 
-    //test for inclusion with an known IP
+    // test for inclusion with an known IP
     assertTrue(ml.includes("1.2.3.4"));
 
-    //test for exclusion with an unknown IP
+    // test for exclusion with an unknown IP
     assertFalse(ml.includes("1.2.3.5"));
   }
 
   @Test
   public void testHostNames() throws UnknownHostException {
-    //create MachineList with a list of of Hostnames
-    InetAddress addressHost1 = InetAddress.getByName("1.2.3.1");
-    InetAddress addressHost4 = InetAddress.getByName("1.2.3.4");
-    InetAddress addressMockHost4 = Mockito.mock(InetAddress.class);
-    Mockito.when(addressMockHost4.getCanonicalHostName()).thenReturn("differentName");
-
-    InetAddress addressMockHost5 = Mockito.mock(InetAddress.class);
-    Mockito.when(addressMockHost5.getCanonicalHostName()).thenReturn("host5");
-
-    MachineList.InetAddressFactory addressFactory = 
-      Mockito.mock(MachineList.InetAddressFactory.class);
-    Mockito.when(addressFactory.getByName("1.2.3.4")).thenReturn(addressMockHost4);
-    Mockito.when(addressFactory.getByName("1.2.3.5")).thenReturn(addressMockHost5);
-    Mockito.when(addressFactory.getByName("host1")).thenReturn(addressHost1);
-    Mockito.when(addressFactory.getByName("host4")).thenReturn(addressHost4);
+    // create MachineList with a list of of Hostnames
+    TestAddressFactory addressFactory = new TestAddressFactory();
+    addressFactory.put("1.2.3.1", "host1");
+    addressFactory.put("1.2.3.4", "host4", "differentname");
+    addressFactory.put("1.2.3.5", "host5");
 
     MachineList ml = new MachineList(
         StringUtils.getTrimmedStringCollection(HOST_LIST), addressFactory );
@@ -128,21 +147,11 @@ public class TestMachineList {
 
   @Test
   public void testHostNamesReverserIpMatch() throws UnknownHostException {
-    //create MachineList with a list of of Hostnames
-    InetAddress addressHost1 = InetAddress.getByName("1.2.3.1");
-    InetAddress addressHost4 = InetAddress.getByName("1.2.3.4");
-    InetAddress addressMockHost4 =  Mockito.mock(InetAddress.class);
-    Mockito.when(addressMockHost4.getCanonicalHostName()).thenReturn("host4");
-
-    InetAddress addressMockHost5 =  Mockito.mock(InetAddress.class);
-    Mockito.when(addressMockHost5.getCanonicalHostName()).thenReturn("host5");
-
-    MachineList.InetAddressFactory addressFactory = 
-      Mockito.mock(MachineList.InetAddressFactory.class);
-    Mockito.when(addressFactory.getByName("1.2.3.4")).thenReturn(addressMockHost4);
-    Mockito.when(addressFactory.getByName("1.2.3.5")).thenReturn(addressMockHost5);
-    Mockito.when(addressFactory.getByName("host1")).thenReturn(addressHost1);
-    Mockito.when(addressFactory.getByName("host4")).thenReturn(addressHost4);
+    // create MachineList with a list of of Hostnames
+    TestAddressFactory addressFactory = new TestAddressFactory();
+    addressFactory.put("1.2.3.1", "host1");
+    addressFactory.put("1.2.3.4", "host4");
+    addressFactory.put("1.2.3.5", "host5");
 
     MachineList ml = new MachineList(
         StringUtils.getTrimmedStringCollection(HOST_LIST), addressFactory );
@@ -157,7 +166,7 @@ public class TestMachineList {
   @Test
   public void testCIDRs() {
     //create MachineList with a list of of ip ranges specified in CIDR format
-    MachineList ml = new MachineList(CIDR_LIST);
+    MachineList ml = new MachineList(CIDR_LIST, new TestAddressFactory());
 
     //test for inclusion/exclusion 
     assertFalse(ml.includes("10.221.255.255"));
@@ -178,19 +187,22 @@ public class TestMachineList {
     assertFalse(ml.includes("10.119.103.111"));
   }
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testNullIpAddress() {
-    //create MachineList with a list of of ip ranges specified in CIDR format
-    MachineList ml = new MachineList(CIDR_LIST);
+    assertThrows(IllegalArgumentException.class, () -> {
+      //create MachineList with a list of ip ranges specified in CIDR format
+      MachineList ml = new MachineList(CIDR_LIST, new TestAddressFactory());
 
-    //test for exclusion with a null IP
-    assertFalse(ml.includes(null));
+      //test for exclusion with a null IP
+      assertFalse(ml.includes((String) null));
+      assertFalse(ml.includes((InetAddress) null));
+    });
   }
 
   @Test
   public void testCIDRWith16bitmask() {
     //create MachineList with a list of of ip ranges specified in CIDR format
-    MachineList ml = new MachineList(CIDR_LIST1);
+    MachineList ml = new MachineList(CIDR_LIST1, new TestAddressFactory());
 
     //test for inclusion/exclusion 
     assertFalse(ml.includes("10.221.255.255"));
@@ -209,7 +221,7 @@ public class TestMachineList {
   @Test
   public void testCIDRWith8BitMask() {
     //create MachineList with a list of of ip ranges specified in CIDR format
-    MachineList ml = new MachineList(CIDR_LIST2);
+    MachineList ml = new MachineList(CIDR_LIST2, new TestAddressFactory());
 
     //test for inclusion/exclusion  
     assertFalse(ml.includes("10.241.22.255"));
@@ -228,7 +240,7 @@ public class TestMachineList {
   public void testInvalidCIDR() {
     //create MachineList with an Invalid CIDR
     try {
-    new MachineList(INVALID_CIDR);
+      MachineList ml = new MachineList(INVALID_CIDR, new TestAddressFactory());
     fail("Expected IllegalArgumentException");
     } catch (IllegalArgumentException e) {
       //expected Exception
@@ -240,7 +252,7 @@ public class TestMachineList {
   @Test
   public void testIPandCIDRs() {
     //create MachineList with a list of of ip ranges and ip addresses
-    MachineList ml = new MachineList(IP_CIDR_LIST);
+    MachineList ml = new MachineList(IP_CIDR_LIST, new TestAddressFactory());
 
     //test for inclusion with an known IP
     assertTrue(ml.includes("10.119.103.112"));
@@ -263,7 +275,8 @@ public class TestMachineList {
   @Test
   public void testHostNameIPandCIDRs() {
     //create MachineList with a mix of ip addresses , hostnames and ip ranges
-    MachineList ml = new MachineList(HOSTNAME_IP_CIDR_LIST);
+    MachineList ml = new MachineList(HOSTNAME_IP_CIDR_LIST,
+        new TestAddressFactory());
 
     //test for inclusion with an known IP
     assertTrue(ml.includes("10.119.103.112"));
@@ -286,7 +299,8 @@ public class TestMachineList {
   @Test
   public void testGetCollection() {
     //create MachineList with a mix of ip addresses , hostnames and ip ranges
-    MachineList ml = new MachineList(HOSTNAME_IP_CIDR_LIST);
+    MachineList ml =
+        new MachineList(HOSTNAME_IP_CIDR_LIST, new TestAddressFactory());
 
     Collection<String> col = ml.getCollection();
     //test getCollectionton to return the full collection

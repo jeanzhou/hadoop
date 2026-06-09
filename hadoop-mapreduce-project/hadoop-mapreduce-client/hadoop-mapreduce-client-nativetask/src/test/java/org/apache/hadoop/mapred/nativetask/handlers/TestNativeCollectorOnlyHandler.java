@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.mapred.nativetask.handlers;
 
+import java.io.File;
 import java.io.IOException;
 
 import org.apache.hadoop.conf.Configuration;
@@ -33,12 +34,16 @@ import org.apache.hadoop.mapred.nativetask.buffer.InputBuffer;
 import org.apache.hadoop.mapred.nativetask.testutil.TestConstants;
 import org.apache.hadoop.mapred.nativetask.util.OutputUtil;
 import org.apache.hadoop.mapred.nativetask.util.ReadWriteBuffer;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.Matchers;
+import org.apache.hadoop.util.StringUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 
 @SuppressWarnings({ "rawtypes", "unchecked", "deprecation" })
 public class TestNativeCollectorOnlyHandler {
@@ -50,7 +55,7 @@ public class TestNativeCollectorOnlyHandler {
   private TaskContext taskContext;
   private static final String LOCAL_DIR = TestConstants.NATIVETASK_TEST_DIR + "/local";
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     this.nativeHandler = Mockito.mock(INativeHandler.class);
     this.pusher = Mockito.mock(BufferPusher.class);
@@ -70,7 +75,7 @@ public class TestNativeCollectorOnlyHandler {
       new InputBuffer(BufferType.HEAP_BUFFER, 100));
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     FileSystem.getLocal(new Configuration()).delete(new Path(LOCAL_DIR));
   }
@@ -82,8 +87,8 @@ public class TestNativeCollectorOnlyHandler {
     handler.close();
     handler.close();
 
-    Mockito.verify(pusher, Mockito.times(1)).collect(Matchers.any(BytesWritable.class),
-        Matchers.any(BytesWritable.class), Matchers.anyInt());
+    Mockito.verify(pusher, Mockito.times(1)).collect(any(BytesWritable.class),
+        any(BytesWritable.class), anyInt());
 
     Mockito.verify(pusher, Mockito.times(1)).close();
     Mockito.verify(combiner, Mockito.times(1)).close();
@@ -96,7 +101,7 @@ public class TestNativeCollectorOnlyHandler {
     Mockito.when(combiner.getId()).thenReturn(100L);
     final ReadWriteBuffer result = handler.onCall(
       NativeCollectorOnlyHandler.GET_COMBINE_HANDLER, null);
-    Assert.assertEquals(100L, result.readLong());
+    assertEquals(100L, result.readLong());
   }
 
   @Test
@@ -108,22 +113,25 @@ public class TestNativeCollectorOnlyHandler {
     } catch(final IOException e) {
       thrown = true;
     }
-    Assert.assertTrue("exception thrown", thrown);
+    assertTrue(thrown, "exception thrown");
 
-    final String expectedOutputPath = LOCAL_DIR + "/output/file.out";
-    final String expectedOutputIndexPath = LOCAL_DIR + "/output/file.out.index";
-    final String expectedSpillPath = LOCAL_DIR + "/output/spill0.out";
+    final String expectedOutputPath = StringUtils.join(File.separator,
+        new String[] {LOCAL_DIR, "output", "file.out"});
+    final String expectedOutputIndexPath = StringUtils.join(File.separator,
+        new String[] {LOCAL_DIR, "output", "file.out.index"});
+    final String expectedSpillPath = StringUtils.join(File.separator,
+        new String[] {LOCAL_DIR, "output", "spill0.out"});
 
     final String outputPath = handler.onCall(
       NativeCollectorOnlyHandler.GET_OUTPUT_PATH, null).readString();
-    Assert.assertEquals(expectedOutputPath, outputPath);
+    assertEquals(expectedOutputPath, outputPath);
 
     final String outputIndexPath = handler.onCall(
       NativeCollectorOnlyHandler.GET_OUTPUT_INDEX_PATH, null).readString();
-    Assert.assertEquals(expectedOutputIndexPath, outputIndexPath);
+    assertEquals(expectedOutputIndexPath, outputIndexPath);
 
     final String spillPath = handler.onCall(
       NativeCollectorOnlyHandler.GET_SPILL_PATH, null).readString();
-    Assert.assertEquals(expectedSpillPath, spillPath);
+    assertEquals(expectedSpillPath, spillPath);
   }
 }

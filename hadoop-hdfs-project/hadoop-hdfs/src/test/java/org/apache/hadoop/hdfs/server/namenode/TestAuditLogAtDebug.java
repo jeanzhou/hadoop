@@ -18,49 +18,48 @@
 
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Optional;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
-import org.apache.hadoop.hdfs.server.namenode.FSNamesystem.DefaultAuditLogger;
+import org.apache.hadoop.hdfs.server.namenode.FSNamesystem.FSNamesystemAuditLogger;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 import java.net.Inet4Address;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
-import static org.mockito.Matchers.anyString;
+
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 /**
  * Test that the HDFS Audit logger respects DFS_NAMENODE_AUDIT_LOG_DEBUG_CMDLIST. 
  */
+@Timeout(300)
 public class TestAuditLogAtDebug {
-  static final Log LOG = LogFactory.getLog(TestAuditLogAtDebug.class);
-
-  @Rule
-  public Timeout timeout = new Timeout(300000);
+  static final Logger LOG = LoggerFactory.getLogger(TestAuditLogAtDebug.class);
   
   private static final String DUMMY_COMMAND_1 = "dummycommand1";
   private static final String DUMMY_COMMAND_2 = "dummycommand2";
   
   private DefaultAuditLogger makeSpyLogger(
       Level level, Optional<List<String>> debugCommands) {
-    DefaultAuditLogger logger = new DefaultAuditLogger();
+    DefaultAuditLogger logger = new FSNamesystemAuditLogger();
     Configuration conf = new HdfsConfiguration();
     if (debugCommands.isPresent()) {
       conf.set(DFSConfigKeys.DFS_NAMENODE_AUDIT_LOG_DEBUG_CMDLIST,
                Joiner.on(",").join(debugCommands.get()));
     }
     logger.initialize(conf);
-    GenericTestUtils.setLogLevel(FSNamesystem.auditLog, level);
+    GenericTestUtils.setLogLevel(FSNamesystem.AUDIT_LOG, level);
     return spy(logger);
   }
   
@@ -122,8 +121,7 @@ public class TestAuditLogAtDebug {
   
   @Test
   public void testEmptyDebugCommands() {
-    DefaultAuditLogger logger = makeSpyLogger(
-        Level.INFO, Optional.<List<String>>absent());
+    DefaultAuditLogger logger = makeSpyLogger(Level.INFO, Optional.empty());
     logDummyCommandToAuditLog(logger, DUMMY_COMMAND_1);
     logDummyCommandToAuditLog(logger, DUMMY_COMMAND_2);
     verify(logger, times(2)).logAuditMessage(anyString());

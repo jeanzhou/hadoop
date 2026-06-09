@@ -25,7 +25,7 @@ import java.io.IOException;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -70,16 +70,34 @@ public class DiskChecker {
    * Create the directory if it doesn't exist and check that dir is readable,
    * writable and executable
    *  
-   * @param dir
-   * @throws DiskErrorException
+   * @param dir dir.
+   * @throws DiskErrorException disk problem.
    */
   public static void checkDir(File dir) throws DiskErrorException {
+    checkDirInternal(dir);
+  }
+
+  /**
+   * Create the directory if it doesn't exist and check that dir is
+   * readable, writable and executable. Perform some disk IO to
+   * ensure that the disk is usable for writes.
+   *
+   * @param dir dir.
+   * @throws DiskErrorException disk problem.
+   */
+  public static void checkDirWithDiskIo(File dir)
+      throws DiskErrorException {
+    checkDirInternal(dir);
+    doDiskIo(dir);
+  }
+
+  private static void checkDirInternal(File dir)
+      throws DiskErrorException {    
     if (!mkdirsWithExistsCheck(dir)) {
       throw new DiskErrorException("Cannot create directory: "
                                    + dir.toString());
     }
     checkAccessByFileMethods(dir);
-    doDiskIo(dir);
   }
 
   /**
@@ -89,15 +107,39 @@ public class DiskChecker {
    * @param localFS local filesystem
    * @param dir directory
    * @param expected permission
-   * @throws DiskErrorException
-   * @throws IOException
+   * @throws DiskErrorException disk problem.
+   * @throws IOException raised on errors performing I/O.
    */
   public static void checkDir(LocalFileSystem localFS, Path dir,
                               FsPermission expected)
+      throws DiskErrorException, IOException {
+    checkDirInternal(localFS, dir, expected);
+  }
+
+
+  /**
+   * Create the local directory if necessary, also ensure permissions
+   * allow it to be read from and written into. Perform some diskIO
+   * to ensure that the disk is usable for writes. 
+   *
+   * @param localFS local filesystem
+   * @param dir directory
+   * @param expected permission
+   * @throws DiskErrorException disk problem.
+   * @throws IOException raised on errors performing I/O.
+   */  
+  public static void checkDirWithDiskIo(LocalFileSystem localFS, Path dir,
+                                        FsPermission expected) 
+      throws DiskErrorException, IOException {
+    checkDirInternal(localFS, dir, expected);
+    doDiskIo(localFS.pathToFile(dir));
+  }  
+
+  private static void checkDirInternal(LocalFileSystem localFS, Path dir,
+                                       FsPermission expected)
   throws DiskErrorException, IOException {
     mkdirsWithExistsAndPermissionCheck(localFS, dir, expected);
     checkAccessByFileMethods(localFS.pathToFile(dir));
-    doDiskIo(localFS.pathToFile(dir));
   }
 
   /**
@@ -254,7 +296,7 @@ public class DiskChecker {
       }
       file = null;
     } finally {
-      IOUtils.cleanup(null, fos);
+      IOUtils.cleanupWithLogger(LOG, fos);
       FileUtils.deleteQuietly(file);
     }
   }

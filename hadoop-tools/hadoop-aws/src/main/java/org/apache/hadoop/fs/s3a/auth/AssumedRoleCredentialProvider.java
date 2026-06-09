@@ -18,31 +18,43 @@
 
 package org.apache.hadoop.fs.s3a.auth;
 
+import javax.annotation.Nullable;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.URI;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
-import com.amazonaws.auth.AWSCredentials;
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.auth.STSAssumeRoleSessionCredentialsProvider;
-import com.amazonaws.services.securitytoken.model.AWSSecurityTokenServiceException;
-import com.google.common.annotations.VisibleForTesting;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
+import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.services.sts.StsClient;
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
+import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
+import software.amazon.awssdk.services.sts.model.StsException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.PathIOException;
 import org.apache.hadoop.fs.s3a.AWSCredentialProviderList;
+import org.apache.hadoop.fs.s3a.CredentialInitializationException;
+import org.apache.hadoop.fs.s3a.Retries;
+import org.apache.hadoop.fs.s3a.S3AUtils;
+import org.apache.hadoop.fs.s3a.Invoker;
+import org.apache.hadoop.fs.s3a.S3ARetryPolicy;
 import org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.Sets;
 
 import static org.apache.hadoop.fs.s3a.Constants.*;
-import static org.apache.hadoop.fs.s3a.S3AUtils.createAWSCredentialProvider;
-import static org.apache.hadoop.fs.s3a.S3AUtils.loadAWSProviderClasses;
+import static org.apache.hadoop.fs.s3a.auth.CredentialProviderListFactory.buildAWSProviderList;
 
 /**
  * Support IAM Assumed roles by instantiating an instance of
@@ -51,10 +63,11 @@ import static org.apache.hadoop.fs.s3a.S3AUtils.loadAWSProviderClasses;
  * unless overridden, creating a session name from the current user.
  *
  * Classname is used in configuration files; do not move.
+ *
  */
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
-public class AssumedRoleCredentialProvider implements AWSCredentialsProvider,
+public final class AssumedRoleCredentialProvider implements AwsCredentialsProvider,
     Closeable {
 
   private static final Logger LOG =
@@ -62,14 +75,10 @@ public class AssumedRoleCredentialProvider implements AWSCredentialsProvider,
   public static final String NAME
       = "org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider";
 
-  static final String E_FORBIDDEN_PROVIDER =
-      "AssumedRoleCredentialProvider cannot be in "
-          + ASSUMED_ROLE_CREDENTIALS_PROVIDER;
-
   public static final String E_NO_ROLE = "Unset property "
       + ASSUMED_ROLE_ARN;
 
-  private final STSAssumeRoleSessionCredentialsProvider stsProvider;
+  private final StsAssumeRoleCredentialsProvider stsProvider;
 
   private final String sessionName;
 
@@ -77,35 +86,38 @@ public class AssumedRoleCredentialProvider implements AWSCredentialsProvider,
 
   private final String arn;
 
+  private final AWSCredentialProviderList credentialsToSTS;
+
+  private final Invoker invoker;
+
+  private final StsClient stsClient;
+
   /**
    * Instantiate.
-   * This calls {@link #getCredentials()} to fail fast on the inner
+   * This calls {@link #resolveCredentials()} to fail fast on the inner
    * role credential retrieval.
-   * @param uri URI of endpoint.
+   * @param fsUri possibly null URI of the filesystem.
    * @param conf configuration
    * @throws IOException on IO problems and some parameter checking
    * @throws IllegalArgumentException invalid parameters
-   * @throws AWSSecurityTokenServiceException problems getting credentials
+   * @throws StsException problems getting credentials
    */
-  public AssumedRoleCredentialProvider(URI uri, Configuration conf)
+  public AssumedRoleCredentialProvider(@Nullable URI fsUri, Configuration conf)
       throws IOException {
 
     arn = conf.getTrimmed(ASSUMED_ROLE_ARN, "");
     if (StringUtils.isEmpty(arn)) {
-      throw new IOException(E_NO_ROLE);
+      throw new PathIOException(String.valueOf(fsUri), E_NO_ROLE);
     }
 
     // build up the base provider
-    Class<?>[] awsClasses = loadAWSProviderClasses(conf,
+    credentialsToSTS = buildAWSProviderList(fsUri, conf,
         ASSUMED_ROLE_CREDENTIALS_PROVIDER,
-        SimpleAWSCredentialsProvider.class);
-    AWSCredentialProviderList credentials = new AWSCredentialProviderList();
-    for (Class<?> aClass : awsClasses) {
-      if (this.getClass().equals(aClass)) {
-        throw new IOException(E_FORBIDDEN_PROVIDER);
-      }
-      credentials.add(createAWSCredentialProvider(conf, aClass, uri));
-    }
+        Arrays.asList(
+            SimpleAWSCredentialsProvider.class,
+            EnvironmentVariableCredentialsProvider.class),
+        Sets.newHashSet(getClass()));
+    LOG.debug("Credentials used to obtain role credentials: {}", credentialsToSTS);
 
     // then the STS binding
     sessionName = conf.getTrimmed(ASSUMED_ROLE_SESSION_NAME,
@@ -113,47 +125,73 @@ public class AssumedRoleCredentialProvider implements AWSCredentialsProvider,
     duration = conf.getTimeDuration(ASSUMED_ROLE_SESSION_DURATION,
         ASSUMED_ROLE_SESSION_DURATION_DEFAULT, TimeUnit.SECONDS);
     String policy = conf.getTrimmed(ASSUMED_ROLE_POLICY, "");
+    String externalId = conf.getTrimmed(ASSUMED_ROLE_EXTERNAL_ID, "");
 
     LOG.debug("{}", this);
-    STSAssumeRoleSessionCredentialsProvider.Builder builder
-        = new STSAssumeRoleSessionCredentialsProvider.Builder(arn, sessionName);
-    builder.withRoleSessionDurationSeconds((int) duration);
+
+    AssumeRoleRequest.Builder requestBuilder =
+        AssumeRoleRequest.builder().roleArn(arn).roleSessionName(sessionName)
+            .durationSeconds((int) duration);
+
+    if (StringUtils.isNotEmpty(externalId)) {
+      requestBuilder.externalId(externalId);
+    }
+
     if (StringUtils.isNotEmpty(policy)) {
       LOG.debug("Scope down policy {}", policy);
-      builder.withScopeDownPolicy(policy);
+      requestBuilder.policy(policy);
     }
-    String epr = conf.get(ASSUMED_ROLE_STS_ENDPOINT, "");
-    if (StringUtils.isNotEmpty(epr)) {
-      LOG.debug("STS Endpoint: {}", epr);
-      builder.withServiceEndpoint(epr);
-    }
-    LOG.debug("Credentials to obtain role credentials: {}", credentials);
-    builder.withLongLivedCredentialsProvider(credentials);
-    stsProvider = builder.build();
+
+    String endpoint = conf.getTrimmed(ASSUMED_ROLE_STS_ENDPOINT, "");
+    String region = conf.getTrimmed(ASSUMED_ROLE_STS_ENDPOINT_REGION,
+        ASSUMED_ROLE_STS_ENDPOINT_REGION_DEFAULT);
+    stsClient =
+        STSClientFactory.builder(
+          conf,
+          fsUri != null ?  fsUri.getHost() : "",
+          credentialsToSTS,
+          endpoint,
+          region).build();
+
+    //now build the provider
+    stsProvider = StsAssumeRoleCredentialsProvider.builder()
+        .refreshRequest(requestBuilder.build())
+        .stsClient(stsClient).build();
+
+    // to handle STS throttling by the AWS account, we
+    // need to retry
+    invoker = new Invoker(new S3ARetryPolicy(conf), this::operationRetried);
+
     // and force in a fail-fast check just to keep the stack traces less
     // convoluted
-    getCredentials();
+    resolveCredentials();
   }
 
   /**
    * Get credentials.
    * @return the credentials
-   * @throws AWSSecurityTokenServiceException if none could be obtained.
+   * @throws StsException if none could be obtained.
    */
   @Override
-  public AWSCredentials getCredentials() {
+  @Retries.RetryRaw
+  public AwsCredentials resolveCredentials() {
     try {
-      return stsProvider.getCredentials();
-    } catch (AWSSecurityTokenServiceException e) {
-      LOG.error("Failed to get credentials for role {}",
+      return invoker.retryUntranslated("resolveCredentials",
+          true,
+          stsProvider::resolveCredentials);
+    } catch (IOException e) {
+      // this is in the signature of retryUntranslated;
+      // its hard to see how this could be raised, but for
+      // completeness, it is wrapped as an Amazon Client Exception
+      // and rethrown.
+      throw new CredentialInitializationException(
+          "getCredentials failed: " + e,
+          e);
+    } catch (SdkClientException e) {
+      LOG.error("Failed to resolve credentials for role {}",
           arn, e);
       throw e;
     }
-  }
-
-  @Override
-  public void refresh() {
-    stsProvider.refresh();
   }
 
   /**
@@ -161,18 +199,16 @@ public class AssumedRoleCredentialProvider implements AWSCredentialsProvider,
    */
   @Override
   public void close() {
-    stsProvider.close();
+    S3AUtils.closeAutocloseables(LOG, stsProvider, credentialsToSTS, stsClient);
   }
 
   @Override
   public String toString() {
-    final StringBuilder sb = new StringBuilder(
-        "AssumedRoleCredentialProvider{");
-    sb.append("role='").append(arn).append('\'');
-    sb.append(", session'").append(sessionName).append('\'');
-    sb.append(", duration=").append(duration);
-    sb.append('}');
-    return sb.toString();
+    String sb = "AssumedRoleCredentialProvider{" + "role='" + arn + '\''
+        + ", session'" + sessionName + '\''
+        + ", duration=" + duration
+        + '}';
+    return sb;
   }
 
   /**
@@ -205,4 +241,23 @@ public class AssumedRoleCredentialProvider implements AWSCredentialsProvider,
     return r.toString();
   }
 
+  /**
+   * Callback from {@link Invoker} when an operation is retried.
+   * @param text text of the operation
+   * @param ex exception
+   * @param retries number of retries
+   * @param idempotent is the method idempotent
+   */
+  public void operationRetried(
+      String text,
+      Exception ex,
+      int retries,
+      boolean idempotent) {
+    if (retries == 0) {
+      // log on the first retry attempt of the credential access.
+      // At worst, this means one log entry every intermittent renewal
+      // time.
+      LOG.info("Retried {}", text);
+    }
+  }
 }

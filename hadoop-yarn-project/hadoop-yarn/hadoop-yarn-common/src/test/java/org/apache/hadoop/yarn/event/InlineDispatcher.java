@@ -18,15 +18,13 @@
 
 package org.apache.hadoop.yarn.event;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.yarn.event.AsyncDispatcher;
-import org.apache.hadoop.yarn.event.Event;
-import org.apache.hadoop.yarn.event.EventHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @SuppressWarnings({"unchecked", "rawtypes"})
 public class InlineDispatcher extends AsyncDispatcher {
-  private static final Log LOG = LogFactory.getLog(InlineDispatcher.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(InlineDispatcher.class);
 
   private class TestEventHandler implements EventHandler {
     @Override

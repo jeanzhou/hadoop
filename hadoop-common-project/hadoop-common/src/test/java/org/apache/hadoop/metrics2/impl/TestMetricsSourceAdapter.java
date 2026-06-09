@@ -18,7 +18,9 @@
 
 package org.apache.hadoop.metrics2.impl;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -28,7 +30,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.metrics2.MetricsCollector;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.metrics2.MetricsSource;
@@ -40,10 +42,9 @@ import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MetricsSourceBuilder;
 import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import static org.apache.hadoop.metrics2.lib.Interns.info;
-import static org.junit.Assert.assertEquals;
 
 import org.apache.log4j.Logger;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import javax.management.MBeanAttributeInfo;
 import javax.management.MBeanInfo;
@@ -67,7 +68,7 @@ public class TestMetricsSourceAdapter {
     for (MBeanAttributeInfo mBeanAttributeInfo : info.getAttributes()) {
       sawIt |= mBeanAttributeInfo.getName().equals(source.lastKeyName);
     };
-    assertTrue("The last generated metric is not exported to jmx", sawIt);
+    assertTrue(sawIt, "The last generated metric is not exported to jmx");
 
     Thread.sleep(1000); // skip JMX cache TTL
 
@@ -76,7 +77,7 @@ public class TestMetricsSourceAdapter {
     for (MBeanAttributeInfo mBeanAttributeInfo : info.getAttributes()) {
       sawIt |= mBeanAttributeInfo.getName().equals(source.lastKeyName);
     };
-    assertTrue("The last generated metric is not exported to jmx", sawIt);
+    assertTrue(sawIt, "The last generated metric is not exported to jmx");
   }
 
   //generate a new key per each call
@@ -198,7 +199,7 @@ public class TestMetricsSourceAdapter {
     // Let the threads do their work.
     Thread.sleep(RACE_TEST_RUNTIME);
 
-    assertFalse("Hit error", hasError.get());
+    assertFalse(hasError.get(), "Hit error");
 
     // cleanup
     updaterExecutor.shutdownNow();

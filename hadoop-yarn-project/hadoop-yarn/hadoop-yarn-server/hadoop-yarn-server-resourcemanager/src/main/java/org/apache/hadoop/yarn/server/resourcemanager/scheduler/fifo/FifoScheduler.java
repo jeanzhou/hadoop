@@ -18,9 +18,9 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configurable;
@@ -108,7 +108,8 @@ public class FifoScheduler extends
     AbstractYarnScheduler<FifoAppAttempt, FiCaSchedulerNode> implements
     Configurable {
 
-  private static final Log LOG = LogFactory.getLog(FifoScheduler.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(FifoScheduler.class);
 
   private static final RecordFactory recordFactory = 
     RecordFactoryProvider.getRecordFactory(null);
@@ -388,17 +389,18 @@ public class FifoScheduler extends
 
   @VisibleForTesting
   public synchronized void addApplication(ApplicationId applicationId,
-      String queue, String user, boolean isAppRecovering) {
+      String queue, String user, boolean isAppRecovering,
+      boolean unmanagedAM) {
     SchedulerApplication<FifoAppAttempt> application =
-        new SchedulerApplication<>(DEFAULT_QUEUE, user);
+        new SchedulerApplication<>(DEFAULT_QUEUE, user, unmanagedAM);
     applications.put(applicationId, application);
-    metrics.submitApp(user);
+
+    metrics.submitApp(user, unmanagedAM);
     LOG.info("Accepted application " + applicationId + " from user: " + user
         + ", currently num of applications: " + applications.size());
     if (isAppRecovering) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug(applicationId + " is recovering. Skip notifying APP_ACCEPTED");
-      }
+      LOG.debug("{} is recovering. Skip notifying APP_ACCEPTED",
+          applicationId);
     } else {
       rmContext.getDispatcher().getEventHandler()
         .handle(new RMAppEvent(applicationId, RMAppEventType.APP_ACCEPTED));
@@ -424,14 +426,13 @@ public class FifoScheduler extends
     }
     application.setCurrentAppAttempt(schedulerApp);
 
-    metrics.submitAppAttempt(user);
+    metrics.submitAppAttempt(user, application.isUnmanagedAM());
+
     LOG.info("Added Application Attempt " + appAttemptId
         + " to scheduler from user " + application.getUser());
     if (isAttemptRecovering) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug(appAttemptId
-            + " is recovering. Skipping notifying ATTEMPT_ADDED");
-      }
+      LOG.debug("{} is recovering. Skipping notifying ATTEMPT_ADDED",
+          appAttemptId);
     } else {
       rmContext.getDispatcher().getEventHandler().handle(
         new RMAppAttemptEvent(appAttemptId,
@@ -770,8 +771,8 @@ public class FifoScheduler extends
     {
       AppAddedSchedulerEvent appAddedEvent = (AppAddedSchedulerEvent) event;
       addApplication(appAddedEvent.getApplicationId(),
-        appAddedEvent.getQueue(), appAddedEvent.getUser(),
-        appAddedEvent.getIsAppRecovering());
+          appAddedEvent.getQueue(), appAddedEvent.getUser(),
+          appAddedEvent.getIsAppRecovering(), appAddedEvent.isUnmanagedAM());
     }
     break;
     case APP_REMOVED:
@@ -966,8 +967,10 @@ public class FifoScheduler extends
       return;
     }
 
-    if (Resources.greaterThanOrEqual(resourceCalculator, getClusterResource(),
-        node.getUnallocatedResource(), minimumAllocation)) {
+    // A decommissioned node might be removed before we get here
+    if (node != null &&
+        Resources.greaterThanOrEqual(resourceCalculator, getClusterResource(),
+            node.getUnallocatedResource(), minimumAllocation)) {
       LOG.debug("Node heartbeat " + nm.getNodeID() +
           " available resource = " + node.getUnallocatedResource());
 

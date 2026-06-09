@@ -26,12 +26,13 @@ import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,6 +40,7 @@ public class WebAppProxy extends AbstractService {
   public static final String FETCHER_ATTRIBUTE= "AppUrlFetcher";
   public static final String IS_SECURITY_ENABLED_ATTRIBUTE = "IsSecurityEnabled";
   public static final String PROXY_HOST_ATTRIBUTE = "proxyHost";
+  public static final String PROXY_CA = "ProxyCA";
   private static final Logger LOG = LoggerFactory.getLogger(
       WebAppProxy.class);
   
@@ -70,19 +72,33 @@ public class WebAppProxy extends AbstractService {
     String[] proxyParts = proxy.split(":");
     proxyHost = proxyParts[0];
 
-    fetcher = new AppReportFetcher(conf);
+    if (HAUtil.isFederationEnabled(conf)) {
+      fetcher = new FedAppReportFetcher(conf);
+    } else {
+      fetcher = new DefaultAppReportFetcher(conf);
+    }
     bindAddress = conf.get(YarnConfiguration.PROXY_ADDRESS);
     if(bindAddress == null || bindAddress.isEmpty()) {
-      throw new YarnRuntimeException(YarnConfiguration.PROXY_ADDRESS + 
+      throw new YarnRuntimeException(YarnConfiguration.PROXY_ADDRESS +
           " is not set so the proxy will not run.");
     }
-    LOG.info("Instantiating Proxy at " + bindAddress);
+
     String[] parts = StringUtils.split(bindAddress, ':');
     port = 0;
     if (parts.length == 2) {
       bindAddress = parts[0];
       port = Integer.parseInt(parts[1]);
     }
+
+    String bindHost = conf.getTrimmed(YarnConfiguration.PROXY_BIND_HOST, null);
+    if (bindHost != null) {
+      LOG.debug("{} is set, will be used to run proxy.",
+          YarnConfiguration.PROXY_BIND_HOST);
+      bindAddress = bindHost;
+    }
+
+    LOG.info("Instantiating Proxy at {}:{}", bindAddress, port);
+
     acl = new AccessControlList(conf.get(YarnConfiguration.YARN_ADMIN_ACL, 
         YarnConfiguration.DEFAULT_YARN_ADMIN_ACL));
     super.serviceInit(conf);
@@ -145,5 +161,10 @@ public class WebAppProxy extends AbstractService {
   @VisibleForTesting
   String getBindAddress() {
     return bindAddress + ":" + port;
+  }
+
+  @VisibleForTesting
+  public AppReportFetcher getFetcher() {
+    return fetcher;
   }
 }

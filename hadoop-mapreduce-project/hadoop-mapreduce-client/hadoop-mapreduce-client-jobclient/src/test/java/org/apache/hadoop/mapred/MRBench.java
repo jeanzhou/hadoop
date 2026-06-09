@@ -132,7 +132,7 @@ public class MRBench extends Configured implements Tool{
    */
   private static String pad(long number, int length) {
     String str = String.valueOf(number);
-    StringBuffer value = new StringBuffer(); 
+    StringBuilder value = new StringBuilder();
     for (int i = str.length(); i < length; i++) {
       value.append("0"); 
     }
@@ -284,7 +284,7 @@ public class MRBench extends Configured implements Tool{
       }
 
     JobConf jobConf = setupJob(numMaps, numReduces, jarFile);
-    FileSystem fs = FileSystem.get(jobConf);
+    FileSystem fs = BASE_DIR.getFileSystem(jobConf);
     Path inputFile = new Path(INPUT_DIR, "input_" + (new Random()).nextInt() + ".txt");
     generateTextFile(fs, inputFile, inputLines, inputSortOrder);
 

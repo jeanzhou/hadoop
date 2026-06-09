@@ -20,9 +20,11 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import java.beans.ConstructorProperties;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 
 /**
  * Statistics per StorageType.
@@ -38,6 +40,15 @@ public class StorageTypeStats {
   private long blockPoolUsed = 0L;
   private int nodesInService = 0;
   private StorageType storageType;
+
+  @VisibleForTesting
+  void setDataNodesInServiceXceiverCount(int avgXceiverPerDatanode,
+      int numNodesInService) {
+    this.nodesInService = numNodesInService;
+    this.nodesInServiceXceiverCount = numNodesInService * avgXceiverPerDatanode;
+  }
+
+  private int nodesInServiceXceiverCount;
 
   @ConstructorProperties({"capacityTotal", "capacityUsed", "capacityNonDfsUsed",
       "capacityRemaining", "blockPoolUsed", "nodesInService"})
@@ -97,8 +108,30 @@ public class StorageTypeStats {
     return blockPoolUsed;
   }
 
+  public float getPercentUsed() {
+    long used = getCapacityUsed();
+    long total = getCapacityTotal();
+    return DFSUtilClient.getPercentUsed(used, total);
+  }
+
+  public float getPercentBlockPoolUsed() {
+    long poolUsed = getBlockPoolUsed();
+    long total = getCapacityTotal();
+    return DFSUtilClient.getPercentUsed(poolUsed, total);
+  }
+
+  public float getPercentRemaining() {
+    long remaining = getCapacityRemaining();
+    long total = getCapacityTotal();
+    return DFSUtilClient.getPercentUsed(remaining, total);
+  }
+
   public int getNodesInService() {
     return nodesInService;
+  }
+
+  public int getNodesInServiceXceiverCount() {
+    return nodesInServiceXceiverCount;
   }
 
   StorageTypeStats(StorageType storageType) {
@@ -131,6 +164,7 @@ public class StorageTypeStats {
   void addNode(final DatanodeDescriptor node) {
     if (node.isInService()) {
       nodesInService++;
+      nodesInServiceXceiverCount += node.getXceiverCount();
     }
   }
 
@@ -151,6 +185,7 @@ public class StorageTypeStats {
   void subtractNode(final DatanodeDescriptor node) {
     if (node.isInService()) {
       nodesInService--;
+      nodesInServiceXceiverCount -= node.getXceiverCount();
     }
   }
 }

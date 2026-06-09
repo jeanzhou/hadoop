@@ -18,11 +18,12 @@
 
 package org.apache.hadoop.conf;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Tests the tool (and the default expression) for deciding which config
@@ -55,6 +56,13 @@ public class TestConfigRedactor {
         "fs.s3a.server-side-encryption.key",
         "fs.s3a.bucket.engineering.server-side-encryption.key",
         "fs.azure.account.key.abcdefg.blob.core.windows.net",
+        "fs.azure.account.key.abcdefg.dfs.core.windows.net",
+        "fs.azure.account.oauth2.client.secret",
+        "fs.azure.account.oauth2.client.secret.account.dfs.core.windows.net",
+        "fs.azure.account.oauth2.user.password",
+        "fs.azure.account.oauth2.user.password.account.dfs.core.windows.net",
+        "fs.azure.account.oauth2.refresh.token",
+        "fs.azure.account.oauth2.refresh.token.account.dfs.core.windows.net",
         "fs.adl.oauth2.refresh.token",
         "fs.adl.oauth2.credential",
         "dfs.adls.oauth2.refresh.token",
@@ -68,9 +76,8 @@ public class TestConfigRedactor {
     );
     for (String key : sensitiveKeys) {
       processedText = redactor.redact(key, ORIGINAL_VALUE);
-      Assert.assertEquals(
-          "Config parameter wasn't redacted and should be: " + key,
-          REDACTED_TEXT, processedText);
+      assertEquals(REDACTED_TEXT, processedText,
+          "Config parameter wasn't redacted and should be: " + key);
     }
 
     List<String> normalKeys = Arrays.asList(
@@ -83,9 +90,8 @@ public class TestConfigRedactor {
     );
     for (String key : normalKeys) {
       processedText = redactor.redact(key, ORIGINAL_VALUE);
-      Assert.assertEquals(
-          "Config parameter was redacted and shouldn't be: " + key,
-          ORIGINAL_VALUE, processedText);
+      assertEquals(ORIGINAL_VALUE, processedText,
+          "Config parameter was redacted and shouldn't be: " + key);
     }
   }
 }

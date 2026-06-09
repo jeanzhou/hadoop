@@ -28,7 +28,7 @@ import org.apache.hadoop.util.ToolRunner;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
-import org.apache.commons.cli.OptionBuilder;
+import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
@@ -100,15 +100,13 @@ public class OfflineEditsViewer extends Configured implements Tool {
 
     // Build in/output file arguments, which are required, but there is no 
     // addOption method that can specify this
-    OptionBuilder.isRequired();
-    OptionBuilder.hasArgs();
-    OptionBuilder.withLongOpt("outputFilename");
-    options.addOption(OptionBuilder.create("o"));
-    
-    OptionBuilder.isRequired();
-    OptionBuilder.hasArgs();
-    OptionBuilder.withLongOpt("inputFilename");
-    options.addOption(OptionBuilder.create("i"));
+    Option optionOutputFileName =
+        Option.builder("o").required().hasArgs().longOpt("outputFilename").build();
+    options.addOption(optionOutputFileName);
+
+    Option optionInputFilename =
+        Option.builder("i").required().hasArgs().longOpt("inputFilename").build();
+    options.addOption(optionInputFilename);
     
     options.addOption("p", "processor", true, "");
     options.addOption("v", "verbose", false, "");
@@ -121,8 +119,8 @@ public class OfflineEditsViewer extends Configured implements Tool {
 
   /** Process an edit log using the chosen processor or visitor.
    * 
-   * @param inputFilename   The file to process
-   * @param outputFilename  The output file name
+   * @param inputFileName   The file to process
+   * @param outputFileName  The output file name
    * @param processor       If visitor is null, the processor to use
    * @param visitor         If non-null, the visitor to use.
    * 

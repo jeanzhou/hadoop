@@ -21,7 +21,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
@@ -50,21 +50,20 @@ import java.util.concurrent.Future;
 
 /**
  * DiskBalancerCluster represents the nodes that we are working against.
- * <p/>
+ * <p>
  * Please Note :
- * <p/>
  * Semantics of inclusionList and exclusionLists.
- * <p/>
+ * <p>
  * If a non-empty inclusionList is specified then the diskBalancer assumes that
  * the user is only interested in processing that list of nodes. This node list
  * is checked against the exclusionList and only the nodes in inclusionList but
  * not in exclusionList is processed.
- * <p/>
+ * <p>
  * if inclusionList is empty, then we assume that all live nodes in the nodes is
  * to be processed by diskBalancer. In that case diskBalancer will avoid any
  * nodes specified in the exclusionList but will process all nodes in the
  * cluster.
- * <p/>
+ * <p>
  * In other words, an empty inclusionList is means all the nodes otherwise
  * only a given list is processed and ExclusionList is always honored.
  */
@@ -291,7 +290,7 @@ public class DiskBalancerCluster {
   /**
    * Compute plan takes a node and constructs a planner that creates a plan that
    * we would like to follow.
-   * <p/>
+   * <p>
    * This function creates a thread pool and executes a planner on each node
    * that we are supposed to plan for. Each of these planners return a NodePlan
    * that we can persist or schedule for execution with a diskBalancer
@@ -390,6 +389,6 @@ public class DiskBalancerCluster {
    * @return DiskBalancerDataNode.
    */
   public DiskBalancerDataNode getNodeByName(String hostName) {
-    return hostNames.get(hostName);
+    return hostNames.get(hostName.toLowerCase(Locale.US));
   }
 }

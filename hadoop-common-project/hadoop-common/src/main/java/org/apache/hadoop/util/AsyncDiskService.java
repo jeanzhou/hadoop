@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,7 +75,7 @@ public class AsyncDiskService {
     threadFactory = new ThreadFactory() {
       @Override
       public Thread newThread(Runnable r) {
-        return new Thread(threadGroup, r);
+        return new SubjectInheritingThread(threadGroup, r);
       }
     };
     
@@ -94,6 +95,9 @@ public class AsyncDiskService {
   
   /**
    * Execute the task sometime in the future, using ThreadPools.
+   *
+   * @param root root.
+   * @param task task.
    */
   public synchronized void execute(String root, Runnable task) {
     ThreadPoolExecutor executor = executors.get(root);
@@ -123,7 +127,7 @@ public class AsyncDiskService {
    * 
    * @param milliseconds  The number of milliseconds to wait
    * @return   true if all thread pools are terminated without time limit
-   * @throws InterruptedException 
+   * @throws InterruptedException if the thread is interrupted.
    */
   public synchronized boolean awaitTermination(long milliseconds) 
       throws InterruptedException {
@@ -145,6 +149,8 @@ public class AsyncDiskService {
   
   /**
    * Shut down all ThreadPools immediately.
+   *
+   * @return Runnable List.
    */
   public synchronized List<Runnable> shutdownNow() {
     

@@ -21,22 +21,24 @@ package org.apache.hadoop.fs.aliyun.oss;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileSystemContractBaseTest;
 import org.apache.hadoop.fs.Path;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.Arrays;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assume.assumeFalse;
-import static org.junit.Assume.assumeNotNull;
-import static org.junit.Assume.assumeTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Tests a live Aliyun OSS system.
@@ -44,14 +46,16 @@ import static org.junit.Assume.assumeTrue;
 public class TestAliyunOSSFileSystemContract
     extends FileSystemContractBaseTest {
   public static final String TEST_FS_OSS_NAME = "test.fs.oss.name";
+  public static final String FS_OSS_IMPL_DISABLE_CACHE
+      = "fs.oss.impl.disable.cache";
   private static Path testRootPath =
       new Path(AliyunOSSTestUtils.generateUniqueTestPath());
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     Configuration conf = new Configuration();
     fs = AliyunOSSTestUtils.createTestFileSystem(conf);
-    assumeNotNull(fs);
+    assumeTrue(fs != null);
   }
 
   @Override
@@ -70,8 +74,8 @@ public class TestAliyunOSSFileSystemContract
     fs.getFileStatus(super.path("/"));
     //this catches overrides of the base exists() method that don't
     //use getFileStatus() as an existence probe
-    assertTrue("FileSystem.exists() fails for root",
-        fs.exists(super.path("/")));
+    assertTrue(
+        fs.exists(super.path("/")), "FileSystem.exists() fails for root");
   }
 
   @Test
@@ -83,22 +87,56 @@ public class TestAliyunOSSFileSystemContract
   }
 
   @Test
+  public void testListStatus() throws IOException {
+    Path file = this.path("/test/hadoop/file");
+    this.createFile(file);
+    assertTrue(this.fs.exists(file), "File exists");
+    FileStatus fs = this.fs.getFileStatus(file);
+    assertEquals(fs.getOwner(),
+        UserGroupInformation.getCurrentUser().getShortUserName());
+    assertEquals(fs.getGroup(),
+        UserGroupInformation.getCurrentUser().getShortUserName());
+  }
+
+  @Test
+  public void testGetFileStatusInVersioningBucket() throws Exception {
+    Path file = this.path("/test/hadoop/file");
+    for (int i = 1; i <= 30; ++i) {
+      this.createFile(new Path(file, "sub" + i));
+    }
+    assertTrue(this.fs.exists(file), "File exists");
+    FileStatus fs = this.fs.getFileStatus(file);
+    assertEquals(fs.getOwner(),
+        UserGroupInformation.getCurrentUser().getShortUserName());
+    assertEquals(fs.getGroup(),
+        UserGroupInformation.getCurrentUser().getShortUserName());
+
+    AliyunOSSFileSystemStore store = ((AliyunOSSFileSystem)this.fs).getStore();
+    for (int i = 0; i < 29; ++i) {
+      store.deleteObjects(Arrays.asList("test/hadoop/file/sub" + i));
+    }
+
+    // HADOOP-16840, will throw FileNotFoundException without this fix
+    this.fs.getFileStatus(file);
+  }
+
+  @Test
   public void testDeleteSubdir() throws IOException {
     Path parentDir = this.path("/test/hadoop");
     Path file = this.path("/test/hadoop/file");
     Path subdir = this.path("/test/hadoop/subdir");
     this.createFile(file);
 
-    assertTrue("Created subdir", this.fs.mkdirs(subdir));
-    assertTrue("File exists", this.fs.exists(file));
-    assertTrue("Parent dir exists", this.fs.exists(parentDir));
-    assertTrue("Subdir exists", this.fs.exists(subdir));
+    assertTrue(this.fs.mkdirs(subdir), "Created subdir");
+    assertTrue(this.fs.exists(file), "File exists");
+    assertTrue(this.fs.exists(parentDir), "Parent dir exists");
+    assertTrue(this.fs.exists(subdir), "Subdir exists");
 
-    assertTrue("Deleted subdir", this.fs.delete(subdir, true));
-    assertTrue("Parent should exist", this.fs.exists(parentDir));
+    assertTrue(this.fs.delete(subdir, true), "Deleted subdir");
+    assertTrue(this.fs.exists(parentDir), "Parent should exist");
 
-    assertTrue("Deleted file", this.fs.delete(file, false));
-    assertTrue("Parent should exist", this.fs.exists(parentDir));
+    assertTrue(this.fs.delete(file, false), "Deleted file");
+    assertTrue(this.fs.exists(parentDir), "Parent should exist");
   }
 
 
@@ -165,13 +203,13 @@ public class TestAliyunOSSFileSystemContract
     AliyunOSSFileSystemStore store = ((AliyunOSSFileSystem)this.fs).getStore();
     store.storeEmptyFile("test/new/file/");
     AliyunOSSCopyFileTask oneCopyFileTask = new AliyunOSSCopyFileTask(
-        store, srcOne.toUri().getPath().substring(1),
+        store, srcOne.toUri().getPath().substring(1), data.length,
         dstOne.toUri().getPath().substring(1), copyFileContext);
     oneCopyFileTask.run();
     assumeFalse(copyFileContext.isCopyFailure());
 
     AliyunOSSCopyFileTask twoCopyFileTask = new AliyunOSSCopyFileTask(
-        store, srcOne.toUri().getPath().substring(1),
+        store, srcOne.toUri().getPath().substring(1), data.length,
         dstTwo.toUri().getPath().substring(1), copyFileContext);
     twoCopyFileTask.run();
     assumeFalse(copyFileContext.isCopyFailure());
@@ -199,13 +237,13 @@ public class TestAliyunOSSFileSystemContract
     AliyunOSSFileSystemStore store = ((AliyunOSSFileSystem)this.fs).getStore();
     //store.storeEmptyFile("test/new/file/");
     AliyunOSSCopyFileTask oneCopyFileTask = new AliyunOSSCopyFileTask(
-        store, srcOne.toUri().getPath().substring(1),
+        store, srcOne.toUri().getPath().substring(1), data.length,
         dstOne.toUri().getPath().substring(1), copyFileContext);
     oneCopyFileTask.run();
     assumeTrue(copyFileContext.isCopyFailure());
 
     AliyunOSSCopyFileTask twoCopyFileTask = new AliyunOSSCopyFileTask(
-        store, srcOne.toUri().getPath().substring(1),
+        store, srcOne.toUri().getPath().substring(1), data.length,
         dstTwo.toUri().getPath().substring(1), copyFileContext);
     twoCopyFileTask.run();
     assumeTrue(copyFileContext.isCopyFailure());
@@ -234,19 +272,19 @@ public class TestAliyunOSSFileSystemContract
     AliyunOSSFileSystemStore store = ((AliyunOSSFileSystem)this.fs).getStore();
     //store.storeEmptyFile("test/new/file/");
     AliyunOSSCopyFileTask oneCopyFileTask = new AliyunOSSCopyFileTask(
-        store, srcOne.toUri().getPath().substring(1),
+        store, srcOne.toUri().getPath().substring(1), data.length,
         dstOne.toUri().getPath().substring(1), copyFileContext);
     oneCopyFileTask.run();
     assumeTrue(copyFileContext.isCopyFailure());
 
     AliyunOSSCopyFileTask twoCopyFileTask = new AliyunOSSCopyFileTask(
-        store, srcOne.toUri().getPath().substring(1),
+        store, srcOne.toUri().getPath().substring(1), data.length,
         dstTwo.toUri().getPath().substring(1), copyFileContext);
     twoCopyFileTask.run();
     assumeTrue(copyFileContext.isCopyFailure());
 
     AliyunOSSCopyFileTask threeCopyFileTask = new AliyunOSSCopyFileTask(
-        store, srcOne.toUri().getPath().substring(1),
+        store, srcOne.toUri().getPath().substring(1), data.length,
         dstThree.toUri().getPath().substring(1), copyFileContext);
     threeCopyFileTask.run();
     assumeTrue(copyFileContext.isCopyFailure());
@@ -315,20 +353,20 @@ public class TestAliyunOSSFileSystemContract
   public void testGetFileStatusFileAndDirectory() throws Exception {
     Path filePath = this.path("/test/oss/file1");
     this.createFile(filePath);
-    assertTrue("Should be file", this.fs.getFileStatus(filePath).isFile());
-    assertFalse("Should not be directory",
-        this.fs.getFileStatus(filePath).isDirectory());
+    assertTrue(this.fs.getFileStatus(filePath).isFile(), "Should be file");
+    assertFalse(
+        this.fs.getFileStatus(filePath).isDirectory(), "Should not be directory");
 
     Path dirPath = this.path("/test/oss/dir");
     this.fs.mkdirs(dirPath);
-    assertTrue("Should be directory",
-        this.fs.getFileStatus(dirPath).isDirectory());
-    assertFalse("Should not be file", this.fs.getFileStatus(dirPath).isFile());
+    assertTrue(
+        this.fs.getFileStatus(dirPath).isDirectory(), "Should be directory");
+    assertFalse(this.fs.getFileStatus(dirPath).isFile(), "Should not be file");
 
     Path parentPath = this.path("/test/oss");
     for (FileStatus fileStatus: fs.listStatus(parentPath)) {
-      assertTrue("file and directory should be new",
-          fileStatus.getModificationTime() > 0L);
+      assertTrue(
+          fileStatus.getModificationTime() > 0L, "file and directory should be new");
     }
   }
 
@@ -346,4 +384,85 @@ public class TestAliyunOSSFileSystemContract
     }
   }
 
+  @Test
+  public void testRenameChangingDirShouldFail() throws Exception {
+    testRenameDir(true, false, false);
+    testRenameDir(true, true, true);
+  }
+
+  @Test
+  public void testRenameDir() throws Exception {
+    testRenameDir(false, true, false);
+    testRenameDir(false, true, true);
+  }
+
+  private void testRenameDir(boolean changing, boolean result, boolean empty)
+      throws Exception {
+    fs.getConf().setLong(Constants.FS_OSS_BLOCK_SIZE_KEY, 1024);
+    String key = "a/b/test.file";
+    for (int i = 0; i < 100; i++) {
+      if (empty) {
+        fs.createNewFile(this.path(key + "." + i));
+      } else {
+        createFile(this.path(key + "." + i));
+      }
+    }
+
+    Path srcPath = this.path("a");
+    Path dstPath = this.path("b");
+    TestRenameTask task = new TestRenameTask(fs, srcPath, dstPath);
+    Thread thread = new Thread(task);
+    thread.start();
+    while (!task.isRunning()) {
+      Thread.sleep(1);
+    }
+
+    if (changing) {
+      fs.delete(this.path("a/b"), true);
+    }
+
+    thread.join();
+    if (changing) {
+      assertTrue(task.isSucceed() || fs.exists(this.path("a")));
+    } else {
+      assertEquals(result, task.isSucceed());
+    }
+  }
+
+  class TestRenameTask implements Runnable {
+    private FileSystem fs;
+    private Path srcPath;
+    private Path dstPath;
+    private boolean result;
+    private boolean running;
+    TestRenameTask(FileSystem fs, Path srcPath, Path dstPath) {
+      this.fs = fs;
+      this.srcPath = srcPath;
+      this.dstPath = dstPath;
+      this.result = false;
+      this.running = false;
+    }
+
+    boolean isSucceed() {
+      return this.result;
+    }
+
+    boolean isRunning() {
+      return this.running;
+    }
+    @Override
+    public void run() {
+      try {
+        running = true;
+        result = fs.rename(srcPath, dstPath);
+      } catch (Exception e) {
+        e.printStackTrace();
+        this.result = false;
+      }
+    }
+  }
+
+  protected int getGlobalTimeout() {
+    return 120 * 1000;
+  }
 }

@@ -17,16 +17,18 @@
  */
 package org.apache.hadoop.hdfs.qjournal;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
 import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.BindException;
 import java.net.URI;
@@ -34,11 +36,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-public class MiniQJMHACluster {
+public class MiniQJMHACluster implements AutoCloseable {
   private MiniDFSCluster cluster;
   private MiniJournalCluster journalCluster;
   private final Configuration conf;
-  private static final Log LOG = LogFactory.getLog(MiniQJMHACluster.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(MiniQJMHACluster.class);
 
   public static final String NAMESERVICE = "ns1";
   private static final Random RANDOM = new Random();
@@ -49,12 +52,20 @@ public class MiniQJMHACluster {
     private int numNNs = 2;
     private final MiniDFSCluster.Builder dfsBuilder;
     private boolean forceRemoteEditsOnly = false;
+    private String baseDir;
 
     public Builder(Configuration conf) {
       this.conf = conf;
       // most QJMHACluster tests don't need DataNodes, so we'll make
       // this the default
       this.dfsBuilder = new MiniDFSCluster.Builder(conf).numDataNodes(0);
+    }
+
+    public Builder(Configuration conf, File baseDir) {
+      this.conf = conf;
+      // most QJMHACluster tests don't need DataNodes, so we'll make
+      // this the default
+      this.dfsBuilder = new MiniDFSCluster.Builder(conf, baseDir).numDataNodes(0);
     }
 
     public MiniDFSCluster.Builder getDfsBuilder() {
@@ -67,6 +78,11 @@ public class MiniQJMHACluster {
 
     public void startupOption(StartupOption startOpt) {
       this.startOpt = startOpt;
+    }
+
+    public Builder baseDir(String d) {
+      this.baseDir = d;
+      return this;
     }
 
     public Builder setNumNameNodes(int nns) {
@@ -104,8 +120,8 @@ public class MiniQJMHACluster {
         basePort = 10000 + RANDOM.nextInt(1000) * 4;
         LOG.info("Set MiniQJMHACluster basePort to " + basePort);
         // start 3 journal nodes
-        journalCluster = new MiniJournalCluster.Builder(conf).format(true)
-            .build();
+        journalCluster = new MiniJournalCluster.Builder(conf)
+            .baseDir(builder.baseDir).format(true).build();
         journalCluster.waitActive();
         journalCluster.setNamenodeSharedEditsConf(NAMESERVICE);
         URI journalURI = journalCluster.getQuorumJournalURI(NAMESERVICE);
@@ -164,7 +180,8 @@ public class MiniQJMHACluster {
     }
 
     // use standard failover configurations
-    HATestUtil.setFailoverConfigurations(conf, NAMESERVICE, nns);
+    HATestUtil.setFailoverConfigurations(conf, NAMESERVICE, nns,
+        ConfiguredFailoverProxyProvider.class);
     return conf;
   }
 
@@ -180,4 +197,15 @@ public class MiniQJMHACluster {
     cluster.shutdown();
     journalCluster.shutdown();
   }
+
+  @Override
+  public void close() {
+    try {
+      shutdown();
+    } catch (IOException shutdownFailure) {
+      LOG.warn("Exception while closing journal cluster", shutdownFailure);
+    }
+
+  }
+
 }

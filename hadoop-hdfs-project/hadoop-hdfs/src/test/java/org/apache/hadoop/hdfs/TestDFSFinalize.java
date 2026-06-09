@@ -18,24 +18,23 @@
 package org.apache.hadoop.hdfs;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NodeType.DATA_NODE;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.io.File;
 import java.util.Collections;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.util.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
 import org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage;
 import org.apache.hadoop.hdfs.server.datanode.DataStorage;
-import org.junit.After;
-import org.junit.Test;
-
-import com.google.common.collect.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * This test ensures the appropriate response from the system when 
@@ -43,7 +42,7 @@ import com.google.common.collect.Lists;
  */
 public class TestDFSFinalize {
  
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
                                                    "org.apache.hadoop.hdfs.TestDFSFinalize");
   private Configuration conf;
   private int testCounter = 0;
@@ -154,7 +153,7 @@ public class TestDFSFinalize {
       UpgradeUtilities.createEmptyDirs(dataNodeDirs);
 
       log("Finalize NN & BP with existing previous dir", numDirs);
-      String bpid = UpgradeUtilities.getCurrentBlockPoolID(cluster);
+      String bpid = UpgradeUtilities.getCurrentBlockPoolID(null);
       UpgradeUtilities.createNameNodeStorageDirs(nameNodeDirs, "current");
       UpgradeUtilities.createNameNodeStorageDirs(nameNodeDirs, "previous");
       UpgradeUtilities.createDataNodeStorageDirs(dataNodeDirs, "current");
@@ -185,7 +184,7 @@ public class TestDFSFinalize {
     } // end numDir loop
   }
  
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     LOG.info("Shutting down MiniDFSCluster");
     if (cluster != null) {

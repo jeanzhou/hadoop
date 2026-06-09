@@ -35,7 +35,7 @@ import javax.servlet.http.HttpServletRequest;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -100,7 +100,6 @@ public class TestServletFilter extends HttpServerFunctionalTest {
     }
   }
 
-  @Test
   public void testServletFilter() throws Exception {
     Configuration conf = new Configuration();
     

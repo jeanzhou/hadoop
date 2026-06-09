@@ -21,12 +21,13 @@ package org.apache.hadoop.streaming;
 import java.io.File;
 import java.io.IOException;
 import java.io.DataOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -42,7 +43,7 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
  */
 public class TestMultipleArchiveFiles extends TestStreaming
 {
-  private static final Log LOG = LogFactory.getLog(TestMultipleArchiveFiles.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestMultipleArchiveFiles.class);
 
   private StreamJob job;
   private String INPUT_DIR = "multiple-archive-files/";
@@ -86,14 +87,14 @@ public class TestMultipleArchiveFiles extends TestStreaming
     DataOutputStream dos = fileSys.create(new Path(INPUT_FILE));
     String inputFileString = "symlink1" + File.separator
       + "cacheArchive1\nsymlink2" + File.separator + "cacheArchive2";
-    dos.write(inputFileString.getBytes("UTF-8"));
+    dos.write(inputFileString.getBytes(StandardCharsets.UTF_8));
     dos.close();
 
     DataOutputStream out = fileSys.create(new Path(CACHE_ARCHIVE_1.toString()));
     ZipOutputStream zos = new ZipOutputStream(out);
     ZipEntry ze = new ZipEntry(CACHE_FILE_1.toString());
     zos.putNextEntry(ze);
-    zos.write(input.getBytes("UTF-8"));
+    zos.write(input.getBytes(StandardCharsets.UTF_8));
     zos.closeEntry();
     zos.close();
 
@@ -101,7 +102,7 @@ public class TestMultipleArchiveFiles extends TestStreaming
     zos = new ZipOutputStream(out);
     ze = new ZipEntry(CACHE_FILE_2.toString());
     zos.putNextEntry(ze);
-    zos.write(input.getBytes("UTF-8"));
+    zos.write(input.getBytes(StandardCharsets.UTF_8));
     zos.closeEntry();
     zos.close();
   }
@@ -127,7 +128,7 @@ public class TestMultipleArchiveFiles extends TestStreaming
   }
 
   protected void checkOutput() throws IOException {
-    StringBuffer output = new StringBuffer(256);
+    StringBuilder output = new StringBuilder(256);
     Path[] fileList = FileUtil.stat2Paths(fileSys.listStatus(
                                             new Path(OUTPUT_DIR)));
     for (int i = 0; i < fileList.length; i++){

@@ -39,26 +39,27 @@ import java.util.Collection;
 import javax.crypto.KeyGenerator;
 
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.io.WritableComparator;
-import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestCredentials {
   private static final String DEFAULT_HMAC_ALGORITHM = "HmacSHA1";
   private static final File tmpDir = GenericTestUtils.getTestDir("mapred");
 
-  @Before
+  @BeforeEach
   public void setUp() {
     tmpDir.mkdir();
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     tmpDir.delete();
   }
@@ -74,6 +75,9 @@ public class TestCredentials {
     Token<T> token2 = new Token();
     Text service1 = new Text("service1");
     Text service2 = new Text("service2");
+    Text alias1 = new Text("sometoken1");
+    Text alias2 = new Text("sometoken2");
+
     Collection<Text> services = new ArrayList<Text>();
 
     services.add(service1);
@@ -81,8 +85,8 @@ public class TestCredentials {
 
     token1.setService(service1);
     token2.setService(service2);
-    ts.addToken(new Text("sometoken1"), token1);
-    ts.addToken(new Text("sometoken2"), token2);
+    ts.addToken(alias1, token1);
+    ts.addToken(alias2, token2);
 
     // create keys and put it in
     final KeyGenerator kg = KeyGenerator.getInstance(DEFAULT_HMAC_ALGORITHM);
@@ -109,32 +113,30 @@ public class TestCredentials {
     dis.close();
 
     // get the tokens and compare the services
-    Collection<Token<? extends TokenIdentifier>> list = ts.getAllTokens();
-    assertEquals("getAllTokens should return collection of size 2",
-        list.size(), 2);
-    boolean foundFirst = false;
-    boolean foundSecond = false;
-    for (Token<? extends TokenIdentifier> token : list) {
-      if (token.getService().equals(service1)) {
-        foundFirst = true;
-      }
-      if (token.getService().equals(service2)) {
-        foundSecond = true;
-      }
-    }
-    assertTrue("Tokens for services service1 and service2 must be present",
-        foundFirst && foundSecond);
+    Map<Text, Token<? extends TokenIdentifier>> tokenMap = ts.getTokenMap();
+    assertEquals(2, tokenMap.size(),
+        "getTokenMap should return collection of size 2");
+    assertTrue(tokenMap.containsKey(alias1),
+        "Token for alias " + alias1 + " must be present");
+    assertTrue(tokenMap.containsKey(alias2), "Token for alias " + alias2 + " must be present");
+    assertEquals(service1, tokenMap.get(alias1).getService(),
+        "Token for service " + service1 + " must be present");
+    assertEquals(service2,
+        tokenMap.get(alias2).getService(), "Token for service " + service2 + " must be present");
+
+
     // compare secret keys
-    int mapLen = m.size();
-    assertEquals("wrong number of keys in the Storage",
-        mapLen, ts.numberOfSecretKeys());
-    for(Text a : m.keySet()) {
-      byte [] kTS = ts.getSecretKey(a);
-      byte [] kLocal = m.get(a);
-      assertTrue("keys don't match for " + a,
-          WritableComparator.compareBytes(kTS, 0, kTS.length, kLocal,
-              0, kLocal.length)==0);
+    Map<Text, byte[]> secretKeyMap = ts.getSecretKeyMap();
+    assertEquals(m.size(), ts.numberOfSecretKeys(),
+        "wrong number of keys in the Storage");
+
+    for (Map.Entry<Text, byte[]> entry : m.entrySet()) {
+      byte[] key = secretKeyMap.get(entry.getKey());
+      assertNotNull(key, "Secret key for alias " + entry.getKey() + " not found");
+      assertTrue(Arrays.equals(key, entry.getValue()),
+          "Keys don't match for alias " + entry.getKey());
     }
+
     tmpFileName.delete();
   }
 
@@ -145,8 +147,8 @@ public class TestCredentials {
     Credentials ts = new Credentials();
     writeCredentialsProto(ts, testname);
     Credentials ts2 = readCredentialsProto(testname);
-    assertEquals("test empty tokens", 0, ts2.numberOfTokens());
-    assertEquals("test empty keys", 0, ts2.numberOfSecretKeys());
+    assertEquals(0, ts2.numberOfTokens(), "test empty tokens");
+    assertEquals(0, ts2.numberOfSecretKeys(), "test empty keys");
   }
 
   @Test
@@ -170,8 +172,8 @@ public class TestCredentials {
     Credentials ts = new Credentials();
     writeCredentialsStream(ts, testname);
     Credentials ts2 = readCredentialsStream(testname);
-    assertEquals("test empty tokens", 0, ts2.numberOfTokens());
-    assertEquals("test empty keys", 0, ts2.numberOfSecretKeys());
+    assertEquals(0, ts2.numberOfTokens(), "test empty tokens");
+    assertEquals(0, ts2.numberOfSecretKeys(), "test empty keys");
   }
 
   @Test
@@ -200,10 +202,10 @@ public class TestCredentials {
     Credentials ts2 = new Credentials();
     writeCredentialsProtos(ts, ts2, testname);
     List<Credentials> clist = readCredentialsProtos(testname);
-    assertEquals("test empty tokens 0", 0, clist.get(0).numberOfTokens());
-    assertEquals("test empty keys 0", 0, clist.get(0).numberOfSecretKeys());
-    assertEquals("test empty tokens 1", 0, clist.get(1).numberOfTokens());
-    assertEquals("test empty keys 1", 0, clist.get(1).numberOfSecretKeys());
+    assertEquals(0, clist.get(0).numberOfTokens(), "test empty tokens 0");
+    assertEquals(0, clist.get(0).numberOfSecretKeys(), "test empty keys 0");
+    assertEquals(0, clist.get(1).numberOfTokens(), "test empty tokens 1");
+    assertEquals(0, clist.get(1).numberOfSecretKeys(), "test empty keys 1");
   }
 
   @Test
@@ -244,22 +246,19 @@ public class TestCredentials {
 
   private void assertCredentials(String tag, Text alias, Text keykey,
                                  Credentials a, Credentials b) {
-    assertEquals(tag + ": test token count", a.numberOfTokens(),
-                                             b.numberOfTokens());
-    assertEquals(tag + ": test service", a.getToken(alias).getService(),
-                                         b.getToken(alias).getService());
-    assertEquals(tag + ": test kind", a.getToken(alias).getKind(),
-                                      b.getToken(alias).getKind());
-    assertTrue(tag + ": test password",
-        Arrays.equals(a.getToken(alias).getPassword(),
-                      b.getToken(alias).getPassword()));
-    assertTrue(tag + ": test identifier",
-        Arrays.equals(a.getToken(alias).getIdentifier(),
-                      b.getToken(alias).getIdentifier()));
-    assertEquals(tag + ": test number of keys", a.numberOfSecretKeys(),
-                                                b.numberOfSecretKeys());
-    assertTrue(tag + ":test key values", Arrays.equals(a.getSecretKey(keykey),
-                                                       b.getSecretKey(keykey)));
+    assertEquals(a.numberOfTokens(), b.numberOfTokens(), tag + ": test token count");
+    assertEquals(a.getToken(alias).getService(),
+        b.getToken(alias).getService(), tag + ": test service");
+    assertEquals(a.getToken(alias).getKind(),
+        b.getToken(alias).getKind(), tag + ": test kind");
+    assertTrue(Arrays.equals(a.getToken(alias).getPassword(),
+        b.getToken(alias).getPassword()), tag + ": test password");
+    assertTrue(Arrays.equals(a.getToken(alias).getIdentifier(),
+        b.getToken(alias).getIdentifier()), tag + ": test identifier");
+    assertEquals(a.numberOfSecretKeys(),
+        b.numberOfSecretKeys(), tag + ": test number of keys");
+    assertTrue(Arrays.equals(a.getSecretKey(keykey),
+        b.getSecretKey(keykey)), tag + ":test key values");
   }
 
   private void writeCredentialsStream(Credentials creds, String filename)

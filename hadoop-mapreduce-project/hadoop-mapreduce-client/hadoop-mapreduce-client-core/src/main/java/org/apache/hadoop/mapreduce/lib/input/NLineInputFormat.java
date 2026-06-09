@@ -27,16 +27,18 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FutureDataInputStreamBuilder;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.util.LineReader;
+import org.apache.hadoop.util.functional.FutureIO;
 
 /**
  * NLineInputFormat which splits N lines of input as one split.
@@ -93,10 +95,14 @@ public class NLineInputFormat extends FileInputFormat<LongWritable, Text> {
     if (status.isDirectory()) {
       throw new IOException("Not a file: " + fileName);
     }
-    FileSystem  fs = fileName.getFileSystem(conf);
     LineReader lr = null;
     try {
-      FSDataInputStream in  = fs.open(fileName);
+      final FutureDataInputStreamBuilder builder =
+          fileName.getFileSystem(conf).openFile(fileName);
+      FutureIO.propagateOptions(builder, conf,
+          MRJobConfig.INPUT_FILE_OPTION_PREFIX,
+          MRJobConfig.INPUT_FILE_MANDATORY_PREFIX);
+      FSDataInputStream in  = FutureIO.awaitFuture(builder.build());
       lr = new LineReader(in, conf);
       Text line = new Text();
       int numLines = 0;

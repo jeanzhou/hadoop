@@ -18,10 +18,10 @@
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_SCAN_PERIOD_HOURS_KEY;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -33,7 +33,9 @@ import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -64,8 +66,10 @@ import org.apache.hadoop.hdfs.server.common.blockaliasmap.BlockAliasMap;
 import org.apache.hadoop.hdfs.server.datanode.BlockScanner;
 import org.apache.hadoop.hdfs.server.datanode.DNConf;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataSetLockManager;
 import org.apache.hadoop.hdfs.server.datanode.DataStorage;
 import org.apache.hadoop.hdfs.server.datanode.DirectoryScanner;
+import org.apache.hadoop.hdfs.server.datanode.DirectoryScanner.ScanInfoVolumeReport;
 import org.apache.hadoop.hdfs.server.datanode.FinalizedProvidedReplica;
 import org.apache.hadoop.hdfs.server.datanode.ProvidedReplica;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
@@ -73,14 +77,13 @@ import org.apache.hadoop.hdfs.server.datanode.ShortCircuitRegistry;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 import org.apache.hadoop.hdfs.server.datanode.TestProvidedReplicaImpl;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi.FsVolumeReferences;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi.BlockIterator;
-import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi.FsVolumeReferences;
 import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.util.AutoCloseableLock;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -107,6 +110,7 @@ public class TestProvidedImpl {
   private DataNode datanode;
   private DataStorage storage;
   private FsDatasetImpl dataset;
+  private DataSetLockManager manager = new DataSetLockManager();
   private static Map<Long, String> blkToPathMap;
   private static List<FsVolumeImpl> providedVolumes;
   private static long spaceUsed = 0;
@@ -144,7 +148,7 @@ public class TestProvidedImpl {
                 newFile.getAbsolutePath());
             newFile.createNewFile();
             Writer writer = new OutputStreamWriter(
-                new FileOutputStream(newFile.getAbsolutePath()), "utf-8");
+                new FileOutputStream(newFile.getAbsolutePath()), StandardCharsets.UTF_8);
             for(int i=0; i< BLK_LEN/(Integer.SIZE/8); i++) {
               writer.write(currentCount);
             }
@@ -183,7 +187,6 @@ public class TestProvidedImpl {
   public static class TestFileRegionBlockAliasMap
       extends BlockAliasMap<FileRegion> {
 
-    private Configuration conf;
     private int minId;
     private int numBlocks;
     private Iterator<FileRegion> suppliedIterator;
@@ -310,7 +313,7 @@ public class TestProvidedImpl {
     }
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     datanode = mock(DataNode.class);
     storage = mock(DataStorage.class);
@@ -318,6 +321,7 @@ public class TestProvidedImpl {
     conf.setLong(DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, 0);
 
     when(datanode.getConf()).thenReturn(conf);
+    when(datanode.getDataSetLockManager()).thenReturn(manager);
     final DNConf dnConf = new DNConf(datanode);
     when(datanode.getDnConf()).thenReturn(dnConf);
     // reset the space used
@@ -353,10 +357,17 @@ public class TestProvidedImpl {
   }
 
   @Test
+  public void testReserved() throws Exception {
+    for (FsVolumeSpi vol : providedVolumes) {
+      // the reserved space for provided volumes should be 0.
+      assertEquals(0, ((FsVolumeImpl) vol).getReserved());
+    }
+  }
+
+  @Test
   public void testProvidedVolumeImpl() throws IOException {
 
-    assertEquals(NUM_LOCAL_INIT_VOLUMES + NUM_PROVIDED_INIT_VOLUMES,
-        getNumVolumes());
+    assertEquals(NUM_LOCAL_INIT_VOLUMES + NUM_PROVIDED_INIT_VOLUMES, getNumVolumes());
     assertEquals(NUM_PROVIDED_INIT_VOLUMES, providedVolumes.size());
     assertEquals(0, dataset.getNumFailedVolumes());
 
@@ -364,8 +375,7 @@ public class TestProvidedImpl {
       // check basic information about provided volume
       assertEquals(DFSConfigKeys.DFS_PROVIDER_STORAGEUUID_DEFAULT,
           providedVolumes.get(i).getStorageID());
-      assertEquals(StorageType.PROVIDED,
-          providedVolumes.get(i).getStorageType());
+      assertEquals(StorageType.PROVIDED, providedVolumes.get(i).getStorageType());
 
       long space = providedVolumes.get(i).getBlockPoolUsed(
               BLOCK_POOL_IDS[CHOSEN_BP_ID]);
@@ -376,9 +386,9 @@ public class TestProvidedImpl {
       providedVolumes.get(i).shutdownBlockPool(
           BLOCK_POOL_IDS[1 - CHOSEN_BP_ID], null);
       try {
-        assertEquals(0, providedVolumes.get(i)
-            .getBlockPoolUsed(BLOCK_POOL_IDS[1 - CHOSEN_BP_ID]));
-        // should not be triggered
+        assertEquals(0,
+            providedVolumes.get(i).getBlockPoolUsed(BLOCK_POOL_IDS[1 - CHOSEN_BP_ID]));
+          // should not be triggered
         assertTrue(false);
       } catch (IOException e) {
         LOG.info("Expected exception: " + e);
@@ -391,7 +401,7 @@ public class TestProvidedImpl {
   public void testBlockLoad() throws IOException {
     for (int i = 0; i < providedVolumes.size(); i++) {
       FsVolumeImpl vol = providedVolumes.get(i);
-      ReplicaMap volumeMap = new ReplicaMap(new AutoCloseableLock());
+      ReplicaMap volumeMap = new ReplicaMap();
       vol.getVolumeMap(volumeMap, null);
 
       assertEquals(vol.getBlockPoolList().length, BLOCK_POOL_IDS.length);
@@ -401,8 +411,7 @@ public class TestProvidedImpl {
           assertEquals(null, volumeMap.replicas(BLOCK_POOL_IDS[j]));
         }
       }
-      assertEquals(NUM_PROVIDED_BLKS,
-          volumeMap.replicas(BLOCK_POOL_IDS[CHOSEN_BP_ID]).size());
+      assertEquals(NUM_PROVIDED_BLKS, volumeMap.replicas(BLOCK_POOL_IDS[CHOSEN_BP_ID]).size());
     }
   }
 
@@ -467,7 +476,7 @@ public class TestProvidedImpl {
       vol.setFileRegionProvider(BLOCK_POOL_IDS[CHOSEN_BP_ID],
           new TestFileRegionBlockAliasMap(fileRegionIterator, minBlockId,
               numBlocks));
-      ReplicaMap volumeMap = new ReplicaMap(new AutoCloseableLock());
+      ReplicaMap volumeMap = new ReplicaMap();
       vol.getVolumeMap(BLOCK_POOL_IDS[CHOSEN_BP_ID], volumeMap, null);
       totalBlocks += volumeMap.size(BLOCK_POOL_IDS[CHOSEN_BP_ID]);
     }
@@ -487,48 +496,37 @@ public class TestProvidedImpl {
     // all these blocks can belong to the provided volume
     int blocksFound = getBlocksInProvidedVolumes(providedBasePath + "/test1/",
         expectedBlocks, minId);
-    assertEquals(
-        "Number of blocks in provided volumes should be " + expectedBlocks,
-        expectedBlocks, blocksFound);
+    assertEquals(expectedBlocks, blocksFound,
+        "Number of blocks in provided volumes should be " + expectedBlocks);
     blocksFound = getBlocksInProvidedVolumes(
         "file:/" + providedBasePath + "/test1/", expectedBlocks, minId);
-    assertEquals(
-        "Number of blocks in provided volumes should be " + expectedBlocks,
-        expectedBlocks, blocksFound);
+    assertEquals(expectedBlocks, blocksFound,
+        "Number of blocks in provided volumes should be " + expectedBlocks);
     // use a path that is entirely different from the providedBasePath
     // none of these blocks can belong to the volume
     blocksFound =
         getBlocksInProvidedVolumes("randomtest1/", expectedBlocks, minId);
-    assertEquals("Number of blocks in provided volumes should be 0", 0,
-        blocksFound);
+    assertEquals(0, blocksFound, "Number of blocks in provided volumes should be 0");
   }
 
   @Test
   public void testProvidedVolumeContainsBlock() throws URISyntaxException {
     assertEquals(true, ProvidedVolumeImpl.containsBlock(null, null));
+    assertEquals(false, ProvidedVolumeImpl.containsBlock(new URI("file:/a"), null));
+    assertEquals(true,
+        ProvidedVolumeImpl.containsBlock(new URI("file:/a/b/c/"), new URI("file:/a/b/c/d/e.file")));
+    assertEquals(true,
+        ProvidedVolumeImpl.containsBlock(new URI("/a/b/c/"), new URI("file:/a/b/c/d/e.file")));
+    assertEquals(true,
+        ProvidedVolumeImpl.containsBlock(new URI("/a/b/c"), new URI("file:/a/b/c/d/e.file")));
+    assertEquals(true,
+        ProvidedVolumeImpl.containsBlock(new URI("/a/b/c/"), new URI("/a/b/c/d/e.file")));
+    assertEquals(true,
+        ProvidedVolumeImpl.containsBlock(new URI("file:/a/b/c/"), new URI("/a/b/c/d/e.file")));
     assertEquals(false,
-        ProvidedVolumeImpl.containsBlock(new URI("file:/a"), null));
-    assertEquals(true,
-        ProvidedVolumeImpl.containsBlock(new URI("file:/a/b/c/"),
-            new URI("file:/a/b/c/d/e.file")));
-    assertEquals(true,
-        ProvidedVolumeImpl.containsBlock(new URI("/a/b/c/"),
-            new URI("file:/a/b/c/d/e.file")));
-    assertEquals(true,
-        ProvidedVolumeImpl.containsBlock(new URI("/a/b/c"),
-            new URI("file:/a/b/c/d/e.file")));
-    assertEquals(true,
-        ProvidedVolumeImpl.containsBlock(new URI("/a/b/c/"),
-            new URI("/a/b/c/d/e.file")));
-    assertEquals(true,
-        ProvidedVolumeImpl.containsBlock(new URI("file:/a/b/c/"),
-            new URI("/a/b/c/d/e.file")));
+        ProvidedVolumeImpl.containsBlock(new URI("/a/b/e"), new URI("file:/a/b/c/d/e.file")));
     assertEquals(false,
-        ProvidedVolumeImpl.containsBlock(new URI("/a/b/e"),
-            new URI("file:/a/b/c/d/e.file")));
-    assertEquals(false,
-        ProvidedVolumeImpl.containsBlock(new URI("file:/a/b/e"),
-            new URI("file:/a/b/c/d/e.file")));
+        ProvidedVolumeImpl.containsBlock(new URI("file:/a/b/e"), new URI("file:/a/b/c/d/e.file")));
     assertEquals(true,
         ProvidedVolumeImpl.containsBlock(new URI("s3a:/bucket1/dir1/"),
             new URI("s3a:/bucket1/dir1/temp.txt")));
@@ -545,31 +543,28 @@ public class TestProvidedImpl {
 
   @Test
   public void testProvidedReplicaSuffixExtraction() {
-    assertEquals("B.txt", ProvidedVolumeImpl.getSuffix(
-        new Path("file:///A/"), new Path("file:///A/B.txt")));
-    assertEquals("B/C.txt", ProvidedVolumeImpl.getSuffix(
-        new Path("file:///A/"), new Path("file:///A/B/C.txt")));
-    assertEquals("B/C/D.txt", ProvidedVolumeImpl.getSuffix(
-        new Path("file:///A/"), new Path("file:///A/B/C/D.txt")));
-    assertEquals("D.txt", ProvidedVolumeImpl.getSuffix(
-        new Path("file:///A/B/C/"), new Path("file:///A/B/C/D.txt")));
-    assertEquals("file:/A/B/C/D.txt", ProvidedVolumeImpl.getSuffix(
-        new Path("file:///X/B/C/"), new Path("file:///A/B/C/D.txt")));
-    assertEquals("D.txt", ProvidedVolumeImpl.getSuffix(
-        new Path("/A/B/C"), new Path("/A/B/C/D.txt")));
-    assertEquals("D.txt", ProvidedVolumeImpl.getSuffix(
-        new Path("/A/B/C/"), new Path("/A/B/C/D.txt")));
+    assertEquals("B.txt",
+        ProvidedVolumeImpl.getSuffix(new Path("file:///A/"), new Path("file:///A/B.txt")));
+    assertEquals("B/C.txt",
+        ProvidedVolumeImpl.getSuffix(new Path("file:///A/"), new Path("file:///A/B/C.txt")));
+    assertEquals("B/C/D.txt",
+        ProvidedVolumeImpl.getSuffix(new Path("file:///A/"), new Path("file:///A/B/C/D.txt")));
+    assertEquals("D.txt", ProvidedVolumeImpl.getSuffix(new Path("file:///A/B/C/"),
+        new Path("file:///A/B/C/D.txt")));
+    assertEquals("file:/A/B/C/D.txt", ProvidedVolumeImpl.getSuffix(new Path("file:///X/B/C/"),
+        new Path("file:///A/B/C/D.txt")));
+    assertEquals("D.txt",
+        ProvidedVolumeImpl.getSuffix(new Path("/A/B/C"), new Path("/A/B/C/D.txt")));
+    assertEquals("D.txt",
+        ProvidedVolumeImpl.getSuffix(new Path("/A/B/C/"), new Path("/A/B/C/D.txt")));
 
     assertEquals("data/current.csv", ProvidedVolumeImpl.getSuffix(
-        new Path("wasb:///users/alice/"),
-        new Path("wasb:///users/alice/data/current.csv")));
-    assertEquals("current.csv", ProvidedVolumeImpl.getSuffix(
-        new Path("wasb:///users/alice/data"),
+        new Path("wasb:///users/alice/"), new Path("wasb:///users/alice/data/current.csv")));
+    assertEquals("current.csv", ProvidedVolumeImpl.getSuffix(new Path("wasb:///users/alice/data"),
         new Path("wasb:///users/alice/data/current.csv")));
 
     assertEquals("wasb:/users/alice/data/current.csv",
-        ProvidedVolumeImpl.getSuffix(
-            new Path("wasb:///users/bob/"),
+        ProvidedVolumeImpl.getSuffix(new Path("wasb:///users/bob/"),
             new Path("wasb:///users/alice/data/current.csv")));
   }
 
@@ -577,7 +572,7 @@ public class TestProvidedImpl {
   public void testProvidedReplicaPrefix() throws Exception {
     for (int i = 0; i < providedVolumes.size(); i++) {
       FsVolumeImpl vol = providedVolumes.get(i);
-      ReplicaMap volumeMap = new ReplicaMap(new AutoCloseableLock());
+      ReplicaMap volumeMap = new ReplicaMap();
       vol.getVolumeMap(volumeMap, null);
 
       Path expectedPrefix = new Path(
@@ -592,11 +587,13 @@ public class TestProvidedImpl {
 
   @Test
   public void testScannerWithProvidedVolumes() throws Exception {
-    DirectoryScanner scanner = new DirectoryScanner(datanode, dataset, conf);
-    Map<String, FsVolumeSpi.ScanInfo[]> report = scanner.getDiskReport();
+    DirectoryScanner scanner = new DirectoryScanner(dataset, conf);
+    Collection<ScanInfoVolumeReport> reports = scanner.getVolumeReports();
     // no blocks should be reported for the Provided volume as long as
     // the directoryScanner is disabled.
-    assertEquals(0, report.get(BLOCK_POOL_IDS[CHOSEN_BP_ID]).length);
+    for (ScanInfoVolumeReport report : reports) {
+      assertEquals(0, report.getScanInfo(BLOCK_POOL_IDS[CHOSEN_BP_ID]).size());
+    }
   }
 
   /**

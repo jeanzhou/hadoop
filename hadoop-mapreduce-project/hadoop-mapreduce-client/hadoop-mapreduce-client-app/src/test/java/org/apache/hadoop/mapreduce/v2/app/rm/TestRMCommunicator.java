@@ -23,8 +23,8 @@ import org.apache.hadoop.mapreduce.v2.app.client.ClientService;
 import org.apache.hadoop.mapreduce.v2.app.rm.RMCommunicator.AllocatorRunnable;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.util.Clock;
-import org.junit.Test;
-import org.mockito.invocation.InvocationOnMock;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.stubbing.Answer;
 
 import static org.mockito.Mockito.doThrow;
@@ -46,7 +46,8 @@ public class TestRMCommunicator {
     }
   }
 
-  @Test(timeout = 2000)
+  @Test
+  @Timeout(value = 6)
   public void testRMContainerAllocatorExceptionIsHandled() throws Exception {
     ClientService mockClientService = mock(ClientService.class);
     AppContext mockContext = mock(AppContext.class);
@@ -67,7 +68,8 @@ public class TestRMCommunicator {
     testRunnable.run();
   }
 
-  @Test(timeout = 2000)
+  @Test
+  @Timeout(value = 2)
   public void testRMContainerAllocatorYarnRuntimeExceptionIsHandled()
       throws Exception {
     ClientService mockClientService = mock(ClientService.class);
@@ -81,15 +83,13 @@ public class TestRMCommunicator {
     doThrow(new YarnRuntimeException("Test")).doNothing()
         .when(communicator).heartbeat();
 
-    when(mockClock.getTime()).thenReturn(1L).thenAnswer(new Answer<Integer>() {
-      @Override
-      public Integer answer(InvocationOnMock invocation) throws Throwable {
+    when(mockClock.getTime()).thenReturn(1L).thenAnswer(
+        (Answer<Long>) invocation -> {
         communicator.stop();
-        return 2;
-      }
-    }).thenThrow(new AssertionError(
-        "GetClock called second time, when it should not have since the thread " +
-        "should have quit"));
+        return 2L;
+      }).thenThrow(new AssertionError(
+          "GetClock called second time, when it should not " +
+              "have since the thread should have quit"));
 
     AllocatorRunnable testRunnable = communicator.new AllocatorRunnable();
     testRunnable.run();

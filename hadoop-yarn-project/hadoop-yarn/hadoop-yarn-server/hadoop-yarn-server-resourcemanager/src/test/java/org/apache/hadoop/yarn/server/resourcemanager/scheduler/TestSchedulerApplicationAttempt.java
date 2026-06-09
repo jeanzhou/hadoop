@@ -17,13 +17,15 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler;
 
+import java.util.ArrayList;
 import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.TestUtils.toSchedulerKey;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
@@ -41,11 +43,15 @@ import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerImpl;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.SchedulingMode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
 import org.apache.hadoop.yarn.server.scheduler.SchedulerRequestKey;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
-import org.junit.After;
-import org.junit.Test;
+import org.apache.hadoop.yarn.util.resource.Resources;
+import org.junit.jupiter.api.AfterEach;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
 
 public class TestSchedulerApplicationAttempt {
 
@@ -53,10 +59,55 @@ public class TestSchedulerApplicationAttempt {
 
   private Configuration conf = new Configuration();
   
-  @After
+  @AfterEach
   public void tearDown() {
     QueueMetrics.clearQueueMetrics();
     DefaultMetricsSystem.shutdown();
+  }
+
+  @Test
+  public void testActiveUsersWhenMove() {
+    final String user = "user1";
+    Queue parentQueue = createQueue("parent", null);
+    Queue queue1 = createQueue("queue1", parentQueue);
+    Queue queue2 = createQueue("queue2", parentQueue);
+    Queue queue3 = createQueue("queue3", parentQueue);
+
+    ApplicationAttemptId appAttId = createAppAttemptId(0, 0);
+    RMContext rmContext = mock(RMContext.class);
+    when(rmContext.getEpoch()).thenReturn(3L);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
+    SchedulerApplicationAttempt app = new SchedulerApplicationAttempt(appAttId,
+        user, queue1, queue1.getAbstractUsersManager(), rmContext);
+
+    // Resource request
+    Resource requestedResource = Resource.newInstance(1536, 2);
+    Priority requestedPriority = Priority.newInstance(2);
+    ResourceRequest request = ResourceRequest.newInstance(requestedPriority,
+        ResourceRequest.ANY, requestedResource, 1);
+    app.updateResourceRequests(Arrays.asList(request));
+
+    assertEquals(1, queue1.getAbstractUsersManager().getNumActiveUsers());
+    // move app from queue1 to queue2
+    app.move(queue2);
+    // Active user count has to decrease from queue1
+    assertEquals(0, queue1.getAbstractUsersManager().getNumActiveUsers());
+    // Increase the active user count in queue2 if the moved app has pending requests
+    assertEquals(1, queue2.getAbstractUsersManager().getNumActiveUsers());
+
+    // Allocated container
+    RMContainer container1 = createRMContainer(appAttId, 1, requestedResource);
+    app.liveContainers.put(container1.getContainerId(), container1);
+    SchedulerNode node = createNode();
+    app.appSchedulingInfo.allocate(NodeType.OFF_SWITCH, node,
+        toSchedulerKey(requestedPriority), container1);
+
+    // Active user count has to decrease from queue2 due to app has NO pending requests
+    assertEquals(0, queue2.getAbstractUsersManager().getNumActiveUsers());
+    // move app from queue2 to queue3
+    app.move(queue3);
+    // Active user count in queue3 stays same if the moved app has NO pending requests
+    assertEquals(0, queue3.getAbstractUsersManager().getNumActiveUsers());
   }
   
   @Test
@@ -72,9 +123,11 @@ public class TestSchedulerApplicationAttempt {
     ApplicationAttemptId appAttId = createAppAttemptId(0, 0);
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getEpoch()).thenReturn(3L);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
     SchedulerApplicationAttempt app = new SchedulerApplicationAttempt(appAttId,
         user, oldQueue, oldQueue.getAbstractUsersManager(), rmContext);
-    oldMetrics.submitApp(user);
+    app.appSchedulingInfo.setUnmanagedAM(false);
+    oldMetrics.submitApp(user, false);
     
     // confirm that containerId is calculated based on epoch.
     assertEquals(0x30000000001L, app.getNewContainerId());
@@ -91,7 +144,7 @@ public class TestSchedulerApplicationAttempt {
     app.liveContainers.put(container1.getContainerId(), container1);
     SchedulerNode node = createNode();
     app.appSchedulingInfo.allocate(NodeType.OFF_SWITCH, node,
-        toSchedulerKey(requestedPriority), container1.getContainer());
+        toSchedulerKey(requestedPriority), container1);
     
     // Reserved container
     Priority prio1 = Priority.newInstance(1);
@@ -164,8 +217,9 @@ public class TestSchedulerApplicationAttempt {
 
   private Queue createQueue(String name, Queue parent, float capacity) {
     QueueMetrics metrics = QueueMetrics.forQueue(name, parent, false, conf);
-    QueueInfo queueInfo = QueueInfo.newInstance(name, capacity, 1.0f, 0, null,
-        null, QueueState.RUNNING, null, "", null, false, null, false);
+    QueueInfo queueInfo = QueueInfo.newInstance(name,
+        "root." + name, capacity, 1.0f, 0, null,
+        null, QueueState.RUNNING, null, "", null, false, -1.0f, 10, null, false);
     ActiveUsersManager activeUsersManager = new ActiveUsersManager(metrics);
     Queue queue = mock(Queue.class);
     when(queue.getMetrics()).thenReturn(metrics);
@@ -193,6 +247,7 @@ public class TestSchedulerApplicationAttempt {
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getEpoch()).thenReturn(3L);
     when(rmContext.getScheduler()).thenReturn(scheduler);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
 
     final String user = "user1";
     Queue queue = createQueue("test", null);
@@ -227,7 +282,7 @@ public class TestSchedulerApplicationAttempt {
     assertEquals(60.0f,
         app.getResourceUsageReport().getClusterUsagePercentage(), 0.01f);
 
-    queue = createQueue("test3", null, 0.0f);
+    queue = createQueue("test3", null, Float.MIN_VALUE);
     app = new SchedulerApplicationAttempt(appAttId, user, queue,
         queue.getAbstractUsersManager(), rmContext);
 
@@ -251,6 +306,7 @@ public class TestSchedulerApplicationAttempt {
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getEpoch()).thenReturn(3L);
     when(rmContext.getScheduler()).thenReturn(scheduler);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
 
     final String user = "user1";
     Queue queue = createQueue("test", null);
@@ -268,11 +324,49 @@ public class TestSchedulerApplicationAttempt {
   }
 
   @Test
+  public void testAllResourceUsage() throws Exception {
+    FifoScheduler scheduler = mock(FifoScheduler.class);
+    when(scheduler.getClusterResource()).thenReturn(Resource.newInstance(0, 0));
+    when(scheduler.getResourceCalculator())
+        .thenReturn(new DefaultResourceCalculator());
+
+    ApplicationAttemptId appAttId = createAppAttemptId(0, 0);
+    RMContext rmContext = mock(RMContext.class);
+    when(rmContext.getEpoch()).thenReturn(3L);
+    when(rmContext.getScheduler()).thenReturn(scheduler);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
+
+    final String user = "user1";
+    Queue queue = createQueue("test", null);
+    SchedulerApplicationAttempt app = new SchedulerApplicationAttempt(appAttId,
+        user, queue, queue.getAbstractUsersManager(), rmContext);
+
+    // Resource request
+    Resource requestedResource = Resource.newInstance(1536, 2);
+    app.attemptResourceUsage.incUsed("X", requestedResource);
+    app.attemptResourceUsage.incUsed("Y", requestedResource);
+    Resource r2 = Resource.newInstance(1024, 1);
+    app.attemptResourceUsage.incReserved("X", r2);
+    app.attemptResourceUsage.incReserved("Y", r2);
+
+    assertTrue(Resources.equals(Resource.newInstance(3072, 4),
+        app.getResourceUsageReport().getUsedResources()),
+        "getUsedResources expected " + Resource.newInstance(3072, 4) +
+        " but was " + app.getResourceUsageReport().getUsedResources());
+    assertTrue(Resources.equals(Resource.newInstance(2048, 2),
+        app.getResourceUsageReport().getReservedResources()),
+        "getReservedResources expected " + Resource.newInstance(2048, 2) +
+        " but was " +
+        app.getResourceUsageReport().getReservedResources());
+  }
+
+  @Test
   public void testSchedulingOpportunityOverflow() throws Exception {
     ApplicationAttemptId attemptId = createAppAttemptId(0, 0);
     Queue queue = createQueue("test", null);
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getEpoch()).thenReturn(3L);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
     SchedulerApplicationAttempt app = new SchedulerApplicationAttempt(
         attemptId, "user", queue, queue.getAbstractUsersManager(), rmContext);
     Priority priority = Priority.newInstance(1);
@@ -290,5 +384,59 @@ public class TestSchedulerApplicationAttempt {
     app.addSchedulingOpportunity(schedulerKey);
     assertEquals(Integer.MAX_VALUE,
         app.getSchedulingOpportunities(schedulerKey));
+  }
+
+  @Test
+  public void testHasPendingResourceRequest() throws Exception {
+    ApplicationAttemptId attemptId = createAppAttemptId(0, 0);
+    Queue queue = createQueue("test", null);
+    RMContext rmContext = mock(RMContext.class);
+    when(rmContext.getEpoch()).thenReturn(3L);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
+    SchedulerApplicationAttempt app = new SchedulerApplicationAttempt(
+        attemptId, "user", queue, queue.getAbstractUsersManager(), rmContext);
+
+    Priority priority = Priority.newInstance(1);
+    List<ResourceRequest> requests = new ArrayList<>(2);
+    Resource unit = Resource.newInstance(1L, 1);
+
+    // Add a request for a container with a node label
+    requests.add(ResourceRequest.newInstance(priority, ResourceRequest.ANY,
+        unit, 1, false, "label1"));
+    // Add a request for a container without a node label
+    requests.add(ResourceRequest.newInstance(priority, ResourceRequest.ANY,
+        unit, 1, false, ""));
+
+    // Add unique allocation IDs so that the requests aren't considered
+    // duplicates
+    requests.get(0).setAllocationRequestId(0L);
+    requests.get(1).setAllocationRequestId(1L);
+    app.updateResourceRequests(requests);
+
+    assertTrue(app.hasPendingResourceRequest("",
+        SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY),
+        "Reported no pending resource requests for no label when " +
+        "resource requests for no label are pending (exclusive partitions)");
+    assertTrue(app.hasPendingResourceRequest("label1",
+        SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY),
+        "Reported no pending resource requests for label with pending " +
+        "resource requests (exclusive partitions)");
+    assertFalse(app.hasPendingResourceRequest("label2",
+        SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY),
+        "Reported pending resource requests for label with no pending " +
+        "resource requests (exclusive partitions)");
+
+    assertTrue(app.hasPendingResourceRequest("",
+        SchedulingMode.IGNORE_PARTITION_EXCLUSIVITY),
+        "Reported no pending resource requests for no label when "
+        + "resource requests for no label are pending (relaxed partitions)");
+    assertTrue(app.hasPendingResourceRequest("label1",
+        SchedulingMode.IGNORE_PARTITION_EXCLUSIVITY),
+        "Reported no pending resource requests for label with pending "
+        + "resource requests (relaxed partitions)");
+    assertTrue(app.hasPendingResourceRequest("label2",
+        SchedulingMode.IGNORE_PARTITION_EXCLUSIVITY),
+        "Reported no pending resource requests for label with no "
+        + "pending resource requests (relaxed partitions)");
   }
 }

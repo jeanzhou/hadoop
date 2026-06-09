@@ -17,31 +17,33 @@
  */
 package org.apache.hadoop.hdfs.qjournal.client;
 
-import static org.junit.Assert.*;
-
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.qjournal.MiniJournalCluster;
 import org.apache.hadoop.hdfs.qjournal.client.AsyncLogger;
 import org.apache.hadoop.hdfs.qjournal.client.QuorumJournalManager;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Futures;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListenableFuture;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
 public class TestEpochsAreUnique {
-  private static final Log LOG = LogFactory.getLog(TestEpochsAreUnique.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestEpochsAreUnique.class);
   private static final String JID = "testEpochsAreUnique-jid";
   private static final NamespaceInfo FAKE_NSINFO = new NamespaceInfo(
       12345, "mycluster", "my-bp", 0L);
@@ -56,7 +58,7 @@ public class TestEpochsAreUnique {
     QuorumJournalManager qjm = new QuorumJournalManager(
         conf, uri, FAKE_NSINFO);
     try {
-      qjm.format(FAKE_NSINFO);
+      qjm.format(FAKE_NSINFO, false);
     } finally {
       qjm.close();
     }
@@ -95,8 +97,8 @@ public class TestEpochsAreUnique {
           }
         }
         LOG.info("Created epoch " + newEpoch);
-        assertTrue("New epoch " + newEpoch + " should be greater than previous " +
-            prevEpoch, newEpoch > prevEpoch);
+        assertTrue(newEpoch > prevEpoch, "New epoch " + newEpoch
+            + " should be greater than previous " + prevEpoch);
         prevEpoch = newEpoch;
       }
     } finally {

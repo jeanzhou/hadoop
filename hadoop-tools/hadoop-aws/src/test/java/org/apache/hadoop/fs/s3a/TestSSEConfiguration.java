@@ -21,20 +21,24 @@ package org.apache.hadoop.fs.s3a;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.s3a.impl.S3AEncryption;
 import org.apache.hadoop.security.ProviderUtils;
 import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.util.StringUtils;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.apache.hadoop.fs.s3a.Constants.*;
 import static org.apache.hadoop.fs.s3a.S3AEncryptionMethods.*;
+import static org.apache.hadoop.fs.s3a.S3ATestConstants.S3A_TEST_TIMEOUT;
 import static org.apache.hadoop.fs.s3a.S3AUtils.*;
 import static org.apache.hadoop.test.LambdaTestUtils.*;
 
@@ -43,68 +47,56 @@ import static org.apache.hadoop.test.LambdaTestUtils.*;
  * Tests related to secret providers and AWS credentials are also
  * included, as they share some common setup operations.
  */
-public class TestSSEConfiguration extends Assert {
+@Timeout(value = S3A_TEST_TIMEOUT, unit = TimeUnit.MILLISECONDS)
+public class TestSSEConfiguration extends Assertions {
 
   /** Bucket to use for per-bucket options. */
   public static final String BUCKET = "dataset-1";
 
-  @Rule
-  public Timeout testTimeout = new Timeout(
-      S3ATestConstants.S3A_TEST_TIMEOUT
-  );
+  /** Valid set of key/value pairs for the encryption context. */
+  private static final String VALID_ENCRYPTION_CONTEXT = "key1=value1, key2=value2, key3=value3";
 
-  @Rule
-  public final TemporaryFolder tempDir = new TemporaryFolder();
+  @TempDir
+  private Path tempDir;
 
   @Test
   public void testSSECNoKey() throws Throwable {
-    assertGetAlgorithmFails(SSE_C_NO_KEY_ERROR, SSE_C.getMethod(), null);
+    assertGetAlgorithmFails(SSE_C_NO_KEY_ERROR, SSE_C.getMethod(), null, null);
   }
 
   @Test
   public void testSSECBlankKey() throws Throwable {
-    assertGetAlgorithmFails(SSE_C_NO_KEY_ERROR, SSE_C.getMethod(), "");
+    assertGetAlgorithmFails(SSE_C_NO_KEY_ERROR, SSE_C.getMethod(), "", null);
   }
 
   @Test
   public void testSSECGoodKey() throws Throwable {
-    assertEquals(SSE_C, getAlgorithm(SSE_C, "sseckey"));
+    assertEquals(SSE_C, getAlgorithm(SSE_C, "sseckey", null));
   }
 
   @Test
   public void testKMSGoodKey() throws Throwable {
-    assertEquals(SSE_KMS, getAlgorithm(SSE_KMS, "kmskey"));
-  }
-
-  @Test
-  public void testKMSGoodOldOptionName() throws Throwable {
-    Configuration conf = emptyConf();
-    conf.set(SERVER_SIDE_ENCRYPTION_ALGORITHM, SSE_KMS.getMethod());
-    conf.set(OLD_S3A_SERVER_SIDE_ENCRYPTION_KEY, "kmskeyID");
-    // verify key round trip
-    assertEquals("kmskeyID", getServerSideEncryptionKey(BUCKET, conf));
-    // and that KMS lookup finds it
-    assertEquals(SSE_KMS, getEncryptionAlgorithm(BUCKET, conf));
+    assertEquals(SSE_KMS, getAlgorithm(SSE_KMS, "kmskey", null));
   }
 
   @Test
   public void testAESKeySet() throws Throwable {
     assertGetAlgorithmFails(SSE_S3_WITH_KEY_ERROR,
-        SSE_S3.getMethod(), "setkey");
+        SSE_S3.getMethod(), "setkey", null);
   }
 
   @Test
   public void testSSEEmptyKey() {
     // test the internal logic of the test setup code
-    Configuration c = buildConf(SSE_C.getMethod(), "");
-    assertEquals("", getServerSideEncryptionKey(BUCKET, c));
+    Configuration c = buildConf(SSE_C.getMethod(), "", null);
+    assertEquals("", getS3EncryptionKey(BUCKET, c));
   }
 
   @Test
   public void testSSEKeyNull() throws Throwable {
     // test the internal logic of the test setup code
-    final Configuration c = buildConf(SSE_C.getMethod(), null);
-    assertEquals("", getServerSideEncryptionKey(BUCKET, c));
+    final Configuration c = buildConf(SSE_C.getMethod(), null, null);
+    assertEquals("", getS3EncryptionKey(BUCKET, c));
 
     intercept(IOException.class, SSE_C_NO_KEY_ERROR,
         () -> getEncryptionAlgorithm(BUCKET, c));
@@ -115,32 +107,14 @@ public class TestSSEConfiguration extends Assert {
     // set up conf to have a cred provider
     final Configuration conf = confWithProvider();
     String key = "provisioned";
-    setProviderOption(conf, SERVER_SIDE_ENCRYPTION_KEY, key);
+    setProviderOption(conf, Constants.S3_ENCRYPTION_KEY, key);
     // let's set the password in config and ensure that it uses the credential
     // provider provisioned value instead.
-    conf.set(SERVER_SIDE_ENCRYPTION_KEY, "keyInConfObject");
+    conf.set(Constants.S3_ENCRYPTION_KEY, "keyInConfObject");
 
-    String sseKey = getServerSideEncryptionKey(BUCKET, conf);
-    assertNotNull("Proxy password should not retrun null.", sseKey);
-    assertEquals("Proxy password override did NOT work.", key, sseKey);
-  }
-
-  /**
-   * Very that the old key is picked up via the properties.
-   * @throws Exception failure
-   */
-  @Test
-  public void testOldKeyFromCredentialProvider() throws Exception {
-    // set up conf to have a cred provider
-    final Configuration conf = confWithProvider();
-    String key = "provisioned";
-    setProviderOption(conf, OLD_S3A_SERVER_SIDE_ENCRYPTION_KEY, key);
-    // let's set the password in config and ensure that it uses the credential
-    // provider provisioned value instead.
-    //conf.set(OLD_S3A_SERVER_SIDE_ENCRYPTION_KEY, "oldKeyInConf");
-    String sseKey = getServerSideEncryptionKey(BUCKET, conf);
-    assertNotNull("Proxy password should not retrun null.", sseKey);
-    assertEquals("Proxy password override did NOT work.", key, sseKey);
+    String sseKey = getS3EncryptionKey(BUCKET, conf);
+    assertNotNull(sseKey, "Proxy password should not retrun null.");
+    assertEquals(key, sseKey, "Proxy password override did NOT work.");
   }
 
   /**
@@ -150,7 +124,7 @@ public class TestSSEConfiguration extends Assert {
    */
   private void addFileProvider(Configuration conf)
       throws Exception {
-    final File file = tempDir.newFile("test.jks");
+    final File file = tempDir.resolve("test.jks").toFile();
     final URI jks = ProviderUtils.nestURIForLocalJavaKeyStoreProvider(
         file.toURI());
     conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
@@ -176,28 +150,30 @@ public class TestSSEConfiguration extends Assert {
   }
 
   /**
-   * Assert that the exception text from {@link #getAlgorithm(String, String)}
+   * Assert that the exception text from {@link #getAlgorithm(String, String, String)}
    * is as expected.
    * @param expected expected substring in error
    * @param alg algorithm to ask for
    * @param key optional key value
+   * @param context optional encryption context value
    * @throws Exception anything else which gets raised
    */
   public void assertGetAlgorithmFails(String expected,
-      final String alg, final String key) throws Exception {
+      final String alg, final String key, final String context) throws Exception {
     intercept(IOException.class, expected,
-        () -> getAlgorithm(alg, key));
+        () -> getAlgorithm(alg, key, context));
   }
 
   private S3AEncryptionMethods getAlgorithm(S3AEncryptionMethods algorithm,
-      String key)
+      String key,
+      String encryptionContext)
       throws IOException {
-    return getAlgorithm(algorithm.getMethod(), key);
+    return getAlgorithm(algorithm.getMethod(), key, encryptionContext);
   }
 
-  private S3AEncryptionMethods getAlgorithm(String algorithm, String key)
+  private S3AEncryptionMethods getAlgorithm(String algorithm, String key, String encryptionContext)
       throws IOException {
-    return getEncryptionAlgorithm(BUCKET, buildConf(algorithm, key));
+    return getEncryptionAlgorithm(BUCKET, buildConf(algorithm, key, encryptionContext));
   }
 
   /**
@@ -205,19 +181,28 @@ public class TestSSEConfiguration extends Assert {
    * and key.
    * @param algorithm  algorithm to use, may be null
    * @param key key, may be null
+   * @param encryptionContext encryption context, may be null
    * @return the new config.
    */
-  private Configuration buildConf(String algorithm, String key) {
+  @SuppressWarnings("deprecation")
+  private Configuration buildConf(String algorithm, String key, String encryptionContext) {
     Configuration conf = emptyConf();
     if (algorithm != null) {
-      conf.set(SERVER_SIDE_ENCRYPTION_ALGORITHM, algorithm);
+      conf.set(Constants.S3_ENCRYPTION_ALGORITHM, algorithm);
     } else {
       conf.unset(SERVER_SIDE_ENCRYPTION_ALGORITHM);
+      conf.unset(Constants.S3_ENCRYPTION_ALGORITHM);
     }
     if (key != null) {
-      conf.set(SERVER_SIDE_ENCRYPTION_KEY, key);
+      conf.set(Constants.S3_ENCRYPTION_KEY, key);
     } else {
       conf.unset(SERVER_SIDE_ENCRYPTION_KEY);
+      conf.unset(Constants.S3_ENCRYPTION_KEY);
+    }
+    if (encryptionContext != null) {
+      conf.set(S3_ENCRYPTION_CONTEXT, encryptionContext);
+    } else {
+      conf.unset(S3_ENCRYPTION_CONTEXT);
     }
     return conf;
   }
@@ -293,7 +278,7 @@ public class TestSSEConfiguration extends Assert {
       String bucket,
       String expected, String overrideVal) throws IOException {
     assertEquals(expected,
-        S3AUtils.lookupPassword(bucket, conf, SECRET_KEY, overrideVal));
+        S3AUtils.lookupPassword(bucket, conf, SECRET_KEY, overrideVal, null));
   }
 
   @Test
@@ -307,6 +292,57 @@ public class TestSSEConfiguration extends Assert {
     assertSecretKeyEquals(conf, BUCKET, SECRET, "");
     assertSecretKeyEquals(conf, bucketURI.getHost(), SECRET, "");
     assertSecretKeyEquals(conf, bucketURI.getHost(), "overidden", "overidden");
+  }
+
+  @Test
+  public void testUnknownEncryptionMethod() throws Throwable {
+    intercept(IOException.class, UNKNOWN_ALGORITHM,
+        () -> S3AEncryptionMethods.getMethod("SSE-ROT13"));
+  }
+
+  @Test
+  public void testClientEncryptionMethod() throws Throwable {
+    S3AEncryptionMethods method = getMethod("CSE-KMS");
+    assertEquals(CSE_KMS, method);
+    assertFalse(method.isServerSide(), "shouldn't be server side " + method);
+  }
+
+  @Test
+  public void testCSEKMSEncryptionMethod() throws Throwable {
+    S3AEncryptionMethods method = getMethod("CSE-CUSTOM");
+    assertEquals(CSE_CUSTOM, method);
+    assertFalse(method.isServerSide(), "shouldn't be server side " + method);
+  }
+
+  @Test
+  public void testNoEncryptionMethod() throws Throwable {
+    assertEquals(NONE, getMethod(" "));
+  }
+
+  @Test
+  public void testGoodEncryptionContext() throws Throwable {
+    assertEquals(SSE_KMS, getAlgorithm(SSE_KMS, "kmskey", VALID_ENCRYPTION_CONTEXT));
+  }
+
+  @Test
+  public void testSSEEmptyEncryptionContext() throws Throwable {
+    // test the internal logic of the test setup code
+    Configuration c = buildConf(SSE_KMS.getMethod(), "kmskey", "");
+    assertEquals("", S3AEncryption.getS3EncryptionContext(BUCKET, c));
+  }
+
+  @Test
+  public void testSSEEncryptionContextNull() throws Throwable {
+    // test the internal logic of the test setup code
+    final Configuration c = buildConf(SSE_KMS.getMethod(), "kmskey", null);
+    assertEquals("", S3AEncryption.getS3EncryptionContext(BUCKET, c));
+  }
+
+  @Test
+  public void testSSEInvalidEncryptionContext() throws Throwable {
+    intercept(IllegalArgumentException.class,
+        StringUtils.STRING_COLLECTION_SPLIT_EQUALS_INVALID_ARG,
+        () -> getAlgorithm(SSE_KMS.getMethod(), "kmskey", "invalid context"));
   }
 
 }

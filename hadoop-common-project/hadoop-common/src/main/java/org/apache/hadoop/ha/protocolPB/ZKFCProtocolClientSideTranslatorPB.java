@@ -27,15 +27,14 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.ZKFCProtocol;
 import org.apache.hadoop.ha.proto.ZKFCProtocolProtos.CedeActiveRequestProto;
 import org.apache.hadoop.ha.proto.ZKFCProtocolProtos.GracefulFailoverRequestProto;
-import org.apache.hadoop.ipc.ProtobufHelper;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.ProtocolTranslator;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.thirdparty.protobuf.RpcController;
 
-import com.google.protobuf.RpcController;
-import com.google.protobuf.ServiceException;
+import static org.apache.hadoop.ipc.internal.ShadedProtobufHelper.ipc;
 
 
 public class ZKFCProtocolClientSideTranslatorPB implements
@@ -48,7 +47,7 @@ public class ZKFCProtocolClientSideTranslatorPB implements
       InetSocketAddress addr, Configuration conf,
       SocketFactory socketFactory, int timeout) throws IOException {
     RPC.setProtocolEngine(conf, ZKFCProtocolPB.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     rpcProxy = RPC.getProxy(ZKFCProtocolPB.class,
         RPC.getProtocolVersion(ZKFCProtocolPB.class), addr,
         UserGroupInformation.getCurrentUser(), conf, socketFactory, timeout);
@@ -57,24 +56,16 @@ public class ZKFCProtocolClientSideTranslatorPB implements
   @Override
   public void cedeActive(int millisToCede) throws IOException,
       AccessControlException {
-    try {
-      CedeActiveRequestProto req = CedeActiveRequestProto.newBuilder()
-          .setMillisToCede(millisToCede)
-          .build();
-      rpcProxy.cedeActive(NULL_CONTROLLER, req);      
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    CedeActiveRequestProto req = CedeActiveRequestProto.newBuilder()
+        .setMillisToCede(millisToCede)
+        .build();
+    ipc(() -> rpcProxy.cedeActive(NULL_CONTROLLER, req));
   }
 
   @Override
   public void gracefulFailover() throws IOException, AccessControlException {
-    try {
-      rpcProxy.gracefulFailover(NULL_CONTROLLER,
-          GracefulFailoverRequestProto.getDefaultInstance());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.gracefulFailover(NULL_CONTROLLER,
+        GracefulFailoverRequestProto.getDefaultInstance()));
   }
 
 

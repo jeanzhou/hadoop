@@ -29,13 +29,21 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.junit.Test;
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertFalse;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 public class TestClusterMapReduceTestCase extends ClusterMapReduceTestCase {
+
+  @BeforeAll
+  public static void setupClass() throws Exception {
+    setupClassBase(TestClusterMapReduceTestCase.class);
+  }
+
   public void _testMapReduce(boolean restart) throws Exception {
     OutputStream os = getFileSystem().create(new Path(getInputDir(), "text.txt"));
     Writer wr = new OutputStreamWriter(os);
@@ -88,7 +96,6 @@ public class TestClusterMapReduceTestCase extends ClusterMapReduceTestCase {
       reader.close();
       assertEquals(4, counter);
     }
-
   }
 
   @Test

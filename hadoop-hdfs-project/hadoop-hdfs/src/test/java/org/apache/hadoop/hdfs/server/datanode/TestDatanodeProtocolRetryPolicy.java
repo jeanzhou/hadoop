@@ -18,7 +18,8 @@
 
 package org.apache.hadoop.hdfs.server.datanode;
 
-import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -30,9 +31,9 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 
-import com.google.common.base.Supplier;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileSystem;
@@ -43,23 +44,18 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
-import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.HeartbeatResponse;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.NNHAStatusHeartbeat;
 import org.apache.hadoop.hdfs.server.protocol.RegisterCommand;
-import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
-import org.apache.hadoop.hdfs.server.protocol.StorageBlockReport;
-import org.apache.hadoop.hdfs.server.protocol.StorageReport;
-import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
@@ -68,7 +64,7 @@ import org.mockito.stubbing.Answer;
  * This tests DatanodeProtocol retry policy
  */
 public class TestDatanodeProtocolRetryPolicy {
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       TestDatanodeProtocolRetryPolicy.class);
   private static final String DATA_DIR =
       MiniDFSCluster.getBaseDirectory() + "data";
@@ -84,14 +80,14 @@ public class TestDatanodeProtocolRetryPolicy {
       DFSTestUtil.getLocalDatanodeRegistration();
 
   static {
-    GenericTestUtils.setLogLevel(LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(LOG, Level.TRACE);
   }
 
   /**
    * Starts an instance of DataNode
    * @throws IOException
    */
-  @Before
+  @BeforeEach
   public void startUp() throws IOException, URISyntaxException {
     tearDownDone = false;
     conf = new HdfsConfiguration();
@@ -113,7 +109,7 @@ public class TestDatanodeProtocolRetryPolicy {
    * Cleans the resources and closes the instance of datanode
    * @throws IOException if an error occurred
    */
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (!tearDownDone && dn != null) {
       try {
@@ -123,8 +119,8 @@ public class TestDatanodeProtocolRetryPolicy {
       } finally {
         File dir = new File(DATA_DIR);
         if (dir.exists())
-          Assert.assertTrue(
-              "Cannot delete data-node dirs", FileUtil.fullyDelete(dir));
+          assertTrue(FileUtil.fullyDelete(dir),
+              "Cannot delete data-node dirs");
       }
       tearDownDone = true;
     }
@@ -139,8 +135,8 @@ public class TestDatanodeProtocolRetryPolicy {
           Mockito.verify(mockNN).blockReport(
               Mockito.eq(datanodeRegistration),
               Mockito.eq(POOL_ID),
-              Mockito.<StorageBlockReport[]>anyObject(),
-              Mockito.<BlockReportContext>anyObject());
+              Mockito.any(),
+              Mockito.any());
           return true;
         } catch (Throwable t) {
           LOG.info("waiting on block report: " + t.getMessage());
@@ -160,7 +156,8 @@ public class TestDatanodeProtocolRetryPolicy {
    * 6. DN retries.
    * 7. DatanodeProtocol.registerDatanode succeeds.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testDatanodeRegistrationRetry() throws Exception {
     final DatanodeProtocolClientSideTranslatorPB namenode =
         mock(DatanodeProtocolClientSideTranslatorPB.class);
@@ -212,23 +209,23 @@ public class TestDatanodeProtocolRetryPolicy {
         return heartbeatResponse;
       }
     }).when(namenode).sendHeartbeat(
-           Mockito.any(DatanodeRegistration.class),
-           Mockito.any(StorageReport[].class),
+           Mockito.any(),
+           Mockito.any(),
            Mockito.anyLong(),
            Mockito.anyLong(),
            Mockito.anyInt(),
            Mockito.anyInt(),
            Mockito.anyInt(),
-           Mockito.any(VolumeFailureSummary.class),
+           Mockito.any(),
            Mockito.anyBoolean(),
-           Mockito.any(SlowPeerReports.class),
-           Mockito.any(SlowDiskReports.class));
+           Mockito.any(),
+           Mockito.any());
 
     dn = new DataNode(conf, locations, null, null) {
       @Override
       DatanodeProtocolClientSideTranslatorPB connectToNN(
           InetSocketAddress nnAddr) throws IOException {
-        Assert.assertEquals(NN_ADDR, nnAddr);
+        assertEquals(NN_ADDR, nnAddr);
         return namenode;
       }
     };

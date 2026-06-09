@@ -96,7 +96,7 @@ public class Find extends FsCommand {
   private Expression rootExpression;
 
   /** Set of path items returning a {@link Result#STOP} result. */
-  private HashSet<Path> stopPaths = new HashSet<Path>();
+  private HashSet<Path> stopPaths = new HashSet<>();
 
   /** Register the expressions with the expression factory. */
   private static void registerExpressions(ExpressionFactory factory) {
@@ -134,8 +134,8 @@ public class Find extends FsCommand {
     for (String line : HELP) {
       sb.append(line).append("\n");
     }
-    sb.append("\n");
-    sb.append("The following primary expressions are recognised:\n");
+    sb.append("\n")
+        .append("The following primary expressions are recognised:\n");
     for (Expression expr : primaries) {
       for (String line : expr.getUsage()) {
         sb.append("  ").append(line).append("\n");

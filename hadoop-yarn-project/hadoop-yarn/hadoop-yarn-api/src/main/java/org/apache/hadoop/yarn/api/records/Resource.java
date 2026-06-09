@@ -19,17 +19,18 @@
 package org.apache.hadoop.yarn.api.records;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.lang.NotImplementedException;
+import org.apache.commons.lang3.NotImplementedException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.classification.InterfaceStability.Stable;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.ResourceTypes;
 import org.apache.hadoop.yarn.api.records.impl.LightWeightResource;
@@ -65,15 +66,11 @@ public abstract class Resource implements Comparable<Resource> {
 
   protected ResourceInformation[] resources = null;
 
-  // Number of mandatory resources, this is added to avoid invoke
-  // MandatoryResources.values().length, since values() internally will
-  // copy array, etc.
-  protected static final int NUM_MANDATORY_RESOURCES = 2;
-
   @Private
   public static final int MEMORY_INDEX = 0;
   @Private
   public static final int VCORES_INDEX = 1;
+
 
   @Public
   @Stable
@@ -255,18 +252,15 @@ public abstract class Resource implements Comparable<Resource> {
    *
    * @param resource name of the resource
    * @return the ResourceInformation object for the resource
-   * @throws ResourceNotFoundException if the resource can't be found
    */
   @Public
   @InterfaceStability.Unstable
-  public ResourceInformation getResourceInformation(String resource)
-      throws ResourceNotFoundException {
+  public ResourceInformation getResourceInformation(String resource) {
     Integer index = ResourceUtils.getResourceTypeIndex().get(resource);
     if (index != null) {
       return resources[index];
     }
-    throw new ResourceNotFoundException("Unknown resource '" + resource
-        + "'. Known resources are " + Arrays.toString(resources));
+    throw new ResourceNotFoundException(this, resource);
   }
 
   /**
@@ -297,12 +291,10 @@ public abstract class Resource implements Comparable<Resource> {
    *
    * @param resource name of the resource
    * @return the value for the resource
-   * @throws ResourceNotFoundException if the resource can't be found
    */
   @Public
   @InterfaceStability.Unstable
-  public long getResourceValue(String resource)
-      throws ResourceNotFoundException {
+  public long getResourceValue(String resource) {
     return getResourceInformation(resource).getValue();
   }
 
@@ -311,13 +303,11 @@ public abstract class Resource implements Comparable<Resource> {
    *
    * @param resource the resource for which the ResourceInformation is provided
    * @param resourceInformation ResourceInformation object
-   * @throws ResourceNotFoundException if the resource is not found
    */
   @Public
   @InterfaceStability.Unstable
   public void setResourceInformation(String resource,
-      ResourceInformation resourceInformation)
-      throws ResourceNotFoundException {
+      ResourceInformation resourceInformation) {
     if (resource.equals(ResourceInformation.MEMORY_URI)) {
       this.setMemorySize(resourceInformation.getValue());
       return;
@@ -346,8 +336,7 @@ public abstract class Resource implements Comparable<Resource> {
       ResourceInformation resourceInformation)
       throws ResourceNotFoundException {
     if (index < 0 || index >= resources.length) {
-      throw new ResourceNotFoundException("Unknown resource at index '" + index
-          + "'. Valid resources are " + Arrays.toString(resources));
+      throwExceptionWhenArrayOutOfBound(index);
     }
     ResourceInformation.copy(resourceInformation, resources[index]);
   }
@@ -358,12 +347,10 @@ public abstract class Resource implements Comparable<Resource> {
    *
    * @param resource the resource for which the value is provided.
    * @param value    the value to set
-   * @throws ResourceNotFoundException if the resource is not found
    */
   @Public
   @InterfaceStability.Unstable
-  public void setResourceValue(String resource, long value)
-      throws ResourceNotFoundException {
+  public void setResourceValue(String resource, long value) {
     if (resource.equals(ResourceInformation.MEMORY_URI)) {
       this.setMemorySize(value);
       return;
@@ -405,7 +392,7 @@ public abstract class Resource implements Comparable<Resource> {
   protected void throwExceptionWhenArrayOutOfBound(int index) {
     String exceptionMsg = String.format(
         "Trying to access ResourceInformation for given index=%d. "
-            + "Acceptable index range is [0,%d), please check double check "
+            + "Acceptable index range is [0,%d), please double check "
             + "configured resources in resource-types.xml",
         index, ResourceUtils.getNumberOfKnownResourceTypes());
 
@@ -478,9 +465,17 @@ public abstract class Resource implements Comparable<Resource> {
 
   @Override
   public String toString() {
+    return getFormattedString(String.valueOf(getMemorySize()));
+  }
+
+  public String toFormattedString() {
+    return getFormattedString();
+  }
+
+  private String getFormattedString(String memory) {
     StringBuilder sb = new StringBuilder();
 
-    sb.append("<memory:").append(getMemorySize()).append(", vCores:")
+    sb.append("<memory:").append(memory).append(", vCores:")
         .append(getVirtualCores());
 
     for (int i = 2; i < resources.length; i++) {
@@ -488,14 +483,23 @@ public abstract class Resource implements Comparable<Resource> {
       if (ri.getValue() == 0) {
         continue;
       }
-      sb.append(", ");
-      sb.append(ri.getName()).append(": ")
-          .append(ri.getValue());
-      sb.append(ri.getUnits());
+      sb.append(", ")
+          .append(ri.getName()).append(": ")
+          .append(ri.getValue())
+          .append(ri.getUnits());
     }
 
     sb.append(">");
     return sb.toString();
+  }
+
+  /**
+   * This method is to get memory in terms of KB|MB|GB.
+   * @return string containing all resources
+   */
+  public String getFormattedString() {
+    return getFormattedString(
+        StringUtils.byteDesc(getMemorySize() * 1024 * 1024));
   }
 
   @Override
@@ -539,5 +543,15 @@ public abstract class Resource implements Comparable<Resource> {
     ri.setMinimumAllocation(0);
     ri.setMaximumAllocation(Long.MAX_VALUE);
     return ri;
+  }
+
+  @VisibleForTesting
+  protected void setResources(ResourceInformation[] resources) {
+    this.resources = resources;
+  }
+
+  public String getFormattedString(long memory) {
+    return getFormattedString(
+        StringUtils.byteDesc(memory * 1024 * 1024));
   }
 }

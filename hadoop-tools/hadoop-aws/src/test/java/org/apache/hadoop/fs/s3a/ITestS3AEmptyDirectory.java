@@ -20,7 +20,10 @@ package org.apache.hadoop.fs.s3a;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.contract.ContractTestUtils;
-import org.junit.Test;
+import org.apache.hadoop.fs.s3a.impl.StatusProbeEnum;
+import org.apache.hadoop.fs.store.audit.AuditSpan;
+
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
@@ -53,7 +56,7 @@ public class ITestS3AEmptyDirectory extends AbstractS3ATestBase {
     // Should *not* be Tristate.UNKNOWN since we request a definitive value
     // in getS3AFileStatus() below
     Tristate expected = Tristate.fromBool(isEmpty);
-    assertEquals(msg, expected, s.isEmptyDirectory());
+    assertEquals(expected, s.isEmptyDirectory(), msg);
   }
 
   @Test
@@ -77,7 +80,10 @@ public class ITestS3AEmptyDirectory extends AbstractS3ATestBase {
 
   private S3AFileStatus getS3AFileStatus(S3AFileSystem fs, Path p) throws
       IOException {
-    return fs.innerGetFileStatus(p, true /* want isEmptyDirectory value */);
+    try (AuditSpan span = span()) {
+      return fs.innerGetFileStatus(p, true,
+          StatusProbeEnum.ALL);
+    }
   }
 
 }

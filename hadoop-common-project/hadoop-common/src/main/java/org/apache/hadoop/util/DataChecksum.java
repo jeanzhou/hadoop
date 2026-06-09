@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,18 +22,14 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.function.LongToIntFunction;
 import java.util.zip.CRC32;
+import java.util.zip.CRC32C;
 import java.util.zip.Checksum;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.ChecksumException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
 
 /**
  * This class provides interface and utilities for processing checksums for
@@ -50,9 +46,6 @@ public class DataChecksum implements Checksum {
   public static final int CHECKSUM_DEFAULT = 3; 
   public static final int CHECKSUM_MIXED   = 4;
 
-  private static final Logger LOG = LoggerFactory.getLogger(DataChecksum.class);
-  private static volatile boolean useJava9Crc32C = Shell.isJavaVersionAtLeast(9);
- 
   /** The checksum types */
   public enum Type {
     NULL  (CHECKSUM_NULL, 0),
@@ -69,7 +62,12 @@ public class DataChecksum implements Checksum {
       this.size = size;
     }
 
-    /** @return the type corresponding to the id. */
+    /**
+     * the type corresponding to the id.
+     *
+     * @return the type corresponding to the id.
+     * @param id id.
+     */
     public static Type valueOf(int id) {
       if (id < 0 || id >= values().length) {
         throw new IllegalArgumentException("id=" + id
@@ -80,27 +78,33 @@ public class DataChecksum implements Checksum {
   }
 
   /**
-   * Create a Crc32 Checksum object. The implementation of the Crc32 algorithm
-   * is chosen depending on the platform.
+   * Create a Crc32 Checksum object.
+   *
+   * @return Checksum.
    */
   public static Checksum newCrc32() {
     return new CRC32();
   }
 
+  static Checksum newCrc32C() {
+    return new CRC32C();
+  }
 
   /**
-   * The flag is volatile to avoid synchronization here.
-   * Re-entrancy is unlikely except in failure mode (and inexpensive).
+   * getCrcPolynomialForType.
+   *
+   * @param type type.
+   * @return the int representation of the polynomial associated with the
+   *     CRC {@code type}, suitable for use with further CRC arithmetic.
    */
-  static Checksum newCrc32C() {
-    try {
-      return useJava9Crc32C ? Java9Crc32CFactory.createChecksum()
-          : new PureJavaCrc32C();
-    } catch (ExceptionInInitializerError | RuntimeException e) {
-      // should not happen
-      LOG.error("CRC32C creation failed, switching to PureJavaCrc32C", e);
-      useJava9Crc32C = false;
-      return new PureJavaCrc32C();
+  static LongToIntFunction getModFunction(Type type) {
+    switch (type) {
+    case CRC32:
+      return PureJavaCrc32::mod;
+    case CRC32C:
+      return PureJavaCrc32C::mod;
+    default:
+      throw new IllegalArgumentException("Unexpected type: " + type);
     }
   }
 
@@ -123,11 +127,18 @@ public class DataChecksum implements Checksum {
   
   /**
    * Creates a DataChecksum from HEADER_LEN bytes from arr[offset].
+   *
+   * @param bytes bytes.
+   * @param offset offset.
    * @return DataChecksum of the type in the array or null in case of an error.
+   * @throws InvalidChecksumSizeException when the stored checksum is invalid.
    */
-  public static DataChecksum newDataChecksum( byte bytes[], int offset ) {
+  public static DataChecksum newDataChecksum(byte[] bytes, int offset)
+      throws InvalidChecksumSizeException {
     if (offset < 0 || bytes.length < offset + getChecksumHeaderSize()) {
-      return null;
+      throw new InvalidChecksumSizeException("Could not create DataChecksum "
+          + " from the byte array of length " + bytes.length
+          + " and offset "+ offset);
     }
     
     // like readInt():
@@ -135,27 +146,52 @@ public class DataChecksum implements Checksum {
                            ( (bytes[offset+2] & 0xff) << 16 ) |
                            ( (bytes[offset+3] & 0xff) << 8 )  |
                            ( (bytes[offset+4] & 0xff) );
-    return newDataChecksum( Type.valueOf(bytes[offset]), bytesPerChecksum );
+    DataChecksum csum = newDataChecksum(mapByteToChecksumType(bytes[offset]),
+        bytesPerChecksum);
+    if (csum == null) {
+      throw new InvalidChecksumSizeException(("Could not create DataChecksum "
+          + " from the byte array of length " + bytes.length
+          + " and bytesPerCheckSum of "+ bytesPerChecksum));
+    }
+    return csum;
   }
   
   /**
    * This constructs a DataChecksum by reading HEADER_LEN bytes from input
-   * stream <i>in</i>
+   * stream <i>in</i>.
+   *
+   * @param in data input stream.
+   * @throws IOException raised on errors performing I/O.
+   * @return DataChecksum by reading HEADER_LEN
+   *         bytes from input stream.
    */
   public static DataChecksum newDataChecksum( DataInputStream in )
                                  throws IOException {
     int type = in.readByte();
     int bpc = in.readInt();
-    DataChecksum summer = newDataChecksum(Type.valueOf(type), bpc );
+    DataChecksum summer = newDataChecksum(mapByteToChecksumType(type), bpc);
     if ( summer == null ) {
       throw new InvalidChecksumSizeException("Could not create DataChecksum "
           + "of type " + type + " with bytesPerChecksum " + bpc);
     }
     return summer;
   }
+
+  private static Type mapByteToChecksumType(int type)
+      throws InvalidChecksumSizeException{
+    try {
+      return Type.valueOf(type);
+    } catch (IllegalArgumentException e) {
+      throw new InvalidChecksumSizeException("The value "+type+" does not map"+
+        " to a valid checksum Type");
+    }
+  }
   
   /**
    * Writes the checksum header to the output stream <i>out</i>.
+   *
+   * @param out output stream.
+   * @throws IOException raised on errors performing I/O.
    */
   public void writeHeader( DataOutputStream out ) 
                            throws IOException { 
@@ -177,7 +213,11 @@ public class DataChecksum implements Checksum {
   /**
    * Writes the current checksum to the stream.
    * If <i>reset</i> is true, then resets the checksum.
+   *
+   * @param out out.
+   * @param reset reset.
    * @return number of bytes written. Will be equal to getChecksumSize();
+   * @throws IOException raised on errors performing I/O.
    */
    public int writeValue( DataOutputStream out, boolean reset )
                           throws IOException {
@@ -201,7 +241,12 @@ public class DataChecksum implements Checksum {
    /**
     * Writes the current checksum to a buffer.
     * If <i>reset</i> is true, then resets the checksum.
+    *
+    * @param buf buf.
+    * @param offset offset.
+    * @param reset reset.
     * @return number of bytes written. Will be equal to getChecksumSize();
+    * @throws IOException raised on errors performing I/O.
     */
     public int writeValue( byte[] buf, int offset, boolean reset )
                            throws IOException {
@@ -228,6 +273,9 @@ public class DataChecksum implements Checksum {
    
    /**
     * Compares the checksum located at buf[offset] with the current checksum.
+    *
+    * @param buf buf.
+    * @param offset offset.
     * @return true if the checksum matches and false otherwise.
     */
    public boolean compare( byte buf[], int offset ) {
@@ -257,12 +305,19 @@ public class DataChecksum implements Checksum {
     return type;
   }
 
-  /** @return the size for a checksum. */
+  /**
+   * the size for a checksum.
+   * @return the size for a checksum.
+   */
   public int getChecksumSize() {
     return type.size;
   }
 
-  /** @return the required checksum size given the data length. */
+  /**
+   * the required checksum size given the data length.
+   * @param dataSize data size.
+   * @return the required checksum size given the data length.
+   */
   public int getChecksumSize(int dataSize) {
     return ((dataSize - 1)/getBytesPerChecksum() + 1) * getChecksumSize(); 
   }
@@ -487,6 +542,12 @@ public class DataChecksum implements Checksum {
   /**
    * Implementation of chunked calculation specifically on byte arrays. This
    * is to avoid the copy when dealing with ByteBuffers that have array backing.
+   *
+   * @param data data.
+   * @param dataOffset dataOffset.
+   * @param dataLength dataLength.
+   * @param sums sums.
+   * @param sumsOffset sumsOffset.
    */
   public void calculateChunkedSums(
       byte[] data, int dataOffset, int dataLength,
@@ -553,37 +614,5 @@ public class DataChecksum implements Checksum {
     public void update(byte[] b, int off, int len) {}
     @Override
     public void update(int b) {}
-  };
-
-  /**
-   * Holds constructor handle to let it be initialized on demand.
-   */
-  private static class Java9Crc32CFactory {
-    private static final MethodHandle NEW_CRC32C_MH;
-
-    static {
-      MethodHandle newCRC32C = null;
-      try {
-        newCRC32C = MethodHandles.publicLookup()
-            .findConstructor(
-                Class.forName("java.util.zip.CRC32C"),
-                MethodType.methodType(void.class)
-            );
-      } catch (ReflectiveOperationException e) {
-        // Should not reach here.
-        throw new RuntimeException(e);
-      }
-      NEW_CRC32C_MH = newCRC32C;
-    }
-
-    public static Checksum createChecksum() {
-      try {
-        // Should throw nothing
-        return (Checksum) NEW_CRC32C_MH.invoke();
-      } catch (Throwable t) {
-        throw (t instanceof RuntimeException) ? (RuntimeException) t
-            : new RuntimeException(t);
-      }
-    }
-  };
+  }
 }

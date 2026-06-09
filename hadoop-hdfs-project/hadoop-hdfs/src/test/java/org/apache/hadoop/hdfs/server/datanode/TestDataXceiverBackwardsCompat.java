@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hdfs.server.datanode;
 
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.net.*;
@@ -33,31 +34,36 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.net.ServerSocketUtil;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.DataChecksum;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.ArgumentCaptor;
 
 import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.UUID;
 
-import static org.junit.Assert.fail;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 
 /**
  * Mock-based unit test to verify that DataXceiver does not fail when no
  * storageId or targetStorageTypes are passed - as is the case in Hadoop 2.x.
  */
+@Timeout(60)
 public class TestDataXceiverBackwardsCompat {
-  @Rule
-  public Timeout timeout = new Timeout(60000);
 
   private void failWithException(String message, Exception exception) {
     ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -84,13 +90,13 @@ public class TestDataXceiverBackwardsCompat {
 
       doReturn(pair).when(saslClient).socketSend(
           any(Socket.class), any(OutputStream.class), any(InputStream.class),
-          any(DataEncryptionKeyFactory.class), any(Token.class),
-          any(DatanodeID.class));
+          any(DataEncryptionKeyFactory.class), any(),
+          any(DatanodeID.class), any());
       doReturn(mock(ReplicaHandler.class)).when(data).createTemporary(
           any(StorageType.class), any(String.class), any(ExtendedBlock.class),
           anyBoolean());
 
-      new Thread(new NullServer(port)).start();
+      new SubjectInheritingThread(new NullServer(port)).start();
     }
 
     @Override
@@ -152,12 +158,12 @@ public class TestDataXceiverBackwardsCompat {
 
     doReturn(mockBlockReceiver).when(xceiver).getBlockReceiver(
         any(ExtendedBlock.class), any(StorageType.class),
-        any(DataInputStream.class), anyString(), anyString(),
+        any(), anyString(), any(),
         any(BlockConstructionStage.class), anyLong(), anyLong(), anyLong(),
         anyString(), any(DatanodeInfo.class), any(DataNode.class),
         any(DataChecksum.class), any(CachingStrategy.class),
         ArgumentCaptor.forClass(Boolean.class).capture(),
-        anyBoolean(), any(String.class));
+        anyBoolean(), any());
 
     Token<BlockTokenIdentifier> token = (Token<BlockTokenIdentifier>)mock(
         Token.class);
@@ -171,9 +177,17 @@ public class TestDataXceiverBackwardsCompat {
 
     DatanodeInfo datanodeInfo = mock(DatanodeInfo.class);
     doReturn("localhost").when(datanodeInfo).getHostName();
+    doReturn(ByteString.copyFromUtf8("localhost"))
+        .when(datanodeInfo).getHostNameBytes();
     doReturn("127.0.0.1").when(datanodeInfo).getIpAddr();
+    doReturn(ByteString.copyFromUtf8("127.0.0.1"))
+        .when(datanodeInfo).getIpAddrBytes();
     doReturn(DatanodeInfo.AdminStates.NORMAL).when(datanodeInfo)
         .getAdminState();
+    final String uuid = UUID.randomUUID().toString();
+    doReturn(uuid).when(datanodeInfo).getDatanodeUuid();
+    doReturn(ByteString.copyFromUtf8(uuid))
+        .when(datanodeInfo).getDatanodeUuidBytes();
 
     Exception storedException = null;
     try {

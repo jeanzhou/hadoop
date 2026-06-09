@@ -18,13 +18,13 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi
     .FsVolumeReferences;
-import org.apache.hadoop.util.AutoCloseableLock;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DiskBalancerWorkStatus
@@ -42,7 +42,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -55,9 +55,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
-
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.concurrent.TimeUnit.SECONDS;
 
 /**
  * Worker class for Disk Balancer.
@@ -77,21 +74,22 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 @InterfaceAudience.Private
 public class DiskBalancer {
 
-  private static final Logger LOG = LoggerFactory.getLogger(DiskBalancer
+  @VisibleForTesting
+  public static final Logger LOG = LoggerFactory.getLogger(DiskBalancer
       .class);
   private final FsDatasetSpi<?> dataset;
   private final String dataNodeUUID;
   private final BlockMover blockMover;
   private final ReentrantLock lock;
   private final ConcurrentHashMap<VolumePair, DiskBalancerWorkItem> workMap;
-  private boolean isDiskBalancerEnabled = false;
+  private volatile boolean isDiskBalancerEnabled = false;
   private ExecutorService scheduler;
   private Future future;
   private String planID;
   private String planFile;
   private DiskBalancerWorkStatus.Result currentResult;
   private long bandwidth;
-  private long planValidityInterval;
+  private volatile long planValidityInterval;
   private final Configuration config;
 
   /**
@@ -186,7 +184,8 @@ public class DiskBalancer {
     try {
       checkDiskBalancerEnabled();
       if ((this.future != null) && (!this.future.isDone())) {
-        LOG.error("Disk Balancer - Executing another plan, submitPlan failed.");
+        LOG.error("Disk Balancer - Executing another plan (Plan File: {}, Plan ID: {}), " +
+            "submitPlan failed.", planFile, planID);
         throw new DiskBalancerException("Executing another plan",
             DiskBalancerException.Result.PLAN_ALREADY_IN_PROGRESS);
       }
@@ -344,6 +343,58 @@ public class DiskBalancer {
   }
 
   /**
+   * Sets Disk balancer is to enable or not to enable.
+   *
+   * @param diskBalancerEnabled
+   *          true, enable diskBalancer, otherwise false to disable it.
+   */
+  public void setDiskBalancerEnabled(boolean diskBalancerEnabled) {
+    isDiskBalancerEnabled = diskBalancerEnabled;
+  }
+
+  /**
+   * Returns the value indicating if diskBalancer is enabled.
+   *
+   * @return boolean.
+   */
+  @VisibleForTesting
+  public boolean isDiskBalancerEnabled() {
+    return isDiskBalancerEnabled;
+  }
+
+  /**
+   * Sets maximum amount of time disk balancer plan is valid.
+   *
+   * @param planValidityInterval - maximum amount of time in the unit of milliseconds.
+   */
+  public void setPlanValidityInterval(long planValidityInterval) {
+    this.config.setTimeDuration(DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL,
+        planValidityInterval, TimeUnit.MILLISECONDS);
+    this.planValidityInterval = planValidityInterval;
+  }
+
+  /**
+   * Gets maximum amount of time disk balancer plan is valid.
+   *
+   * @return the maximum amount of time in milliseconds.
+   */
+  @VisibleForTesting
+  public long getPlanValidityInterval() {
+    return planValidityInterval;
+  }
+
+  /**
+   * Gets maximum amount of time disk balancer plan is valid in config.
+   *
+   * @return the maximum amount of time in milliseconds.
+   */
+  @VisibleForTesting
+  public long getPlanValidityIntervalInConfig() {
+    return config.getTimeDuration(DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL,
+        DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL_DEFAULT, TimeUnit.MILLISECONDS);
+  }
+
+  /**
    * Verifies that user provided plan is valid.
    *
    * @param planID      - SHA-1 of the plan.
@@ -400,7 +451,7 @@ public class DiskBalancer {
 
     if ((planID == null) ||
         (planID.length() != sha1Length) ||
-        !DigestUtils.shaHex(plan.getBytes(Charset.forName("UTF-8")))
+        !DigestUtils.sha1Hex(plan.getBytes(StandardCharsets.UTF_8))
             .equalsIgnoreCase(planID)) {
       LOG.error("Disk Balancer - Invalid plan hash.");
       throw new DiskBalancerException("Invalid or mis-matched hash.",
@@ -473,7 +524,7 @@ public class DiskBalancer {
 
       String sourceVolBasePath = storageIDToVolBasePathMap.get(sourceVolUuid);
       if (sourceVolBasePath == null) {
-        final String errMsg = "Disk Balancer - Unable to find volume: "
+        final String errMsg = "Disk Balancer - Unable to find source volume: "
             + step.getSourceVolume().getPath() + ". SubmitPlan failed.";
         LOG.error(errMsg);
         throw new DiskBalancerException(errMsg,
@@ -482,7 +533,7 @@ public class DiskBalancer {
 
       String destVolBasePath = storageIDToVolBasePathMap.get(destVolUuid);
       if (destVolBasePath == null) {
-        final String errMsg = "Disk Balancer - Unable to find volume: "
+        final String errMsg = "Disk Balancer - Unable to find dest volume: "
             + step.getDestinationVolume().getPath() + ". SubmitPlan failed.";
         LOG.error(errMsg);
         throw new DiskBalancerException(errMsg,
@@ -503,16 +554,13 @@ public class DiskBalancer {
   private Map<String, String> getStorageIDToVolumeBasePathMap()
       throws DiskBalancerException {
     Map<String, String> storageIDToVolBasePathMap = new HashMap<>();
-    FsDatasetSpi.FsVolumeReferences references;
-    try {
-      try(AutoCloseableLock lock = this.dataset.acquireDatasetLock()) {
-        references = this.dataset.getFsVolumeReferences();
-        for (int ndx = 0; ndx < references.size(); ndx++) {
-          FsVolumeSpi vol = references.get(ndx);
-          storageIDToVolBasePathMap.put(vol.getStorageID(),
-              vol.getBaseURI().getPath());
-        }
-        references.close();
+    // Get volumes snapshot so no need to acquire dataset lock.
+    try (FsDatasetSpi.FsVolumeReferences references = dataset.
+        getFsVolumeReferences()) {
+      for (int ndx = 0; ndx < references.size(); ndx++) {
+        FsVolumeSpi vol = references.get(ndx);
+        storageIDToVolBasePathMap.put(vol.getStorageID(),
+            vol.getBaseURI().getPath());
       }
     } catch (IOException ex) {
       LOG.error("Disk Balancer - Internal Error.", ex);
@@ -809,7 +857,7 @@ public class DiskBalancer {
       long bytesToCopy = item.getBytesToCopy() - item.getBytesCopied();
       bytesToCopy = bytesToCopy +
           ((bytesToCopy * getBlockTolerancePercentage(item)) / 100);
-      return (blockSize <= bytesToCopy) ? true : false;
+      return blockSize <= bytesToCopy;
     }
 
     /**
@@ -834,7 +882,7 @@ public class DiskBalancer {
     private boolean isCloseEnough(DiskBalancerWorkItem item) {
       long temp = item.getBytesCopied() +
           ((item.getBytesCopied() * getBlockTolerancePercentage(item)) / 100);
-      return (item.getBytesToCopy() >= temp) ? false : true;
+      return item.getBytesToCopy() < temp;
     }
 
     /**
@@ -862,7 +910,8 @@ public class DiskBalancer {
      * @param item        DiskBalancerWorkItem
      * @return sleep delay in Milliseconds.
      */
-    private long computeDelay(long bytesCopied, long timeUsed,
+    @VisibleForTesting
+    public long computeDelay(long bytesCopied, long timeUsed,
                               DiskBalancerWorkItem item) {
 
       // we had an overflow, ignore this reading and continue.
@@ -870,11 +919,15 @@ public class DiskBalancer {
         return 0;
       }
       final int megaByte = 1024 * 1024;
+      if (bytesCopied < megaByte) {
+        return 0;
+      }
       long bytesInMB = bytesCopied / megaByte;
-      long lastThroughput = bytesInMB / SECONDS.convert(timeUsed,
-          TimeUnit.MILLISECONDS);
-      long delay = (bytesInMB / getDiskBandwidth(item)) - lastThroughput;
-      return (delay <= 0) ? 0 : MILLISECONDS.convert(delay, TimeUnit.SECONDS);
+
+      // converting disk bandwidth in MB/millisec
+      float bandwidth = getDiskBandwidth(item) / 1000f;
+      float delay = ((long) (bytesInMB / bandwidth) - timeUsed);
+      return (delay <= 0) ? 0 : (long) delay;
     }
 
     /**
@@ -898,32 +951,32 @@ public class DiskBalancer {
      */
     private ExtendedBlock getBlockToCopy(FsVolumeSpi.BlockIterator iter,
                                          DiskBalancerWorkItem item) {
-      while (!iter.atEnd() && item.getErrorCount() < getMaxError(item)) {
+      while (!iter.atEnd() && item.getErrorCount() <= getMaxError(item)) {
         try {
           ExtendedBlock block = iter.nextBlock();
-
+          if(null == block){
+            LOG.info("NextBlock call returned null. No valid block to copy. {}",
+                item.toJson());
+            return null;
+          }
           // A valid block is a finalized block, we iterate until we get
           // finalized blocks
           if (!this.dataset.isValidBlock(block)) {
             continue;
           }
-
           // We don't look for the best, we just do first fit
           if (isLessThanNeeded(block.getNumBytes(), item)) {
             return block;
           }
-
         } catch (IOException e) {
           item.incErrorCount();
         }
       }
-
-      if (item.getErrorCount() >= getMaxError(item)) {
+      if (item.getErrorCount() > getMaxError(item)) {
         item.setErrMsg("Error count exceeded.");
         LOG.info("Maximum error count exceeded. Error count: {} Max error:{} ",
             item.getErrorCount(), item.getMaxDiskErrors());
       }
-
       return null;
     }
 
@@ -985,7 +1038,7 @@ public class DiskBalancer {
         try {
           iter.close();
         } catch (IOException ex) {
-          LOG.error("Error closing a block pool iter. ex: {}", ex);
+          LOG.error("Error closing a block pool iter. ex: ", ex);
         }
       }
     }
@@ -1006,7 +1059,7 @@ public class DiskBalancer {
       FsVolumeSpi source = getFsVolume(this.dataset, sourceVolUuid);
       if (source == null) {
         final String errMsg = "Disk Balancer - Unable to find source volume: "
-            + pair.getDestVolBasePath();
+            + pair.getSourceVolBasePath();
         LOG.error(errMsg);
         item.setErrMsg(errMsg);
         return;
@@ -1108,7 +1161,8 @@ public class DiskBalancer {
             // to make sure that our promise is good on average.
             // Because we sleep, if a shutdown or cancel call comes in
             // we exit via Thread Interrupted exception.
-            Thread.sleep(computeDelay(block.getNumBytes(), timeUsed, item));
+            Thread.sleep(computeDelay(block.getNumBytes(), TimeUnit.NANOSECONDS
+                .toMillis(timeUsed), item));
 
             // We delay updating the info to avoid confusing the user.
             // This way we report the copy only if it is under the
@@ -1119,11 +1173,16 @@ public class DiskBalancer {
                 startTime);
             item.setSecondsElapsed(secondsElapsed);
           } catch (IOException ex) {
-            LOG.error("Exception while trying to copy blocks. error: {}", ex);
+            LOG.error("Exception while trying to copy blocks. error: ", ex);
             item.incErrorCount();
           } catch (InterruptedException e) {
             LOG.error("Copy Block Thread interrupted, exiting the copy.");
             Thread.currentThread().interrupt();
+            item.incErrorCount();
+            this.setExitFlag();
+          } catch (RuntimeException ex) {
+            // Exiting if any run time exceptions.
+            LOG.error("Got an unexpected Runtime Exception ", ex);
             item.incErrorCount();
             this.setExitFlag();
           }

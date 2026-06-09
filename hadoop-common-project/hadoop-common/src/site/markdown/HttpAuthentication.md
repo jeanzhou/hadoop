@@ -28,7 +28,7 @@ Hadoop HTTP web-consoles can be configured to require Kerberos authentication us
 
 In addition, Hadoop HTTP web-consoles support the equivalent of Hadoop's Pseudo/Simple authentication. If this option is enabled, the user name must be specified in the first browser interaction using the user.name query string parameter. e.g. `http://localhost:8088/cluster?user.name=babu`.
 
-If a custom authentication mechanism is required for the HTTP web-consoles, it is possible to implement a plugin to support the alternate authentication mechanism (refer to Hadoop hadoop-auth for details on writing an `AuthenticatorHandler`).
+If a custom authentication mechanism is required for the HTTP web-consoles, it is possible to implement a plugin to support the alternate authentication mechanism (refer to Hadoop hadoop-auth for details on writing an `AuthenticationHandler`).
 
 The next section describes how to configure Hadoop HTTP web-consoles to require user authentication.
 
@@ -43,7 +43,7 @@ The following properties should be in the `core-site.xml` of all the nodes in th
 | `hadoop.http.authentication.type`                      | `simple`                                       | Defines authentication used for the HTTP web-consoles. The supported values are: `simple` \| `kerberos` \| `#AUTHENTICATION_HANDLER_CLASSNAME#`.                                                                                                                                                                                                              |
 | `hadoop.http.authentication.token.validity`            | `36000`                                        | Indicates how long (in seconds) an authentication token is valid before it has to be renewed.                                                                                                                                                                                                                                                                 |
 | `hadoop.http.authentication.token.max-inactive-interval` | `-1` (disabled)                            | Specifies the time, in seconds, between client requests the server will invalidate the token.                                                                                                                                                                                                                                                                 |
-| `hadoop.http.authentication.signature.secret.file`     | `$user.home/hadoop-http-auth-signature-secret` | The signature secret file for signing the authentication tokens. The same secret should be used for all nodes in the cluster, ResourceManager, NameNode, DataNode and NodeManager. This file should be readable only by the Unix user running the daemons.                                                                                                         |
+| `hadoop.http.authentication.signature.secret.file`     | `$user.home/hadoop-http-auth-signature-secret` | The signature secret file for signing the authentication tokens. A different secret should be used for each service in the cluster, ResourceManager, NameNode, DataNode and NodeManager. This file should be readable only by the Unix user running the daemons.                                                                                                         |
 | `hadoop.http.authentication.cookie.domain`             |                                                | The domain to use for the HTTP cookie that stores the authentication token. For authentication to work correctly across all nodes in the cluster the domain must be correctly set. There is no default value, the HTTP cookie will not have a domain working only with the hostname issuing the HTTP cookie.                                                  |
 | `hadoop.http.authentication.cookie.persistent`         | `false` (session cookie)                       | Specifies the persistence of the HTTP cookie. If the value is true, the cookie is a persistent one. Otherwise, it is a session cookie. *IMPORTANT*: when using IP addresses, browsers ignore cookies with domain settings. For this setting to work properly all nodes in the cluster must be configured to generate URLs with `hostname.domain` names on it. |
 | `hadoop.http.authentication.simple.anonymous.allowed`  | `true`                                         | Indicates whether anonymous requests are allowed when using 'simple' authentication.                                                                                                                                                                                                                                                                          |
@@ -64,3 +64,13 @@ Add org.apache.hadoop.security.HttpCrossOriginFilterInitializer to hadoop.http.f
 | hadoop.http.cross-origin.allowed-methods | `GET,POST,HEAD`                               | Comma separated list of methods that are allowed                                       |
 | hadoop.http.cross-origin.allowed-headers | `X-Requested-With,Content-Type,Accept,Origin` | Comma separated list of headers that are allowed                                       |
 | hadoop.http.cross-origin.max-age         | `1800`                                        | Number of seconds a pre-flighted request can be cached                                 |
+
+
+Trusted Proxy
+-------------
+Trusted Proxy adds support to perform operations using end user instead of proxy user. It fetches the end user from
+doAs query parameter. To enable Trusted Proxy, please set the following configuration parameter:
+
+Add org.apache.hadoop.security.authentication.server.ProxyUserAuthenticationFilterInitializer to hadoop.http.filter.initializers in core-site.xml
+instead of org.apache.hadoop.security.AuthenticationFilterInitializer.
+

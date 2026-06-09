@@ -20,8 +20,8 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import java.io.IOException;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -32,18 +32,18 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests the sequential block ID generation mechanism and block ID
  * collision handling.
  */
 public class TestSequentialBlockId {
-  private static final Log LOG = LogFactory.getLog("TestSequentialBlockId");
+  private static final Logger LOG =
+      LoggerFactory.getLogger("TestSequentialBlockId");
 
   final int BLOCK_SIZE = 1024;
   final int IO_SIZE = BLOCK_SIZE;
@@ -78,7 +78,7 @@ public class TestSequentialBlockId {
       for (int i = 1; i < blocks.size(); ++i) {
         long nextBlockId = blocks.get(i).getBlock().getBlockId();
         LOG.info("Block" + i + " id is " + nextBlockId);
-        assertThat(nextBlockId, is(nextBlockExpectedId));
+        assertThat(nextBlockId).isEqualTo(nextBlockExpectedId);
         ++nextBlockExpectedId;
       }
     } finally {
@@ -126,11 +126,11 @@ public class TestSequentialBlockId {
           fs, path2, IO_SIZE, BLOCK_SIZE * blockCount,
           BLOCK_SIZE, REPLICATION, SEED);
       List<LocatedBlock> blocks2 = DFSTestUtil.getAllBlocks(fs, path2);
-      assertThat(blocks2.size(), is(blockCount));
+      assertThat(blocks2.size()).isEqualTo(blockCount);
 
       // Make sure that file2 block IDs start immediately after file1
-      assertThat(blocks2.get(0).getBlock().getBlockId(),
-                 is(blocks1.get(9).getBlock().getBlockId() + 1));
+      assertThat(blocks2.get(0).getBlock().getBlockId())
+          .isEqualTo(blocks1.get(9).getBlock().getBlockId() + 1);
 
     } finally {
       cluster.shutdown();
@@ -165,8 +165,8 @@ public class TestSequentialBlockId {
     // Make sure that isLegacyBlock() can correctly detect
     // legacy and new blocks.
     when(bid.isLegacyBlock(any(Block.class))).thenCallRealMethod();
-    assertThat(bid.isLegacyBlock(legacyBlock), is(true));
-    assertThat(bid.isLegacyBlock(newBlock), is(false));
+    assertThat(bid.isLegacyBlock(legacyBlock)).isEqualTo(true);
+    assertThat(bid.isLegacyBlock(newBlock)).isEqualTo(false);
   }
 
   /**
@@ -191,7 +191,7 @@ public class TestSequentialBlockId {
     // Make sure that the generation stamp is set correctly for both
     // kinds of blocks.
     when(bid.nextGenerationStamp(anyBoolean())).thenCallRealMethod();
-    assertThat(bid.nextGenerationStamp(true), is(nextLegacyGenerationStamp));
-    assertThat(bid.nextGenerationStamp(false), is(nextGenerationStamp));
+    assertThat(bid.nextGenerationStamp(true)).isEqualTo(nextLegacyGenerationStamp);
+    assertThat(bid.nextGenerationStamp(false)).isEqualTo(nextGenerationStamp);
   }
 }

@@ -17,12 +17,12 @@
 
 package org.apache.hadoop.jmx;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonGenerator;
-import org.apache.hadoop.http.HttpServer2;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.lang.management.ManagementFactory;
+import java.lang.reflect.Array;
+import java.util.Iterator;
+import java.util.Set;
 import javax.management.AttributeNotFoundException;
 import javax.management.InstanceNotFoundException;
 import javax.management.IntrospectionException;
@@ -42,12 +42,14 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.lang.management.ManagementFactory;
-import java.lang.reflect.Array;
-import java.util.Iterator;
-import java.util.Set;
+
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.commons.lang3.NotImplementedException;
+import org.apache.hadoop.http.HttpServer2;
 
 /*
  * This servlet is based off of the JMXProxyServlet from Tomcat 7.0.14. It has
@@ -64,28 +66,32 @@ import java.util.Set;
  * functionality is provided through the
  * {@link MBeanServer#queryNames(ObjectName, javax.management.QueryExp)}
  * method.
+ * </p>
  * <p>
  * For example <code>http://.../jmx?qry=Hadoop:*</code> will return
  * all hadoop metrics exposed through JMX.
+ * </p>
  * <p>
  * The optional <code>get</code> parameter is used to query an specific 
  * attribute of a JMX bean.  The format of the URL is
- * <code>http://.../jmx?get=MXBeanName::AttributeName<code>
+ * <code>http://.../jmx?get=MXBeanName::AttributeName</code>
+ * </p>
  * <p>
  * For example 
  * <code>
  * http://../jmx?get=Hadoop:service=NameNode,name=NameNodeInfo::ClusterId
  * </code> will return the cluster id of the namenode mxbean.
+ * </p>
  * <p>
  * If the <code>qry</code> or the <code>get</code> parameter is not formatted 
- * correctly then a 400 BAD REQUEST http response code will be returned. 
+ * correctly then a 400 BAD REQUEST http response code will be returned.
+ * </p>
  * <p>
  * If a resouce such as a mbean or attribute can not be found, 
  * a 404 SC_NOT_FOUND http response code will be returned. 
- * <p>
+ * </p>
  * The return format is JSON and in the form
- * <p>
- *  <code><pre>
+ *  <pre><code>
  *  {
  *    "beans" : [
  *      {
@@ -94,8 +100,7 @@ import java.util.Set;
  *      }
  *    ]
  *  }
- *  </pre></code>
- *  <p>
+ *  </code></pre>
  *  The servlet attempts to convert the the JMXBeans into JSON. Each
  *  bean's attributes will be converted to a JSON object member.
  *  
@@ -133,6 +138,7 @@ public class JMXJsonServlet extends HttpServlet {
    * Json Factory to create Json generators for write objects in json format
    */
   protected transient JsonFactory jsonFactory;
+
   /**
    * Initialize this servlet.
    */
@@ -348,7 +354,8 @@ public class JMXJsonServlet extends HttpServlet {
     } catch (RuntimeErrorException e) {
       // RuntimeErrorException happens when an unexpected failure occurs in getAttribute
       // for example https://issues.apache.org/jira/browse/DAEMON-120
-      LOG.debug("getting attribute "+attName+" of "+oname+" threw an exception", e);
+      LOG.error("getting attribute {} of {} threw an exception",
+          attName, oname, e);
       return;
     } catch (AttributeNotFoundException e) {
       //Ignored the attribute was not found, which should never happen because the bean
@@ -382,10 +389,10 @@ public class JMXJsonServlet extends HttpServlet {
   
   private void writeAttribute(JsonGenerator jg, String attName, Object value) throws IOException {
     jg.writeFieldName(attName);
-    writeObject(jg, value);
+    writeObject(jg, value, attName);
   }
   
-  private void writeObject(JsonGenerator jg, Object value) throws IOException {
+  private void writeObject(JsonGenerator jg, Object value, String attName) throws IOException {
     if(value == null) {
       jg.writeNull();
     } else {
@@ -395,9 +402,11 @@ public class JMXJsonServlet extends HttpServlet {
         int len = Array.getLength(value);
         for (int j = 0; j < len; j++) {
           Object item = Array.get(value, j);
-          writeObject(jg, item);
+          writeObject(jg, item, attName);
         }
         jg.writeEndArray();
+      } else if (extraCheck(value)) {
+        extraWrite(value, attName, jg);
       } else if(value instanceof Number) {
         Number n = (Number)value;
         jg.writeNumber(n.toString());
@@ -417,12 +426,26 @@ public class JMXJsonServlet extends HttpServlet {
         TabularData tds = (TabularData)value;
         jg.writeStartArray();
         for(Object entry : tds.values()) {
-          writeObject(jg, entry);
+          writeObject(jg, entry, attName);
         }
         jg.writeEndArray();
       } else {
         jg.writeString(value.toString());
       }
     }
+  }
+
+  /**
+   * In case you need to modify the logic, how java objects transforms to json,
+   * you can overwrite this method to return true in case special handling
+   * @param value the object what should be judged
+   * @return true, if it needs special transformation
+   */
+  protected boolean extraCheck(Object value) {
+    return false;
+  }
+
+  protected void extraWrite(Object value, String attName, JsonGenerator jg) throws IOException {
+    throw new NotImplementedException();
   }
 }

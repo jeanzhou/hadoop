@@ -70,7 +70,7 @@ public class BigMapOutput extends Configured implements Tool {
                                 BytesWritable.class, BytesWritable.class,
                                 CompressionType.NONE);
     long numBytesToWrite = fileSizeInMB * 1024 * 1024;
-    int minKeySize = conf.getInt(MIN_KEY, 10);;
+    int minKeySize = conf.getInt(MIN_KEY, 10);
     int keySizeRange = 
       conf.getInt(MAX_KEY, 1000) - minKeySize;
     int minValueSize = conf.getInt(MIN_VALUE, 0);
@@ -128,17 +128,20 @@ public class BigMapOutput extends Configured implements Tool {
         usage();
       }
     }
-    
-    FileSystem fs = FileSystem.get(getConf());
+    if (bigMapInput == null || outputPath == null) {
+      // report usage and exit
+      usage();
+      // this stops IDES warning about unset local variables.
+      return -1;
+    }
+
     JobConf jobConf = new JobConf(getConf(), BigMapOutput.class);
 
     jobConf.setJobName("BigMapOutput");
     jobConf.setInputFormat(NonSplitableSequenceFileInputFormat.class);
     jobConf.setOutputFormat(SequenceFileOutputFormat.class);
     FileInputFormat.setInputPaths(jobConf, bigMapInput);
-    if (fs.exists(outputPath)) {
-      fs.delete(outputPath, true);
-    }
+    outputPath.getFileSystem(jobConf).delete(outputPath, true);
     FileOutputFormat.setOutputPath(jobConf, outputPath);
     jobConf.setMapperClass(IdentityMapper.class);
     jobConf.setReducerClass(IdentityReducer.class);
@@ -146,7 +149,10 @@ public class BigMapOutput extends Configured implements Tool {
     jobConf.setOutputValueClass(BytesWritable.class);
     
     if (createInput) {
-      createBigMapInputFile(jobConf, fs, bigMapInput, fileSizeInMB);
+      createBigMapInputFile(jobConf,
+          bigMapInput.getFileSystem(jobConf),
+          bigMapInput,
+          fileSizeInMB);
     }
     
     Date startTime = new Date();

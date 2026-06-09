@@ -18,10 +18,10 @@
 
 /**
  * These .proto interfaces are private and stable.
- * Please see http://wiki.apache.org/hadoop/Compatibility
+ * Please see https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/Compatibility.html
  * for what changes are allowed for a *stable* .proto interface.
  */
-
+syntax="proto2";
 // This file contains protocol buffers that are used to transfer data
 // to and from the datanode, as well as between datanodes.
 
@@ -43,6 +43,13 @@ message DataTransferEncryptorMessageProto {
   optional bytes payload = 2;
   optional string message = 3;
   repeated CipherOptionProto cipherOption = 4;
+  optional HandshakeSecretProto handshakeSecret = 5;
+  optional bool accessTokenError = 6;
+}
+
+message HandshakeSecretProto {
+  required bytes secret = 1;
+  required string bpid = 2;
 }
 
 message BaseHeaderProto {
@@ -52,8 +59,9 @@ message BaseHeaderProto {
 }
 
 message DataTransferTraceInfoProto {
-  required uint64 traceId = 1;
-  required uint64 parentId = 2;
+  optional uint64 traceId = 1;
+  optional uint64 parentId = 2;
+  optional bytes spanContext = 3;
 }
 
 message ClientOperationHeaderProto {
@@ -148,8 +156,9 @@ message OpCopyBlockProto {
   required BaseHeaderProto header = 1;
 }
 
-message OpBlockChecksumProto { 
+message OpBlockChecksumProto {
   required BaseHeaderProto header = 1;
+  optional BlockChecksumOptionsProto blockChecksumOptions = 2;
 }
 
 message OpBlockGroupChecksumProto {
@@ -160,6 +169,7 @@ message OpBlockGroupChecksumProto {
   required ErasureCodingPolicyProto ecPolicy = 4;
   repeated uint32 blockIndices = 5;
   required uint64 requestedNumBytes = 6;
+  optional BlockChecksumOptionsProto blockChecksumOptions = 7;
 }
 
 /**
@@ -313,8 +323,9 @@ message DNTransferAckProto {
 message OpBlockChecksumResponseProto {
   required uint32 bytesPerCrc = 1;
   required uint64 crcPerBlock = 2;
-  required bytes md5 = 3;
+  required bytes blockChecksum = 3;
   optional ChecksumTypeProto crcType = 4;
+  optional BlockChecksumOptionsProto blockChecksumOptions = 5;
 }
 
 message OpCustomProto {

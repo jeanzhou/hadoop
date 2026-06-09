@@ -31,8 +31,11 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceUtilization;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatResponse;
 import org.apache.hadoop.yarn.server.api.records.OpportunisticContainersStatus;
+import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.util.resource.Resources;
 
 /**
  * Node managers information on available resources 
@@ -92,7 +95,8 @@ public interface RMNode {
 
   /**
    * the node manager version of the node received as part of the
-   * registration with the resource manager
+   * registration with the resource manager.
+   * @return node manager version.
    */
   public String getNodeManagerVersion();
 
@@ -101,6 +105,28 @@ public interface RMNode {
    * @return the total available resource.
    */
   public Resource getTotalCapability();
+
+  /**
+   * The total allocated resources to containers.
+   * This will include the sum of Guaranteed and Opportunistic
+   * containers queued + running + paused on the node.
+   * @return the total allocated resources, including all Guaranteed and
+   * Opportunistic containers in queued, running and paused states.
+   */
+  default Resource getAllocatedContainerResource() {
+    return Resources.none();
+  }
+
+  /**
+   * If the total available resources has been updated.
+   * @return If the capability has been updated.
+   */
+  boolean isUpdatedCapability();
+
+  /**
+   * Mark that the updated event has been processed.
+   */
+  void resetUpdatedCapability();
 
   /**
    * the aggregated resource utilization of the containers.
@@ -189,4 +215,18 @@ public interface RMNode {
    * @return a map of each allocation tag and its count.
    */
   Map<String, Long> getAllocationTagsWithCount();
+
+  /**
+   * @return the RM context associated with this RM node.
+   */
+  RMContext getRMContext();
+
+  /**
+   * @return all node attributes as a Set.
+   */
+  Set<NodeAttribute> getAllNodeAttributes();
+
+  long calculateHeartBeatInterval(long defaultInterval,
+      long minInterval, long maxInterval, float speedupFactor,
+      float slowdownFactor);
 }

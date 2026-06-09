@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.sls.scheduler;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -32,7 +33,6 @@ import java.util.List;
 import java.util.SortedMap;
 import java.util.Locale;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.Lock;
@@ -48,17 +48,20 @@ import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.hadoop.util.concurrent.HadoopScheduledThreadPoolExecutor;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplication;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
 import org.apache.hadoop.yarn.sls.conf.SLSConfiguration;
+import org.apache.hadoop.yarn.sls.utils.NodeUsageRanges;
 import org.apache.hadoop.yarn.sls.web.SLSWebApp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -89,11 +92,15 @@ public abstract class SchedulerMetrics {
 
   // counters for scheduler allocate/handle operations
   private Counter schedulerAllocateCounter;
+  private Counter schedulerCommitSuccessCounter;
+  private Counter schedulerCommitFailureCounter;
   private Counter schedulerHandleCounter;
   private Map<SchedulerEventType, Counter> schedulerHandleCounterMap;
 
   // Timers for scheduler allocate/handle operations
   private Timer schedulerAllocateTimer;
+  private Timer schedulerCommitSuccessTimer;
+  private Timer schedulerCommitFailureTimer;
   private Timer schedulerHandleTimer;
   private Map<SchedulerEventType, Timer> schedulerHandleTimerMap;
   private List<Histogram> schedulerHistogramList;
@@ -153,6 +160,8 @@ public abstract class SchedulerMetrics {
     registerClusterResourceMetrics();
     registerContainerAppNumMetrics();
     registerSchedulerMetrics();
+    registerNodesUsageMetrics("memory");
+    registerNodesUsageMetrics("vcores");
 
     // .csv output
     initMetricsCSVOutput();
@@ -165,18 +174,18 @@ public abstract class SchedulerMetrics {
     web.start();
 
     // a thread to update histogram timer
-    pool = new ScheduledThreadPoolExecutor(2);
+    pool = new HadoopScheduledThreadPoolExecutor(2);
     pool.scheduleAtFixedRate(new HistogramsRunnable(), 0, 1000,
         TimeUnit.MILLISECONDS);
 
-    // a thread to output metrics for real-tiem tracking
+    // a thread to output metrics for real-time tracking
     pool.scheduleAtFixedRate(new MetricsLogRunnable(), 0, 1000,
         TimeUnit.MILLISECONDS);
 
     // application running information
     jobRuntimeLogBW =
         new BufferedWriter(new OutputStreamWriter(new FileOutputStream(
-            metricsOutputDir + "/jobruntime.csv"), "UTF-8"));
+            metricsOutputDir + "/jobruntime.csv"), StandardCharsets.UTF_8));
     jobRuntimeLogBW.write("JobID,real_start_time,real_end_time," +
         "simulate_start_time,simulate_end_time" + EOL);
     jobRuntimeLogBW.flush();
@@ -308,7 +317,7 @@ public abstract class SchedulerMetrics {
         new Gauge<Long>() {
           @Override
           public Long getValue() {
-            if (scheduler.getRootQueueMetrics() == null) {
+            if (isMetricsAvailable()) {
               return 0L;
             } else {
               return scheduler.getRootQueueMetrics().getAllocatedMB();
@@ -320,7 +329,7 @@ public abstract class SchedulerMetrics {
         new Gauge<Integer>() {
           @Override
           public Integer getValue() {
-            if (scheduler.getRootQueueMetrics() == null) {
+            if (isMetricsAvailable()) {
               return 0;
             } else {
               return scheduler.getRootQueueMetrics().getAllocatedVirtualCores();
@@ -332,7 +341,7 @@ public abstract class SchedulerMetrics {
         new Gauge<Long>() {
           @Override
           public Long getValue() {
-            if (scheduler.getRootQueueMetrics() == null) {
+            if (isMetricsAvailable()) {
               return 0L;
             } else {
               return scheduler.getRootQueueMetrics().getAvailableMB();
@@ -344,7 +353,7 @@ public abstract class SchedulerMetrics {
         new Gauge<Integer>() {
           @Override
           public Integer getValue() {
-            if (scheduler.getRootQueueMetrics() == null) {
+            if (isMetricsAvailable()) {
               return 0;
             } else {
               return scheduler.getRootQueueMetrics().getAvailableVirtualCores();
@@ -352,6 +361,10 @@ public abstract class SchedulerMetrics {
           }
         }
     );
+  }
+
+  private boolean isMetricsAvailable() {
+    return scheduler.getRootQueueMetrics() == null;
   }
 
   private void registerContainerAppNumMetrics() {
@@ -387,6 +400,10 @@ public abstract class SchedulerMetrics {
       // counters for scheduler operations
       schedulerAllocateCounter = metrics.counter(
           "counter.scheduler.operation.allocate");
+      schedulerCommitSuccessCounter = metrics.counter(
+          "counter.scheduler.operation.commit.success");
+      schedulerCommitFailureCounter = metrics.counter(
+          "counter.scheduler.operation.commit.failure");
       schedulerHandleCounter = metrics.counter(
           "counter.scheduler.operation.handle");
       schedulerHandleCounterMap = new HashMap<>();
@@ -400,6 +417,10 @@ public abstract class SchedulerMetrics {
           SLSConfiguration.METRICS_TIMER_WINDOW_SIZE,
           SLSConfiguration.METRICS_TIMER_WINDOW_SIZE_DEFAULT);
       schedulerAllocateTimer = new Timer(
+          new SlidingWindowReservoir(timeWindowSize));
+      schedulerCommitSuccessTimer = new Timer(
+          new SlidingWindowReservoir(timeWindowSize));
+      schedulerCommitFailureTimer = new Timer(
           new SlidingWindowReservoir(timeWindowSize));
       schedulerHandleTimer = new Timer(
           new SlidingWindowReservoir(timeWindowSize));
@@ -417,6 +438,20 @@ public abstract class SchedulerMetrics {
           schedulerAllocateHistogram);
       schedulerHistogramList.add(schedulerAllocateHistogram);
       histogramTimerMap.put(schedulerAllocateHistogram, schedulerAllocateTimer);
+      Histogram schedulerCommitHistogram = new Histogram(
+          new SlidingWindowReservoir(SAMPLING_SIZE));
+      metrics.register("sampler.scheduler.operation.commit.success.timecost",
+          schedulerCommitHistogram);
+      schedulerHistogramList.add(schedulerCommitHistogram);
+      histogramTimerMap
+          .put(schedulerCommitHistogram, schedulerCommitSuccessTimer);
+      Histogram schedulerCommitFailureHistogram =
+          new Histogram(new SlidingWindowReservoir(SAMPLING_SIZE));
+      metrics.register("sampler.scheduler.operation.commit.failure.timecost",
+          schedulerCommitFailureHistogram);
+      schedulerHistogramList.add(schedulerCommitFailureHistogram);
+      histogramTimerMap
+          .put(schedulerCommitFailureHistogram, schedulerCommitFailureTimer);
       Histogram schedulerHandleHistogram = new Histogram(
           new SlidingWindowReservoir(SAMPLING_SIZE));
       metrics.register("sampler.scheduler.operation.handle.timecost",
@@ -432,6 +467,55 @@ public abstract class SchedulerMetrics {
         schedulerHistogramList.add(histogram);
         histogramTimerMap.put(histogram, schedulerHandleTimerMap.get(e));
       }
+    } catch (Exception e) {
+      LOG.error("Caught exception while registering scheduler metrics", e);
+      throw e;
+    } finally {
+      samplerLock.unlock();
+    }
+  }
+
+  private void registerNodesUsageMetrics(String resourceType) {
+    samplerLock.lock();
+    try {
+      for (NodeUsageRanges.Range range : NodeUsageRanges.getRanges()) {
+        String metricName = "nodes." + resourceType + "." + range.getKeyword();
+        metrics.register(metricName,
+            new Gauge<Integer>() {
+              @Override
+              public Integer getValue() {
+                if (!(scheduler instanceof AbstractYarnScheduler)) {
+                  return 0;
+                } else {
+                  int count = 0;
+                  AbstractYarnScheduler sch = (AbstractYarnScheduler) scheduler;
+                  for (Object node : sch.getNodeTracker().getAllNodes()) {
+                    SchedulerNode sNode = (SchedulerNode) node;
+                    long allocated = 0, total = 0;
+                    if (resourceType.equals("memory")) {
+                      allocated = sNode.getAllocatedResource().getMemorySize();
+                      total = sNode.getTotalResource().getMemorySize();
+                    } else if (resourceType.equals("vcores")) {
+                      allocated =
+                          sNode.getAllocatedResource().getVirtualCores();
+                      total =
+                          sNode.getTotalResource().getVirtualCores();
+                    }
+                    float usedPct = allocated * 100f / total;
+                    if (range.getLowerLimit() <= usedPct
+                        && usedPct <= range.getUpperLimit()) {
+                      count++;
+                    }
+                  }
+                  return count;
+                }
+              }
+            }
+        );
+      }
+    } catch (Exception e) {
+      LOG.error("Caught exception while registering nodes usage metrics", e);
+      throw e;
     } finally {
       samplerLock.unlock();
     }
@@ -483,7 +567,7 @@ public abstract class SchedulerMetrics {
       try {
         metricsLogBW =
             new BufferedWriter(new OutputStreamWriter(new FileOutputStream(
-                metricsOutputDir + "/realtimetrack.json"), "UTF-8"));
+                metricsOutputDir + "/realtimetrack.json"), StandardCharsets.UTF_8));
         metricsLogBW.write("[");
       } catch (IOException e) {
         LOG.info(e.getMessage());
@@ -492,7 +576,8 @@ public abstract class SchedulerMetrics {
 
     @Override
     public void run() {
-      if(running) {
+      SchedulerWrapper wrapper = (SchedulerWrapper) scheduler;
+      if(running && wrapper.getTracker().getQueueSet() != null) {
         // all WebApp to get real tracking json
         String trackingMetrics = web.generateRealTimeTrackingMetrics();
         // output
@@ -512,9 +597,13 @@ public abstract class SchedulerMetrics {
   }
 
   void tearDown() throws Exception {
+    setRunning(false);
+    LOG.info("Scheduler Metrics tears down");
     if (metricsLogBW != null)  {
       metricsLogBW.write("]");
       metricsLogBW.close();
+      //metricsLogBW is nullified to prevent the usage after closing
+      metricsLogBW = null;
     }
 
     if (web != null) {
@@ -534,6 +623,14 @@ public abstract class SchedulerMetrics {
     schedulerAllocateCounter.inc();
   }
 
+  void increaseSchedulerCommitSuccessCounter() {
+    schedulerCommitSuccessCounter.inc();
+  }
+
+  void increaseSchedulerCommitFailureCounter() {
+    schedulerCommitFailureCounter.inc();
+  }
+
   void increaseSchedulerHandleCounter(SchedulerEventType schedulerEventType) {
     schedulerHandleCounter.inc();
     schedulerHandleCounterMap.get(schedulerEventType).inc();
@@ -541,6 +638,14 @@ public abstract class SchedulerMetrics {
 
   Timer getSchedulerAllocateTimer() {
     return schedulerAllocateTimer;
+  }
+
+  Timer getSchedulerCommitSuccessTimer() {
+    return schedulerCommitSuccessTimer;
+  }
+
+  Timer getSchedulerCommitFailureTimer() {
+    return schedulerCommitFailureTimer;
   }
 
   Timer getSchedulerHandleTimer() {
@@ -619,11 +724,10 @@ public abstract class SchedulerMetrics {
       long traceEndTimeMS, long simulateStartTimeMS, long simulateEndTimeMS) {
     try {
       // write job runtime information
-      StringBuilder sb = new StringBuilder();
-      sb.append(appId).append(",").append(traceStartTimeMS).append(",")
-          .append(traceEndTimeMS).append(",").append(simulateStartTimeMS)
-          .append(",").append(simulateEndTimeMS);
-      jobRuntimeLogBW.write(sb.toString() + EOL);
+      String runtimeInfo = appId + "," + traceStartTimeMS + "," +
+          traceEndTimeMS + "," + simulateStartTimeMS +
+          "," + simulateEndTimeMS;
+      jobRuntimeLogBW.write(runtimeInfo + EOL);
       jobRuntimeLogBW.flush();
     } catch (IOException e) {
       LOG.info(e.getMessage());

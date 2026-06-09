@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.tools.offlineImageViewer;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import static org.apache.hadoop.hdfs.server.namenode.FSImageFormatPBINode.ACL_ENTRY_NAME_MASK;
 import static org.apache.hadoop.hdfs.server.namenode.FSImageFormatPBINode.ACL_ENTRY_NAME_OFFSET;
 import static org.apache.hadoop.hdfs.server.namenode.FSImageFormatPBINode.ACL_ENTRY_SCOPE_OFFSET;
@@ -31,12 +31,12 @@ import static org.apache.hadoop.hdfs.tools.offlineImageViewer.PBImageXmlWriter.*
 
 import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.security.DigestOutputStream;
@@ -49,13 +49,14 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.Map;
 
-import com.google.common.io.CountingOutputStream;
-import com.google.common.primitives.Ints;
-import com.google.protobuf.ByteString;
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.com.google.common.io.CountingOutputStream;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Ints;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.permission.AclEntry;
@@ -96,8 +97,8 @@ import javax.xml.stream.events.XMLEvent;
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 class OfflineImageReconstructor {
-  public static final Log LOG =
-      LogFactory.getLog(OfflineImageReconstructor.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(OfflineImageReconstructor.class);
 
   /**
    * The output stream.
@@ -147,6 +148,8 @@ class OfflineImageReconstructor {
       InputStreamReader reader) throws XMLStreamException {
     this.out = out;
     XMLInputFactory factory = XMLInputFactory.newInstance();
+    factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
+    factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
     this.events = factory.createXMLEventReader(reader);
     this.sections = new HashMap<>();
     this.sections.put(NameSectionProcessor.NAME, new NameSectionProcessor());
@@ -385,8 +388,8 @@ class OfflineImageReconstructor {
           break;
         case XMLEvent.CHARACTERS:
           String val = XMLUtils.
-              unmangleXmlString(ev.asCharacters().getData(), true);
-          parent.setVal(val);
+              unmangleXmlString(ev.asCharacters().getData(), false);
+          parent.setVal(parent.getVal() + val);
           events.nextEvent();
           break;
         case XMLEvent.ATTRIBUTE:
@@ -619,7 +622,7 @@ class OfflineImageReconstructor {
     inodeBld.setId(id);
     String name = node.removeChildStr(SECTION_NAME);
     if (name != null) {
-      inodeBld.setName(ByteString.copyFrom(name, "UTF8"));
+      inodeBld.setName(ByteString.copyFrom(name, StandardCharsets.UTF_8));
     }
     switch (type) {
     case "FILE":
@@ -835,7 +838,7 @@ class OfflineImageReconstructor {
     }
     String target = node.removeChildStr(INODE_SECTION_TARGET);
     if (target != null) {
-      bld.setTarget(ByteString.copyFrom(target, "UTF8"));
+      bld.setTarget(ByteString.copyFrom(target, StandardCharsets.UTF_8));
     }
     Long lval = node.removeChildLong(INODE_SECTION_MTIME);
     if (lval != null) {
@@ -897,7 +900,7 @@ class OfflineImageReconstructor {
         }
         val = new HexBinaryAdapter().unmarshal(valHex);
       } else {
-        val = valStr.getBytes("UTF8");
+        val = valStr.getBytes(StandardCharsets.UTF_8);
       }
       b.setValue(ByteString.copyFrom(val));
 
@@ -1229,7 +1232,7 @@ class OfflineImageReconstructor {
         }
         String name = inodeRef.removeChildStr("name");
         if (name != null) {
-          bld.setName(ByteString.copyFrom(name, "UTF8"));
+          bld.setName(ByteString.copyFrom(name, StandardCharsets.UTF_8));
         }
         Integer dstSnapshotId = inodeRef.removeChildInt(
             INODE_REFERENCE_SECTION_DST_SNAPSHOT_ID);
@@ -1353,9 +1356,11 @@ class OfflineImageReconstructor {
         if (sd == null) {
           break;
         }
-        Long dir = sd.removeChildLong(SNAPSHOT_SECTION_DIR);
-        sd.verifyNoRemainingKeys("<dir>");
-        bld.addSnapshottableDir(dir);
+        Long dir;
+        while ((dir = sd.removeChildLong(SNAPSHOT_SECTION_DIR)) != null) {
+          // Add all snapshottable directories, one by one
+          bld.addSnapshottableDir(dir);
+        }
       }
       header.verifyNoRemainingKeys("SnapshotSection");
       bld.build().writeDelimitedTo(out);
@@ -1463,7 +1468,7 @@ class OfflineImageReconstructor {
         bld.setChildrenSize(childrenSize);
         String name = dirDiff.removeChildStr(SECTION_NAME);
         if (name != null) {
-          bld.setName(ByteString.copyFrom(name, "UTF8"));
+          bld.setName(ByteString.copyFrom(name, StandardCharsets.UTF_8));
         }
         Node snapshotCopy = dirDiff.removeChild(
             SNAPSHOT_DIFF_SECTION_SNAPSHOT_COPY);
@@ -1509,7 +1514,7 @@ class OfflineImageReconstructor {
           }
           created.verifyNoRemainingKeys("created");
           FsImageProto.SnapshotDiffSection.CreatedListEntry.newBuilder().
-              setName(ByteString.copyFrom(cleName, "UTF8")).
+              setName(ByteString.copyFrom(cleName, StandardCharsets.UTF_8)).
               build().writeDelimitedTo(out);
           actualCreatedListSize++;
         }
@@ -1566,7 +1571,7 @@ class OfflineImageReconstructor {
         }
         String name = fileDiff.removeChildStr(SECTION_NAME);
         if (name != null) {
-          bld.setName(ByteString.copyFrom(name, "UTF8"));
+          bld.setName(ByteString.copyFrom(name, StandardCharsets.UTF_8));
         }
         Node snapshotCopy = fileDiff.removeChild(
             SNAPSHOT_DIFF_SECTION_SNAPSHOT_COPY);
@@ -1759,6 +1764,10 @@ class OfflineImageReconstructor {
       XMLEvent ev = expectTag("[section header]", true);
       if (ev.getEventType() == XMLStreamConstants.END_ELEMENT) {
         if (ev.asEndElement().getName().getLocalPart().equals("fsimage")) {
+          if(unprocessedSections.size() == 1 && unprocessedSections.contains
+                  (SnapshotDiffSectionProcessor.NAME)){
+            break;
+          }
           throw new IOException("FSImage XML ended prematurely, without " +
               "including section(s) " + StringUtils.join(", ",
               unprocessedSections));
@@ -1821,17 +1830,17 @@ class OfflineImageReconstructor {
   public static void run(String inputPath, String outputPath)
       throws Exception {
     MessageDigest digester = MD5Hash.getDigester();
-    FileOutputStream fout = null;
+    OutputStream fout = null;
     File foutHash = new File(outputPath + ".md5");
     Files.deleteIfExists(foutHash.toPath()); // delete any .md5 file that exists
     CountingOutputStream out = null;
-    FileInputStream fis = null;
+    InputStream fis = null;
     InputStreamReader reader = null;
     try {
       Files.deleteIfExists(Paths.get(outputPath));
-      fout = new FileOutputStream(outputPath);
-      fis = new FileInputStream(inputPath);
-      reader = new InputStreamReader(fis, Charset.forName("UTF-8"));
+      fout = Files.newOutputStream(Paths.get(outputPath));
+      fis = Files.newInputStream(Paths.get(inputPath));
+      reader = new InputStreamReader(fis, StandardCharsets.UTF_8);
       out = new CountingOutputStream(
           new DigestOutputStream(
               new BufferedOutputStream(fout), digester));
@@ -1839,7 +1848,7 @@ class OfflineImageReconstructor {
           new OfflineImageReconstructor(out, reader);
       oir.processXml();
     } finally {
-      IOUtils.cleanup(LOG, reader, fis, out, fout);
+      IOUtils.cleanupWithLogger(LOG, reader, fis, out, fout);
     }
     // Write the md5 file
     MD5FileUtils.saveMD5File(new File(outputPath),

@@ -17,19 +17,27 @@
  */
 package org.apache.hadoop.hdfs.qjournal.server;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Bytes;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.qjournal.QJMTestUtil;
 import org.apache.hadoop.hdfs.qjournal.protocol.JournalOutOfSyncException;
+import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.GetJournaledEditsResponseProto;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.NewEpochResponseProto;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.NewEpochResponseProtoOrBuilder;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.SegmentStateProto;
@@ -38,15 +46,15 @@ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.common.StorageErrorReporter;
+import org.apache.hadoop.hdfs.server.namenode.EditLogFileOutputStream;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeLayoutVersion;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
 
 public class TestJournal {
@@ -67,22 +75,24 @@ public class TestJournal {
   private Journal journal;
 
   
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     FileUtil.fullyDelete(TEST_LOG_DIR);
     conf = new Configuration();
+    // Enable fetching edits via RPC
+    conf.setBoolean(DFSConfigKeys.DFS_HA_TAILEDITS_INPROGRESS_KEY, true);
     journal = new Journal(conf, TEST_LOG_DIR, JID, StartupOption.REGULAR,
       mockErrorReporter);
-    journal.format(FAKE_NSINFO);
+    journal.format(FAKE_NSINFO, false);
   }
   
-  @After
+  @AfterEach
   public void verifyNoStorageErrors() throws Exception{
     Mockito.verify(mockErrorReporter, Mockito.never())
       .reportErrorOnFile(Mockito.<File>any());
   }
   
-  @After
+  @AfterEach
   public void cleanup() {
     IOUtils.closeStream(journal);
   }
@@ -105,18 +115,61 @@ public class TestJournal {
     // verify the in-progress editlog segment
     SegmentStateProto segmentState = journal.getSegmentInfo(1);
     assertTrue(segmentState.getIsInProgress());
-    Assert.assertEquals(numTxns, segmentState.getEndTxId());
-    Assert.assertEquals(1, segmentState.getStartTxId());
+    assertEquals(numTxns, segmentState.getEndTxId());
+    assertEquals(1, segmentState.getStartTxId());
     
     // finalize the segment and verify it again
     journal.finalizeLogSegment(makeRI(3), 1, numTxns);
     segmentState = journal.getSegmentInfo(1);
     assertFalse(segmentState.getIsInProgress());
-    Assert.assertEquals(numTxns, segmentState.getEndTxId());
-    Assert.assertEquals(1, segmentState.getStartTxId());
+    assertEquals(numTxns, segmentState.getEndTxId());
+    assertEquals(1, segmentState.getStartTxId());
   }
 
-  @Test (timeout = 10000)
+  /**
+   * Test for HDFS-14557 to ensure that a edit file that failed to fully
+   * allocate and has a header byte of -1 is moved aside to allow startup
+   * to progress.
+   */
+  @Test
+  public void testEmptyEditsInProgressMovedAside() throws Exception {
+    // First, write 5 transactions to the journal
+    journal.startLogSegment(makeRI(1), 1,
+        NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION - 1);
+    final int numTxns = 5;
+    byte[] ops = QJMTestUtil.createTxnData(1, 5);
+    journal.journal(makeRI(2), 1, 1, numTxns, ops);
+    // Now close the segment
+    journal.finalizeLogSegment(makeRI(3), 1, numTxns);
+
+    // Create a new segment creating a new edits_inprogress file
+    journal.startLogSegment(makeRI(4), 6,
+        NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION - 1);
+    ops = QJMTestUtil.createTxnData(6, 5);
+    journal.journal(makeRI(5), 6, 6, numTxns, ops);
+    File eip = journal.getStorage().getInProgressEditLog(6);
+
+    // Now stop the journal without finalizing the segment
+    journal.close();
+
+    // Now "zero out" the EIP file with -1 bytes, similar to how it would
+    // appear if the pre-allocation failed
+    RandomAccessFile rwf = new RandomAccessFile(eip, "rw");
+    for (int i=0; i<rwf.length(); i++) {
+      rwf.write(-1);
+    }
+    rwf.close();
+
+    // Finally start the Journal again, and ensure the "zeroed out" file
+    // is renamed with a .empty extension
+    journal = new Journal(conf, TEST_LOG_DIR, JID, StartupOption.REGULAR,
+        mockErrorReporter);
+    File movedTo = new File(eip.getAbsolutePath()+".empty");
+    assertTrue(movedTo.exists());
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testEpochHandling() throws Exception {
     assertEquals(0, journal.getLastPromisedEpoch());
     NewEpochResponseProto newEpoch =
@@ -150,7 +203,8 @@ public class TestJournal {
     }
   }
   
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testMaintainCommittedTxId() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 1);
     journal.startLogSegment(makeRI(1), 1,
@@ -166,7 +220,8 @@ public class TestJournal {
     assertEquals(3, journal.getCommittedTxnId());
   }
   
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testRestartJournal() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 1);
     journal.startLogSegment(makeRI(1), 1,
@@ -192,7 +247,8 @@ public class TestJournal {
     assertEquals(1, newEpoch.getLastSegmentTxId());
   }
   
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testFormatResetsCachedValues() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 12345L);
     journal.startLogSegment(new RequestInfo(JID, null, 12345L, 1L, 0L), 1L,
@@ -207,7 +263,7 @@ public class TestJournal {
     // Clear the storage directory before reformatting it
     journal.getStorage().getJournalManager()
         .getStorageDirectory().clearDirectory();
-    journal.format(FAKE_NSINFO_2);
+    journal.format(FAKE_NSINFO_2, false);
     
     assertEquals(0, journal.getLastPromisedEpoch());
     assertEquals(0, journal.getLastWriterEpoch());
@@ -219,7 +275,8 @@ public class TestJournal {
    * before any transactions are written, that the next newEpoch() call
    * returns the prior segment txid as its most recent segment.
    */
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testNewEpochAtBeginningOfSegment() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 1);
     journal.startLogSegment(makeRI(1), 1,
@@ -233,9 +290,10 @@ public class TestJournal {
     assertEquals(1, resp.getLastSegmentTxId());
   }
   
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testJournalLocking() throws Exception {
-    Assume.assumeTrue(journal.getStorage().getStorageDir(0).isLockSupported());
+    assumeTrue(journal.getStorage().getStorageDir(0).isLockSupported());
     StorageDirectory sd = journal.getStorage().getStorageDir(0);
     File lockFile = new File(sd.getRoot(), Storage.STORAGE_FILE_LOCK);
     
@@ -266,7 +324,8 @@ public class TestJournal {
    * Test finalizing a segment after some batch of edits were missed.
    * This should fail, since we validate the log before finalization.
    */
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testFinalizeWhenEditsAreMissed() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 1);
     journal.startLogSegment(makeRI(1), 1,
@@ -302,7 +361,8 @@ public class TestJournal {
    * Ensure that finalizing a segment which doesn't exist throws the
    * appropriate exception.
    */
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testFinalizeMissingSegment() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 1);
     try {
@@ -323,7 +383,8 @@ public class TestJournal {
    * Eventually, the connection comes back, and the NN tries to start a new
    * segment at a higher txid. This should abort the old one and succeed.
    */
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testAbortOldSegmentIfFinalizeIsMissed() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 1);
     
@@ -354,7 +415,8 @@ public class TestJournal {
    * Test behavior of startLogSegment() when a segment with the
    * same transaction ID already exists.
    */
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testStartLogSegmentWhenAlreadyExists() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 1);
     
@@ -407,7 +469,8 @@ public class TestJournal {
     return new RequestInfo(JID, null, 1, serial, 0);
   }
   
-  @Test (timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testNamespaceVerification() throws Exception {
     journal.newEpoch(FAKE_NSINFO, 1);
 
@@ -425,7 +488,7 @@ public class TestJournal {
     try {
       // Format again here and to format the non-empty directories in
       // journal node.
-      journal.format(FAKE_NSINFO);
+      journal.format(FAKE_NSINFO, false);
       fail("Did not fail to format non-empty directories in journal node.");
     } catch (IOException ioe) {
       GenericTestUtils.assertExceptionContains(
@@ -434,4 +497,51 @@ public class TestJournal {
     }
   }
 
+  @Test
+  public void testReadFromCache() throws Exception {
+    journal.newEpoch(FAKE_NSINFO, 1);
+    journal.startLogSegment(makeRI(1), 1,
+        NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION);
+    journal.journal(makeRI(2), 1, 1, 5, QJMTestUtil.createTxnData(1, 5));
+    journal.journal(makeRI(3), 1, 6, 5, QJMTestUtil.createTxnData(6, 5));
+    journal.journal(makeRI(4), 1, 11, 5, QJMTestUtil.createTxnData(11, 5));
+    assertJournaledEditsTxnCountAndContents(1, 7, 7,
+        NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION);
+    assertJournaledEditsTxnCountAndContents(1, 30, 15,
+        NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION);
+
+    journal.finalizeLogSegment(makeRI(5), 1, 15);
+    int newLayoutVersion = NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION - 1;
+    journal.startLogSegment(makeRI(6), 16, newLayoutVersion);
+    journal.journal(makeRI(7), 16, 16, 5, QJMTestUtil.createTxnData(16, 5));
+
+    assertJournaledEditsTxnCountAndContents(16, 10, 20, newLayoutVersion);
+  }
+
+  private void assertJournaledEditsTxnCountAndContents(int startTxn,
+      int requestedMaxTxns, int expectedEndTxn, int layoutVersion)
+      throws Exception {
+    GetJournaledEditsResponseProto result =
+        journal.getJournaledEdits(startTxn, requestedMaxTxns);
+    int expectedTxnCount = expectedEndTxn - startTxn + 1;
+    ByteArrayOutputStream headerBytes = new ByteArrayOutputStream();
+    EditLogFileOutputStream.writeHeader(layoutVersion,
+        new DataOutputStream(headerBytes));
+    assertEquals(expectedTxnCount, result.getTxnCount());
+    assertArrayEquals(Bytes.concat(headerBytes.toByteArray(),
+            QJMTestUtil.createTxnData(startTxn, expectedTxnCount)),
+        result.getEditLog().toByteArray());
+  }
+
+  @Test
+  public void testFormatNonEmptyStorageDirectoriesWhenforceOptionIsTrue()
+      throws Exception {
+    try {
+      // Format again here and to format the non-empty directories in
+      // journal node.
+      journal.format(FAKE_NSINFO, true);
+    } catch (IOException ioe) {
+      fail("Format should be success with force option.");
+    }
+  }
 }

@@ -22,14 +22,14 @@ import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.channels.ClosedChannelException;
-import java.util.LinkedList;
+import java.util.Collection;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.DF;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.server.datanode.DirectoryScanner.ReportCompiler;
 import org.apache.hadoop.hdfs.server.datanode.FileIoProvider;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
-import org.apache.hadoop.hdfs.server.datanode.DirectoryScanner.ReportCompiler;
 import org.apache.hadoop.hdfs.server.datanode.checker.VolumeCheckResult;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.DataNodeVolumeMetrics;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
@@ -37,6 +37,7 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 
 public class ExternalVolumeImpl implements FsVolumeSpi {
+  private final String defaultStroageId = "test";
   @Override
   public FsVolumeReference obtainReference() throws ClosedChannelException {
     return null;
@@ -54,7 +55,7 @@ public class ExternalVolumeImpl implements FsVolumeSpi {
 
   @Override
   public String getStorageID() {
-    return null;
+    return defaultStroageId;
   }
 
   @Override
@@ -64,6 +65,11 @@ public class ExternalVolumeImpl implements FsVolumeSpi {
 
   @Override
   public boolean isTransientStorage() {
+    return false;
+  }
+
+  @Override
+  public boolean isRAMStorage() {
     return false;
   }
 
@@ -117,10 +123,8 @@ public class ExternalVolumeImpl implements FsVolumeSpi {
   }
 
   @Override
-  public LinkedList<ScanInfo> compileReport(String bpid,
-      LinkedList<ScanInfo> report, ReportCompiler reportCompiler)
-      throws InterruptedException, IOException {
-    return null;
+  public void compileReport(String bpid, Collection<ScanInfo> report,
+      ReportCompiler reportCompiler) throws InterruptedException, IOException {
   }
 
   @Override

@@ -17,10 +17,10 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.mockito.Matchers.anyBoolean;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 
@@ -28,12 +28,14 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.io.FileOutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.EnumMap;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.PermissionStatus;
@@ -42,13 +44,13 @@ import org.apache.hadoop.hdfs.util.Holder;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
 
 public class TestEditLogFileInputStream {
-  private static final Log LOG =
-      LogFactory.getLog(TestEditLogFileInputStream.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestEditLogFileInputStream.class);
   private static final byte[] FAKE_LOG_DATA = TestEditLog.HADOOP20_SOME_EDITS;
 
   private final static File TEST_DIR = PathUtils
@@ -71,11 +73,28 @@ public class TestEditLogFileInputStream {
     // Read the edit log and verify that we got all of the data.
     EnumMap<FSEditLogOpCodes, Holder<Integer>> counts = FSImageTestUtil
         .countEditLogOpTypes(elis);
-    assertThat(counts.get(FSEditLogOpCodes.OP_ADD).held, is(1));
-    assertThat(counts.get(FSEditLogOpCodes.OP_SET_GENSTAMP_V1).held, is(1));
-    assertThat(counts.get(FSEditLogOpCodes.OP_CLOSE).held, is(1));
+    assertThat(counts.get(FSEditLogOpCodes.OP_ADD).held).isEqualTo(1);
+    assertThat(counts.get(FSEditLogOpCodes.OP_SET_GENSTAMP_V1).held).isEqualTo(1);
+    assertThat(counts.get(FSEditLogOpCodes.OP_CLOSE).held).isEqualTo(1);
 
     // Check that length header was picked up.
+    assertEquals(FAKE_LOG_DATA.length, elis.length());
+    elis.close();
+  }
+
+  @Test
+  public void testByteStringLog() throws Exception {
+    ByteString bytes = ByteString.copyFrom(FAKE_LOG_DATA);
+    EditLogInputStream elis = EditLogFileInputStream.fromByteString(bytes,
+        HdfsServerConstants.INVALID_TXID, HdfsServerConstants.INVALID_TXID,
+        true);
+    // Read the edit log and verify that all of the data is present
+    EnumMap<FSEditLogOpCodes, Holder<Integer>> counts = FSImageTestUtil
+        .countEditLogOpTypes(elis);
+    assertThat(counts.get(FSEditLogOpCodes.OP_ADD).held).isEqualTo(1);
+    assertThat(counts.get(FSEditLogOpCodes.OP_SET_GENSTAMP_V1).held).isEqualTo(1);
+    assertThat(counts.get(FSEditLogOpCodes.OP_CLOSE).held).isEqualTo(1);
+
     assertEquals(FAKE_LOG_DATA.length, elis.length());
     elis.close();
   }
@@ -84,7 +103,8 @@ public class TestEditLogFileInputStream {
    * Regression test for HDFS-8965 which verifies that
    * FSEditLogFileInputStream#scanOp verifies Op checksums.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testScanCorruptEditLog() throws Exception {
     Configuration conf = new Configuration();
     File editLog = new File(GenericTestUtils.getTempPath("testCorruptEditLog"));
@@ -128,13 +148,13 @@ public class TestEditLogFileInputStream {
     rwf.close();
 
     EditLogFileInputStream elis = new EditLogFileInputStream(editLog);
-    Assert.assertEquals(NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION,
+    assertEquals(NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION,
         elis.getVersion(true));
-    Assert.assertEquals(1, elis.scanNextOp());
+    assertEquals(1, elis.scanNextOp());
     LOG.debug("Read transaction 1 from " + editLog);
     try {
       elis.scanNextOp();
-      Assert.fail("Expected scanNextOp to fail when op checksum was corrupt.");
+      fail("Expected scanNextOp to fail when op checksum was corrupt.");
     } catch (IOException e) {
       LOG.debug("Caught expected checksum error when reading corrupt " +
           "transaction 2", e);
@@ -142,4 +162,26 @@ public class TestEditLogFileInputStream {
     }
     elis.close();
   }
+
+  /**
+   * Regression test for HDFS-14557 which verifies that an edit log filled
+   * with only "-1" bytes is moved aside and does not prevent the Journal
+   * node from starting.
+   */
+  @Test
+  @Timeout(value = 60)
+  public void testScanEditThatFailedDuringPreAllocate() throws Exception {
+    Configuration conf = new Configuration();
+    File editLog = new File(GenericTestUtils.getTempPath("testCorruptEditLog"));
+    FileOutputStream os = new FileOutputStream(editLog);
+    for (int i=0; i<1024; i++) {
+      os.write(-1);
+    }
+    os.close();
+    FSEditLogLoader.EditLogValidation val =
+        EditLogFileInputStream.scanEditLog(editLog, 1234, false);
+    assertEquals(true, val.hasCorruptHeader());
+    assertEquals(HdfsServerConstants.INVALID_TXID, val.getEndTxId());
+  }
+
 }

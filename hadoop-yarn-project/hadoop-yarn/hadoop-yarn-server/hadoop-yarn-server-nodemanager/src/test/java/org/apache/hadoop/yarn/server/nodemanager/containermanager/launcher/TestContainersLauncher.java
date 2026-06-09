@@ -30,24 +30,29 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.ContainerManag
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.ApplicationImpl;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerImpl;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.InjectMocks;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
-import org.mockito.internal.util.reflection.Whitebox;
 
 import java.io.IOException;
-import java.util.Collections;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 
-import static org.junit.Assert.assertEquals;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
 /**
  * Tests to verify all the Container's Launcher Events in
@@ -97,19 +102,18 @@ public class TestContainersLauncher {
   @Mock
   private ContainerLaunch containerLaunch;
 
-  @InjectMocks
-  private ContainersLauncher tempContainersLauncher = new ContainersLauncher(
-      context, dispatcher, exec, dirsHandler, containerManager);
-
   private ContainersLauncher spy;
 
-  @Before
+  @BeforeEach
   public void setup() throws IllegalArgumentException, IllegalAccessException {
     MockitoAnnotations.initMocks(this);
+    ContainersLauncher tempContainersLauncher = new ContainersLauncher(
+        context, dispatcher, exec, dirsHandler, containerManager);
     ConcurrentMap<ApplicationId, Application> applications =
         new ConcurrentHashMap<>();
     applications.put(appId, app1);
     spy = spy(tempContainersLauncher);
+    spy.containerLauncher = containerLauncher;
     conf = doReturn(conf).when(spy).getConfig();
     when(event.getContainer()).thenReturn(container);
     when(container.getContainerId()).thenReturn(containerId);
@@ -122,10 +126,8 @@ public class TestContainersLauncher {
   @SuppressWarnings("unchecked")
   @Test
   public void testLaunchContainerEvent()
-      throws IllegalArgumentException, IllegalAccessException {
-    Map<ContainerId, ContainerLaunch> dummyMap =
-        (Map<ContainerId, ContainerLaunch>) Whitebox.getInternalState(spy,
-            "running");
+      throws IllegalArgumentException {
+    Map<ContainerId, ContainerLaunch> dummyMap = spy.running;
     when(event.getType())
         .thenReturn(ContainersLauncherEventType.LAUNCH_CONTAINER);
     assertEquals(0, dummyMap.size());
@@ -138,10 +140,8 @@ public class TestContainersLauncher {
   @SuppressWarnings("unchecked")
   @Test
   public void testRelaunchContainerEvent()
-      throws IllegalArgumentException, IllegalAccessException {
-    Map<ContainerId, ContainerLaunch> dummyMap =
-        (Map<ContainerId, ContainerLaunch>) Whitebox.getInternalState(spy,
-            "running");
+      throws IllegalArgumentException {
+    Map<ContainerId, ContainerLaunch> dummyMap = spy.running;
     when(event.getType())
         .thenReturn(ContainersLauncherEventType.RELAUNCH_CONTAINER);
     assertEquals(0, dummyMap.size());
@@ -158,10 +158,8 @@ public class TestContainersLauncher {
   @SuppressWarnings("unchecked")
   @Test
   public void testRecoverContainerEvent()
-      throws IllegalArgumentException, IllegalAccessException {
-    Map<ContainerId, ContainerLaunch> dummyMap =
-        (Map<ContainerId, ContainerLaunch>) Whitebox.getInternalState(spy,
-            "running");
+      throws IllegalArgumentException {
+    Map<ContainerId, ContainerLaunch> dummyMap = spy.running;
     when(event.getType())
         .thenReturn(ContainersLauncherEventType.RECOVER_CONTAINER);
     assertEquals(0, dummyMap.size());
@@ -177,7 +175,7 @@ public class TestContainersLauncher {
 
   @Test
   public void testRecoverPausedContainerEvent()
-      throws IllegalArgumentException, IllegalAccessException {
+      throws IllegalArgumentException {
     when(event.getType())
         .thenReturn(ContainersLauncherEventType.RECOVER_PAUSED_CONTAINER);
     spy.handle(event);
@@ -188,39 +186,38 @@ public class TestContainersLauncher {
   @Test
   public void testCleanupContainerEvent()
       throws IllegalArgumentException, IllegalAccessException, IOException {
-    Map<ContainerId, ContainerLaunch> dummyMap = Collections
-        .synchronizedMap(new HashMap<ContainerId, ContainerLaunch>());
-    dummyMap.put(containerId, containerLaunch);
-    Whitebox.setInternalState(spy, "running", dummyMap);
+    spy.running.clear();
+    spy.running.put(containerId, containerLaunch);
+
     when(event.getType())
         .thenReturn(ContainersLauncherEventType.CLEANUP_CONTAINER);
-    doNothing().when(containerLaunch).cleanupContainer();
+    assertEquals(1, spy.running.size());
     spy.handle(event);
-    assertEquals(0, dummyMap.size());
-    Mockito.verify(containerLaunch, Mockito.times(1)).cleanupContainer();
+    assertEquals(0, spy.running.size());
+    Mockito.verify(containerLauncher, Mockito.times(1))
+        .submit(Mockito.any(ContainerCleanup.class));
   }
 
   @Test
   public void testCleanupContainerForReINITEvent()
       throws IllegalArgumentException, IllegalAccessException, IOException {
-    Map<ContainerId, ContainerLaunch> dummyMap = Collections
-        .synchronizedMap(new HashMap<ContainerId, ContainerLaunch>());
-    dummyMap.put(containerId, containerLaunch);
-    Whitebox.setInternalState(spy, "running", dummyMap);
+    spy.running.clear();
+    spy.running.put(containerId, containerLaunch);
+
     when(event.getType())
         .thenReturn(ContainersLauncherEventType.CLEANUP_CONTAINER_FOR_REINIT);
-    doNothing().when(containerLaunch).cleanupContainer();
+    final List<ContainerId> cleanedContainers = new ArrayList<>();
+    doAnswer(invocation -> {
+      cleanedContainers.add((ContainerId)invocation.getArguments()[1]);
+      return null;
+    }).when(spy).cleanup(any(), any(), anyBoolean());
     spy.handle(event);
-    assertEquals(0, dummyMap.size());
-    Mockito.verify(containerLaunch, Mockito.times(1)).cleanupContainer();
+    assertEquals(containerId, cleanedContainers.get(0), "container not cleaned");
   }
 
   @Test
   public void testSignalContainerEvent()
       throws IllegalArgumentException, IllegalAccessException, IOException {
-    Map<ContainerId, ContainerLaunch> dummyMap = Collections
-        .synchronizedMap(new HashMap<ContainerId, ContainerLaunch>());
-    dummyMap.put(containerId, containerLaunch);
 
     SignalContainersLauncherEvent dummyEvent =
         mock(SignalContainersLauncherEvent.class);
@@ -230,7 +227,8 @@ public class TestContainersLauncher {
     when(containerId.getApplicationAttemptId().getApplicationId())
         .thenReturn(appId);
 
-    Whitebox.setInternalState(spy, "running", dummyMap);
+    spy.running.clear();
+    spy.running.put(containerId, containerLaunch);
     when(dummyEvent.getType())
         .thenReturn(ContainersLauncherEventType.SIGNAL_CONTAINER);
     when(dummyEvent.getCommand())
@@ -238,7 +236,7 @@ public class TestContainersLauncher {
     doNothing().when(containerLaunch)
         .signalContainer(SignalContainerCommand.GRACEFUL_SHUTDOWN);
     spy.handle(dummyEvent);
-    assertEquals(1, dummyMap.size());
+    assertEquals(1, spy.running.size());
     Mockito.verify(containerLaunch, Mockito.times(1))
         .signalContainer(SignalContainerCommand.GRACEFUL_SHUTDOWN);
   }
@@ -246,30 +244,26 @@ public class TestContainersLauncher {
   @Test
   public void testPauseContainerEvent()
       throws IllegalArgumentException, IllegalAccessException, IOException {
-    Map<ContainerId, ContainerLaunch> dummyMap = Collections
-        .synchronizedMap(new HashMap<ContainerId, ContainerLaunch>());
-    dummyMap.put(containerId, containerLaunch);
-    Whitebox.setInternalState(spy, "running", dummyMap);
+    spy.running.clear();
+    spy.running.put(containerId, containerLaunch);
     when(event.getType())
         .thenReturn(ContainersLauncherEventType.PAUSE_CONTAINER);
     doNothing().when(containerLaunch).pauseContainer();
     spy.handle(event);
-    assertEquals(1, dummyMap.size());
+    assertEquals(1, spy.running.size());
     Mockito.verify(containerLaunch, Mockito.times(1)).pauseContainer();
   }
 
   @Test
   public void testResumeContainerEvent()
       throws IllegalArgumentException, IllegalAccessException, IOException {
-    Map<ContainerId, ContainerLaunch> dummyMap = Collections
-        .synchronizedMap(new HashMap<ContainerId, ContainerLaunch>());
-    dummyMap.put(containerId, containerLaunch);
-    Whitebox.setInternalState(spy, "running", dummyMap);
+    spy.running.clear();
+    spy.running.put(containerId, containerLaunch);
     when(event.getType())
         .thenReturn(ContainersLauncherEventType.RESUME_CONTAINER);
     doNothing().when(containerLaunch).resumeContainer();
     spy.handle(event);
-    assertEquals(1, dummyMap.size());
+    assertEquals(1, spy.running.size());
     Mockito.verify(containerLaunch, Mockito.times(1)).resumeContainer();
   }
 }

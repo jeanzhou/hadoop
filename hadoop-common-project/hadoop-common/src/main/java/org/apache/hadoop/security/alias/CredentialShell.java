@@ -25,9 +25,10 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.security.alias.CredentialProvider.CredentialEntry;
+import org.apache.hadoop.classification.VisibleForTesting;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.tools.CommandShell;
@@ -44,7 +45,8 @@ public class CredentialShell extends CommandShell {
       "   [-help]\n" +
       "   [" + CreateCommand.USAGE + "]\n" +
       "   [" + DeleteCommand.USAGE + "]\n" +
-      "   [" + ListCommand.USAGE + "]\n";
+      "   [" + ListCommand.USAGE + "]\n" +
+      "   [" + CheckCommand.USAGE + "]\n";
   @VisibleForTesting
   public static final String NO_VALID_PROVIDERS =
       "There are no valid (non-transient) providers configured.\n" +
@@ -66,11 +68,12 @@ public class CredentialShell extends CommandShell {
    * <pre>
    * % hadoop credential create alias [-provider providerPath]
    * % hadoop credential list [-provider providerPath]
+   * % hadoop credential check alias [-provider providerPath]
    * % hadoop credential delete alias [-provider providerPath] [-f]
    * </pre>
-   * @param args
+   * @param args args.
    * @return 0 if the argument(s) were recognized, 1 otherwise
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   @Override
   protected int init(String[] args) throws IOException {
@@ -86,6 +89,11 @@ public class CredentialShell extends CommandShell {
           return 1;
         }
         setSubCommand(new CreateCommand(args[++i]));
+      } else if (args[i].equals("check")) {
+        if (i == args.length - 1) {
+          return 1;
+        }
+        setSubCommand(new CheckCommand(args[++i]));
       } else if (args[i].equals("delete")) {
         if (i == args.length - 1) {
           return 1;
@@ -119,14 +127,14 @@ public class CredentialShell extends CommandShell {
 
   @Override
   public String getCommandUsage() {
-    StringBuffer sbuf = new StringBuffer(USAGE_PREFIX + COMMANDS);
+    StringBuilder sbuf = new StringBuilder(USAGE_PREFIX + COMMANDS);
     String banner = StringUtils.repeat("=", 66);
-    sbuf.append(banner + "\n");
-    sbuf.append(CreateCommand.USAGE + ":\n\n" + CreateCommand.DESC + "\n");
-    sbuf.append(banner + "\n");
-    sbuf.append(DeleteCommand.USAGE + ":\n\n" + DeleteCommand.DESC + "\n");
-    sbuf.append(banner + "\n");
-    sbuf.append(ListCommand.USAGE + ":\n\n" + ListCommand.DESC + "\n");
+    sbuf.append(banner + "\n")
+        .append(CreateCommand.USAGE + ":\n\n" + CreateCommand.DESC + "\n")
+        .append(banner + "\n")
+        .append(DeleteCommand.USAGE + ":\n\n" + DeleteCommand.DESC + "\n")
+        .append(banner + "\n")
+        .append(ListCommand.USAGE + ":\n\n" + ListCommand.DESC + "\n");
     return sbuf.toString();
   }
 
@@ -293,6 +301,96 @@ public class CredentialShell extends CommandShell {
     }
   }
 
+  private class CheckCommand extends Command {
+    public static final String USAGE = "check <alias> [-value alias-value] " +
+        "[-provider provider-path] [-strict]";
+    public static final String DESC =
+        "The check subcommand check a password for the name\n" +
+        "specified as the <alias> argument within the provider indicated\n" +
+        "through the -provider argument. If -strict is supplied, fail\n" +
+        "immediately if the provider requires a password and none is given.\n" +
+        "If -value is provided, use that for the value of the credential\n" +
+        "instead of prompting the user.";
+
+    private String alias = null;
+
+    CheckCommand(String alias) {
+      this.alias = alias;
+    }
+
+    public boolean validate() {
+      if (alias == null) {
+        getOut().println("There is no alias specified. Please provide the" +
+            "mandatory <alias>. See the usage description with -help.");
+        return false;
+      }
+      if (alias.equals("-help")) {
+        return true;
+      }
+      try {
+        provider = getCredentialProvider();
+        if (provider == null) {
+          return false;
+        } else if (provider.needsPassword()) {
+          if (strict) {
+            getOut().println(provider.noPasswordError());
+            return false;
+          } else {
+            getOut().println(provider.noPasswordWarning());
+          }
+        }
+      } catch (IOException e) {
+        e.printStackTrace(getErr());
+      }
+      return true;
+    }
+
+    public void execute() throws IOException, NoSuchAlgorithmException {
+      if (alias.equals("-help")) {
+        doHelp();
+        return;
+      }
+      warnIfTransientProvider();
+      getOut().println("Checking aliases for CredentialProvider: " +
+          provider.toString());
+      try {
+        PasswordReader c = getPasswordReader();
+        if (c == null) {
+          throw new IOException("No console available for checking user.");
+        }
+
+        char[] password = null;
+        if (value != null) {
+          // testing only
+          password = value.toCharArray();
+        } else {
+          password = c.readPassword("Enter alias password: ");
+        }
+        CredentialEntry credentialEntry = provider.getCredentialEntry(alias);
+        if(credentialEntry == null) {
+          // Fail the password match when alias not found
+          getOut().println("Password match failed for " + alias + ".");
+        } else {
+          char[] storePassword = credentialEntry.getCredential();
+          String beMatch =
+              Arrays.equals(storePassword, password) ? "success" : "failed";
+
+          getOut().println("Password match " + beMatch + " for " + alias + ".");
+        }
+      } catch (IOException e) {
+        getOut().println("Cannot check aliases for CredentialProvider: " +
+            provider.toString()
+            + ": " + e.getMessage());
+        throw e;
+      }
+    }
+
+    @Override
+    public String getUsage() {
+      return USAGE + ":\n\n" + DESC;
+    }
+  }
+
   private class CreateCommand extends Command {
     public static final String USAGE = "create <alias> [-value alias-value] " +
         "[-provider provider-path] [-strict]";
@@ -431,7 +529,7 @@ public class CredentialShell extends CommandShell {
    *
    * @param args
    *          Command line arguments
-   * @throws Exception
+   * @throws Exception exception.
    */
   public static void main(String[] args) throws Exception {
     int res = ToolRunner.run(new Configuration(), new CredentialShell(), args);

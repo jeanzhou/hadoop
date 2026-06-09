@@ -24,8 +24,8 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -38,13 +38,13 @@ import org.apache.hadoop.yarn.server.api.records.MasterKey;
 import org.apache.hadoop.yarn.server.security.BaseNMTokenSecretManager;
 import org.apache.hadoop.yarn.server.security.MasterKeyData;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 
 public class NMTokenSecretManagerInRM extends BaseNMTokenSecretManager {
 
-  private static Log LOG = LogFactory
-      .getLog(NMTokenSecretManagerInRM.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(NMTokenSecretManagerInRM.class);
 
   private MasterKeyData nextMasterKey;
   private Configuration conf;
@@ -191,14 +191,14 @@ public class NMTokenSecretManagerInRM extends BaseNMTokenSecretManager {
 
   public NMToken createAndGetNMToken(String applicationSubmitter,
       ApplicationAttemptId appAttemptId, Container container) {
+    this.writeLock.lock();
     try {
-      this.writeLock.lock();
       HashSet<NodeId> nodeSet = this.appAttemptToNodeKeyMap.get(appAttemptId);
       NMToken nmToken = null;
       if (nodeSet != null) {
         if (!nodeSet.contains(container.getNodeId())) {
-          LOG.info("Sending NMToken for nodeId : " + container.getNodeId()
-              + " for container : " + container.getId());
+          LOG.debug("Sending NMToken for nodeId : {} for container : {}",
+              container.getNodeId(), container.getId());
           Token token =
               createNMToken(container.getId().getApplicationAttemptId(),
                 container.getNodeId(), applicationSubmitter);
@@ -213,8 +213,8 @@ public class NMTokenSecretManagerInRM extends BaseNMTokenSecretManager {
   }
 
   public void registerApplicationAttempt(ApplicationAttemptId appAttemptId) {
+    this.writeLock.lock();
     try {
-      this.writeLock.lock();
       this.appAttemptToNodeKeyMap.put(appAttemptId, new HashSet<NodeId>());
     } finally {
       this.writeLock.unlock();
@@ -225,8 +225,8 @@ public class NMTokenSecretManagerInRM extends BaseNMTokenSecretManager {
   @VisibleForTesting
   public boolean isApplicationAttemptRegistered(
       ApplicationAttemptId appAttemptId) {
+    this.readLock.lock();
     try {
-      this.readLock.lock();
       return this.appAttemptToNodeKeyMap.containsKey(appAttemptId);
     } finally {
       this.readLock.unlock();
@@ -237,8 +237,8 @@ public class NMTokenSecretManagerInRM extends BaseNMTokenSecretManager {
   @VisibleForTesting
   public boolean isApplicationAttemptNMTokenPresent(
       ApplicationAttemptId appAttemptId, NodeId nodeId) {
+    this.readLock.lock();
     try {
-      this.readLock.lock();
       HashSet<NodeId> nodes = this.appAttemptToNodeKeyMap.get(appAttemptId);
       if (nodes != null && nodes.contains(nodeId)) {
         return true;
@@ -251,8 +251,8 @@ public class NMTokenSecretManagerInRM extends BaseNMTokenSecretManager {
   }
   
   public void unregisterApplicationAttempt(ApplicationAttemptId appAttemptId) {
+    this.writeLock.lock();
     try {
-      this.writeLock.lock();
       this.appAttemptToNodeKeyMap.remove(appAttemptId);
     } finally {
       this.writeLock.unlock();
@@ -262,11 +262,11 @@ public class NMTokenSecretManagerInRM extends BaseNMTokenSecretManager {
   /**
    * This is to be called when NodeManager reconnects or goes down. This will
    * remove if NMTokens if present for any running application from cache.
-   * @param nodeId
+   * @param nodeId Node Id.
    */
   public void removeNodeKey(NodeId nodeId) {
+    this.writeLock.lock();
     try {
-      this.writeLock.lock();
       Iterator<HashSet<NodeId>> appNodeKeySetIterator =
           this.appAttemptToNodeKeyMap.values().iterator();
       while (appNodeKeySetIterator.hasNext()) {

@@ -32,7 +32,8 @@ enum command {
   SIGNAL_CONTAINER = 2,
   DELETE_AS_USER = 3,
   LAUNCH_DOCKER_CONTAINER = 4,
-  LIST_AS_USER = 5
+  LIST_AS_USER = 5,
+  SYNC_YARN_SYSFS = 6
 };
 
 enum operations {
@@ -47,7 +48,13 @@ enum operations {
   RUN_AS_USER_DELETE = 9,
   RUN_AS_USER_LAUNCH_DOCKER_CONTAINER = 10,
   RUN_DOCKER = 11,
-  RUN_AS_USER_LIST = 12
+  RUN_AS_USER_LIST = 12,
+  REMOVE_DOCKER_CONTAINER = 13,
+  INSPECT_DOCKER_CONTAINER = 14,
+  RUN_AS_USER_SYNC_YARN_SYSFS = 15,
+  EXEC_CONTAINER = 16,
+  RUN_RUNC_CONTAINER = 17,
+  REAP_RUNC_LAYER_MOUNTS = 18
 };
 
 #define NM_GROUP_KEY "yarn.nodemanager.linux-container-executor.group"
@@ -57,14 +64,37 @@ enum operations {
 #define CONTAINER_DIR_PATTERN NM_APP_DIR_PATTERN "/%s"
 #define CONTAINER_SCRIPT "launch_container.sh"
 #define CREDENTIALS_FILENAME "container_tokens"
+#define KEYSTORE_FILENAME "yarn_provided.keystore"
+#define TRUSTSTORE_FILENAME "yarn_provided.truststore"
 #define MIN_USERID_KEY "min.user.id"
 #define BANNED_USERS_KEY "banned.users"
 #define ALLOWED_SYSTEM_USERS_KEY "allowed.system.users"
+#define TERMINAL_SUPPORT_ENABLED_KEY "feature.terminal.enabled"
 #define DOCKER_SUPPORT_ENABLED_KEY "feature.docker.enabled"
 #define TC_SUPPORT_ENABLED_KEY "feature.tc.enabled"
+#define MOUNT_CGROUP_SUPPORT_ENABLED_KEY "feature.mount-cgroup.enabled"
+#define YARN_SYSFS_SUPPORT_ENABLED_KEY "feature.yarn.sysfs.enabled"
+#define RUNC_SUPPORT_ENABLED_KEY "feature.runc.enabled"
 #define TMP_DIR "tmp"
+#define ROOT_TMP_DIR "private_slash_tmp"
+#define ROOT_VAR_TMP_DIR "private_var_slash_tmp"
+#define COMMAND_FILE_SECTION "command-execution"
 
-extern struct passwd *user_detail;
+extern struct section executor_cfg;
+
+struct serialized_passwd {
+    char * pw_name;
+    uid_t pw_uid;
+    gid_t pw_gid;
+    char * pw_dir;
+    char * pw_shell;
+};
+
+//The user that launched the container executor typically (uid yarn/ group hadoop)
+extern struct serialized_passwd *user_detail;
+
+//function to make a deep clone of passwd to serialized_passwd
+void deep_copy_passwd(const struct passwd *src, struct serialized_passwd *dest);
 
 //function used to load the configurations present in the secure config
 void read_executor_config(const char* file_name);
@@ -99,10 +129,11 @@ int initialize_app(const char *user, const char *app_id,
 int launch_docker_container_as_user(const char * user, const char *app_id,
                               const char *container_id, const char *work_dir,
                               const char *script_name, const char *cred_file,
+                              const int https,
+                              const char *keystore_file, const char *truststore_file,
                               const char *pid_file, char* const* local_dirs,
                               char* const* log_dirs,
-                              const char *command_file,const char *resources_key,
-                              char* const* resources_values);
+                              const char *command_file);
 
 /*
  * Function used to launch a container as the provided user. It does the following :
@@ -116,8 +147,13 @@ int launch_docker_container_as_user(const char * user, const char *app_id,
  * @param container_id the container id
  * @param work_dir the working directory for the container.
  * @param script_name the name of the script to be run to launch the container.
- * @param cred_file the credentials file that needs to be compied to the
+ * @param cred_file the credentials file that needs to be copied to the
  * working directory.
+ * @param https 1 if a keystore and truststore will be provided, 0 if not
+ * @param keystore_file the keystore file that needs to be copied to the
+ * working directory.
+ * @param truststore_file the truststore file that needs to be copied to the
+ * working directory
  * @param pid_file file where pid of process should be written to
  * @param local_dirs nodemanager-local-directories to be used
  * @param log_dirs nodemanager-log-directories to be used
@@ -128,6 +164,8 @@ int launch_docker_container_as_user(const char * user, const char *app_id,
 int launch_container_as_user(const char * user, const char *app_id,
                      const char *container_id, const char *work_dir,
                      const char *script_name, const char *cred_file,
+                     const int https,
+                     const char *keystore_file, const char *truststore_file,
                      const char *pid_file, char* const* local_dirs,
                      char* const* log_dirs, const char *resources_key,
                      char* const* resources_value);
@@ -156,6 +194,9 @@ int delete_as_user(const char *user,
 // assumed to be an absolute path.
 int list_as_user(const char *target_dir);
 
+// Check the pidfile as the node manager. File should not exist.
+int check_pidfile_as_nm(const char* filename);
+
 // set the uid and gid of the node manager.  This is used when doing some
 // priviledged operations for setting the effective uid and gid.
 void set_nm_uid(uid_t user, gid_t group);
@@ -168,7 +209,7 @@ void set_nm_uid(uid_t user, gid_t group);
  *   3. Not in banned user list
  * Returns NULL on failure
  */
-struct passwd* check_user(const char *user);
+struct serialized_passwd* check_user(const char *user);
 
 // set the user
 int set_user(const char *user);
@@ -191,6 +232,10 @@ char *get_container_work_directory(const char *nm_root, const char *user,
 char *get_container_launcher_file(const char* work_dir);
 
 char *get_container_credentials_file(const char* work_dir);
+
+char *get_container_keystore_file(const char* work_dir);
+
+char *get_container_truststore_file(const char* work_dir);
 
 /**
  * Get the app log directory under log_root
@@ -221,6 +266,10 @@ int create_directory_for_user(const char* path);
 
 int change_user(uid_t user, gid_t group);
 
+int change_effective_user(uid_t user, gid_t group);
+
+int change_effective_user_to_nm();
+
 int mount_cgroup(const char *pair, const char *hierarchy);
 
 int check_dir(const char* npath, mode_t st_mode, mode_t desired,
@@ -232,9 +281,20 @@ int create_validate_dir(const char* npath, mode_t perm, const char* path,
 /** Check if a feature is enabled in the specified configuration. */
 int is_feature_enabled(const char* feature_key, int default_value,
                               struct section *cfg);
+char* get_exit_code_file(const char* pid_file);
+
+int wait_and_write_exit_code(pid_t pid, const char* exit_code_file);
+
+int setup_container_paths(const char* user, const char* app_id,
+    const char *container_id, const char* work_dir, const char* script_path,
+    const char *cred_path, int https, const char *keystore_file, const char *truststore_file,
+    char * const* local_dirs, char* const* log_dirs);
 
 /** Check if tc (traffic control) support is enabled in configuration. */
 int is_tc_support_enabled();
+
+/** Check if cgroup mount support is enabled in configuration. */
+int is_mount_cgroups_support_enabled();
 
 /**
  * Run a batch of tc commands that modify interface configuration
@@ -263,16 +323,61 @@ int is_docker_support_enabled();
  */
 int run_docker(const char *command_file);
 
+/**
+ * Run a docker command passing the command file as an argument with terminal.
+ */
+int run_docker_with_pty(const char *command_file);
+
+/**
+ * Run a docker command without a command file
+ */
+int exec_docker_command(char *docker_command, char **argv, int argc);
+
+/**
+ * Exec a container terminal.
+ */
+int exec_container(const char *command_file);
+
+/** Check if yarn sysfs is enabled in configuration. */
+int is_yarn_sysfs_support_enabled();
+
+/**
+ * Create YARN SysFS
+ */
+int create_yarn_sysfs(const char* user, const char *app_id,
+    const char *container_id, const char *work_dir, char* const* local_dirs);
+
+/**
+ * Sync YARN SysFS
+ */
+int sync_yarn_sysfs(char* const* local_dirs, const char *running_user,
+    const char *end_user, const char *app_id);
+
 /*
  * Compile the regex_str and determine if the input string matches.
  * Return 0 on match, 1 of non-match.
  */
 int execute_regex_match(const char *regex_str, const char *input);
 
-/**
- * Validate the docker image name matches the expected input.
- * Return 0 on success.
- */
-int validate_docker_image_name(const char *image_name);
-
 struct configuration* get_cfg();
+
+/**
+ * Flatten docker launch command
+ */
+char* flatten(char **args);
+
+/**
+ * Remove docker container
+ */
+int remove_docker_container(char **argv, int argc);
+
+/**
+ * Check if terminal feature is enabled
+ */
+int is_terminal_support_enabled();
+
+
+/**
+ * Check if runC feature is enabled
+ */
+int is_runc_support_enabled();

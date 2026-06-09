@@ -111,10 +111,25 @@ please raise your issues with them.
 ### Other properties
 
     <property>
+      <name>fs.AbstractFileSystem.oss.impl</name>
+      <value>org.apache.hadoop.fs.aliyun.oss.OSS</value>
+      <description>The implementation class of the OSS AbstractFileSystem.
+        If you want to use OSS as YARN’s resource storage dir via the
+        fs.defaultFS configuration property in Hadoop’s core-site.xml,
+        you should add this configuration to Hadoop's core-site.xml
+      </description>
+    </property>
+
+    <property>
       <name>fs.oss.endpoint</name>
       <description>Aliyun OSS endpoint to connect to. An up-to-date list is
         provided in the Aliyun OSS Documentation.
        </description>
+    </property>
+
+    <property>
+       <name>fs.oss.impl</name>
+       <value>org.apache.hadoop.fs.aliyun.oss.AliyunOSSFileSystem</value>
     </property>
 
     <property>
@@ -149,7 +164,7 @@ please raise your issues with them.
 
     <property>
       <name>fs.oss.attempts.maximum</name>
-      <value>20</value>
+      <value>10</value>
       <description>How many times we should retry commands on transient errors.</description>
     </property>
 
@@ -179,20 +194,110 @@ please raise your issues with them.
     </property>
 
     <property>
+      <name>fs.oss.upload.active.blocks</name>
+      <value>4</value>
+      <description>Active(Concurrent) upload blocks when uploading a file.</description>
+    </property>
+
+    <property>
+      <name>fs.oss.multipart.download.threads</name>
+      <value>10</value>
+      <description>The maximum number of threads allowed in the pool for multipart download and upload.</description>
+    </property>
+
+    <property>
+      <name>fs.oss.multipart.download.ahead.part.max.number</name>
+      <value>4</value>
+      <description>The maximum number of read ahead parts when reading a file.</description>
+    </property>
+
+    <property>
+      <name>fs.oss.max.total.tasks</name>
+      <value>128</value>
+      <description>The maximum queue number for multipart download and upload.</description>
+    </property>
+
+    <property>
+      <name>fs.oss.max.copy.threads</name>
+      <value>25</value>
+      <description>The maximum number of threads allowed in the pool for copy operations.</description>
+    </property>
+
+    <property>
+      <name>fs.oss.max.copy.tasks.per.dir</name>
+      <value>5</value>
+      <description>The maximum number of concurrent tasks allowed when copying a directory.</description>
+    </property>
+
+    <property>
       <name>fs.oss.multipart.upload.threshold</name>
       <value>20971520</value>
-      <description>Minimum size in bytes before we start a multipart uploads or copy.</description>
+      <description>Minimum size in bytes before we start a multipart uploads or copy.
+        Notice: This property is deprecated and will be removed in further version.
+      </description>
     </property>
 
     <property>
       <name>fs.oss.multipart.download.size</name>
-      <value>102400/value>
+      <value>524288/value>
       <description>Size in bytes in each request from ALiyun OSS.</description>
     </property>
 
     <property>
+      <name>fs.oss.list.version</name>
+      <value>2</value>
+      <description>Select which version of the OSS SDK's List Objects API to use.
+        Currently support 2(default) and 1(older API).
+      </description>
+    </property>
+
+    <property>
+      <name>fs.oss.fast.upload.buffer</name>
+      <value>disk</value>
+      <description>
+        The buffering mechanism to use.
+        Values: disk, array, bytebuffer, array_disk, bytebuffer_disk.
+
+        "disk" will use the directories listed in fs.oss.buffer.dir as
+        the location(s) to save data prior to being uploaded.
+
+        "array" uses arrays in the JVM heap
+
+        "bytebuffer" uses off-heap memory within the JVM.
+
+        Both "array" and "bytebuffer" will consume memory in a single stream up to the number
+        of blocks set by:
+
+            fs.oss.multipart.upload.size * fs.oss.upload.active.blocks.
+
+        If using either of these mechanisms, keep this value low
+
+        The total number of threads performing work across all threads is set by
+        fs.oss.multipart.download.threads(Currently fast upload shares the same thread tool with download.
+        The thread pool size is specified in "fs.oss.multipart.download.threads"),
+        with fs.oss.max.total.tasks values setting the number of queued work items.
+
+        "array_disk" and "bytebuffer_disk" support fallback to disk.
+      </description>
+    </property>
+
+    <property>
+      <name>fs.oss.fast.upload.memory.limit</name>
+      <value>1073741824</value>
+      <description>
+        Memory limit of "array_disk" and "bytebuffer_disk" upload buffers.
+        Will fallback to disk buffers if used memory reaches the limit.
+      </description>
+    </property>
+
+    <property>
       <name>fs.oss.buffer.dir</name>
-      <description>Comma separated list of directories to buffer OSS data before uploading to Aliyun OSS</description>
+      <value>${env.LOCAL_DIRS:-${hadoop.tmp.dir}}/oss</value>
+      <description>Comma separated list of directories to buffer
+        OSS data before uploading to Aliyun OSS.
+        Yarn container path will be used as default value on yarn applications,
+        otherwise fall back to hadoop.tmp.dir
+      </description>
     </property>
 
     <property>

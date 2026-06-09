@@ -18,16 +18,16 @@
 
 package org.apache.hadoop.hdfs.server.datanode;
 
-import static org.hamcrest.CoreMatchers.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.apache.hadoop.hdfs.server.protocol.DatanodeStorage.State.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Collections;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSClient;
@@ -47,11 +47,11 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.NumberReplicas;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.collect.Iterables;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterables;
 
 /**
  * Test proper {@link BlockManager} replication counting for {@link DatanodeStorage}s
@@ -61,7 +61,8 @@ import com.google.common.collect.Iterables;
  */
 public class TestReadOnlySharedStorage {
 
-  public static final Log LOG = LogFactory.getLog(TestReadOnlySharedStorage.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestReadOnlySharedStorage.class);
 
   private static final short NUM_DATANODES = 3;
   private static final int RO_NODE_INDEX = 0;
@@ -91,7 +92,7 @@ public class TestReadOnlySharedStorage {
    * Setup a {@link MiniDFSCluster}.
    * Create a block with both {@link State#NORMAL} and {@link State#READ_ONLY_SHARED} replicas.
    */
-  @Before
+  @BeforeEach
   public void setup() throws IOException, InterruptedException {
     conf = new HdfsConfiguration();
     SimulatedFSDataset.setFactory(conf);
@@ -136,10 +137,10 @@ public class TestReadOnlySharedStorage {
     block = extendedBlock.getLocalBlock();
     storedBlock = blockManager.getStoredBlock(block);
 
-    assertThat(locatedBlock.getLocations().length, is(1));
+    assertThat(locatedBlock.getLocations().length).isEqualTo(1);
     normalDataNode = locatedBlock.getLocations()[0];
     readOnlyDataNode = datanodeManager.getDatanode(cluster.getDataNodes().get(RO_NODE_INDEX).getDatanodeId());
-    assertThat(normalDataNode, is(not(readOnlyDataNode)));
+    assertThat(normalDataNode).isNotEqualTo(readOnlyDataNode);
     
     validateNumberReplicas(1);
     
@@ -151,7 +152,7 @@ public class TestReadOnlySharedStorage {
     waitForLocations(2);
   }
   
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     fs.delete(PATH, false);
     
@@ -166,7 +167,7 @@ public class TestReadOnlySharedStorage {
     for (int tries = 0; tries < RETRIES; )
       try {
         LocatedBlock locatedBlock = getLocatedBlock();
-        assertThat(locatedBlock.getLocations().length, is(locations));
+        assertThat(locatedBlock.getLocations().length).isEqualTo(locations);
         break;
       } catch (AssertionError e) {
         if (++tries < RETRIES) {
@@ -179,32 +180,32 @@ public class TestReadOnlySharedStorage {
   
   private LocatedBlock getLocatedBlock() throws IOException {
     LocatedBlocks locatedBlocks = client.getLocatedBlocks(PATH.toString(), 0, BLOCK_SIZE);
-    assertThat(locatedBlocks.getLocatedBlocks().size(), is(1));
+    assertThat(locatedBlocks.getLocatedBlocks().size()).isEqualTo(1);
     return Iterables.getOnlyElement(locatedBlocks.getLocatedBlocks());
   }
   
   private void validateStorageState(StorageReport[] storageReports, DatanodeStorage.State state) {
     for (StorageReport storageReport : storageReports) {
       DatanodeStorage storage = storageReport.getStorage();
-      assertThat(storage.getState(), is(state));
+      assertThat(storage.getState()).isEqualTo(state);
     }
   }
   
   private void validateNumberReplicas(int expectedReplicas) throws IOException {
     NumberReplicas numberReplicas = blockManager.countNodes(storedBlock);
-    assertThat(numberReplicas.liveReplicas(), is(expectedReplicas));
-    assertThat(numberReplicas.excessReplicas(), is(0));
-    assertThat(numberReplicas.corruptReplicas(), is(0));
-    assertThat(numberReplicas.decommissionedAndDecommissioning(), is(0));
-    assertThat(numberReplicas.replicasOnStaleNodes(), is(0));
+    assertThat(numberReplicas.liveReplicas()).isEqualTo(expectedReplicas);
+    assertThat(numberReplicas.excessReplicas()).isEqualTo(0);
+    assertThat(numberReplicas.corruptReplicas()).isEqualTo(0);
+    assertThat(numberReplicas.decommissionedAndDecommissioning()).isEqualTo(0);
+    assertThat(numberReplicas.replicasOnStaleNodes()).isEqualTo(0);
     
     BlockManagerTestUtil.updateState(blockManager);
-    assertThat(blockManager.getLowRedundancyBlocksCount(), is(0L));
-    assertThat(blockManager.getExcessBlocksCount(), is(0L));
+    assertThat(blockManager.getLowRedundancyBlocksCount()).isEqualTo(0L);
+    assertThat(blockManager.getExcessBlocksCount()).isEqualTo(0L);
   }
   
   /**
-   * Verify that <tt>READ_ONLY_SHARED</tt> replicas are <i>not</i> counted towards the overall 
+   * Verify that <code>READ_ONLY_SHARED</code> replicas are <i>not</i> counted towards the overall 
    * replication count, but <i>are</i> included as replica locations returned to clients for reads.
    */
   @Test
@@ -220,7 +221,7 @@ public class TestReadOnlySharedStorage {
   }
 
   /**
-   * Verify that the NameNode is able to still use <tt>READ_ONLY_SHARED</tt> replicas even 
+   * Verify that the NameNode is able to still use <code>READ_ONLY_SHARED</code> replicas even 
    * when the single NORMAL replica is offline (and the effective replication count is 0).
    */
   @Test
@@ -234,11 +235,11 @@ public class TestReadOnlySharedStorage {
     
     // The live replica count should now be zero (since the NORMAL replica is offline)
     NumberReplicas numberReplicas = blockManager.countNodes(storedBlock);
-    assertThat(numberReplicas.liveReplicas(), is(0));
+    assertThat(numberReplicas.liveReplicas()).isEqualTo(0);
     
     // The block should be reported as under-replicated
     BlockManagerTestUtil.updateState(blockManager);
-    assertThat(blockManager.getLowRedundancyBlocksCount(), is(1L));
+    assertThat(blockManager.getLowRedundancyBlocksCount()).isEqualTo(1L);
     
     // The BlockManager should be able to heal the replication count back to 1
     // by triggering an inter-datanode replication from one of the READ_ONLY_SHARED replicas
@@ -247,12 +248,12 @@ public class TestReadOnlySharedStorage {
     DFSTestUtil.waitForReplication(cluster, extendedBlock, 1, 1, 0);
     
     // There should now be 2 *locations* for the block, and 1 *replica*
-    assertThat(getLocatedBlock().getLocations().length, is(2));
+    assertThat(getLocatedBlock().getLocations().length).isEqualTo(2);
     validateNumberReplicas(1);
   }
   
   /**
-   * Verify that corrupt <tt>READ_ONLY_SHARED</tt> replicas aren't counted 
+   * Verify that corrupt <code>READ_ONLY_SHARED</code> replicas aren't counted 
    * towards the corrupt replicas total.
    */
   @Test
@@ -267,7 +268,7 @@ public class TestReadOnlySharedStorage {
     
     // However, the corrupt READ_ONLY_SHARED replica should *not* affect the overall corrupt replicas count
     NumberReplicas numberReplicas = blockManager.countNodes(storedBlock);
-    assertThat(numberReplicas.corruptReplicas(), is(0));
+    assertThat(numberReplicas.corruptReplicas()).isEqualTo(0);
   }
 
 }

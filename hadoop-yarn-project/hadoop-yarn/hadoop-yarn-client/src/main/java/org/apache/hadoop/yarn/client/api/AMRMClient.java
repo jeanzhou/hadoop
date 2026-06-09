@@ -25,7 +25,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
@@ -48,8 +48,8 @@ import org.apache.hadoop.yarn.client.api.impl.AMRMClientImpl;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -427,12 +427,13 @@ public abstract class AMRMClient<T extends AMRMClient.ContainerRequest> extends
 
     public String toString() {
       StringBuilder sb = new StringBuilder();
-      sb.append("Capability[").append(capability).append("]");
-      sb.append("Priority[").append(priority).append("]");
-      sb.append("AllocationRequestId[").append(allocationRequestId).append("]");
-      sb.append("ExecutionTypeRequest[").append(executionTypeRequest)
-          .append("]");
-      sb.append("Resource Profile[").append(resourceProfile).append("]");
+      sb.append("Capability[").append(capability).append("]")
+          .append("Priority[").append(priority).append("]")
+          .append("AllocationRequestId[").append(allocationRequestId)
+          .append("]")
+          .append("ExecutionTypeRequest[").append(executionTypeRequest)
+          .append("]")
+          .append("Resource Profile[").append(resourceProfile).append("]");
       return sb.toString();
     }
 
@@ -805,6 +806,17 @@ public abstract class AMRMClient<T extends AMRMClient.ContainerRequest> extends
   }
 
   /**
+   * Update application's tracking url on next heartbeat.
+   *
+   * @param trackingUrl new tracking url for this application
+   */
+  @Public
+  @InterfaceStability.Unstable
+  public void updateTrackingUrl(String trackingUrl) {
+    // Unimplemented.
+  }
+
+  /**
    * Wait for <code>check</code> to return true for each 1000 ms.
    * See also {@link #waitFor(java.util.function.Supplier, int)}
    * and {@link #waitFor(java.util.function.Supplier, int, int)}
@@ -845,10 +857,7 @@ public abstract class AMRMClient<T extends AMRMClient.ContainerRequest> extends
 
     int loggingCounter = logInterval;
     do {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Check the condition for main loop.");
-      }
-
+      LOG.debug("Check the condition for main loop.");
       boolean result = check.get();
       if (result) {
         LOG.info("Exits the main loop.");

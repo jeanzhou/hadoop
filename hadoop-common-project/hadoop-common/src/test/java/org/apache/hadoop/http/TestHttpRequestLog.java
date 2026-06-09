@@ -17,31 +17,24 @@
  */
 package org.apache.hadoop.http;
 
-import org.apache.log4j.Logger;
-import org.eclipse.jetty.server.NCSARequestLog;
+import org.eclipse.jetty.server.CustomRequestLog;
 import org.eclipse.jetty.server.RequestLog;
-import org.junit.Test;
+import org.eclipse.jetty.server.Slf4jRequestLogWriter;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class TestHttpRequestLog {
 
   @Test
-  public void testAppenderUndefined() {
-    RequestLog requestLog = HttpRequestLog.getRequestLog("test");
-    assertNull("RequestLog should be null", requestLog);
-  }
-
-  @Test
   public void testAppenderDefined() {
-    HttpRequestLogAppender requestLogAppender = new HttpRequestLogAppender();
-    requestLogAppender.setName("testrequestlog");
-    Logger.getLogger("http.requests.test").addAppender(requestLogAppender);
     RequestLog requestLog = HttpRequestLog.getRequestLog("test");
-    Logger.getLogger("http.requests.test").removeAppender(requestLogAppender);
-    assertNotNull("RequestLog should not be null", requestLog);
-    assertEquals("Class mismatch", NCSARequestLog.class, requestLog.getClass());
+    assertNotNull(requestLog, "RequestLog should not be null");
+    assertInstanceOf(CustomRequestLog.class, requestLog);
+    CustomRequestLog crl = (CustomRequestLog) requestLog;
+    assertInstanceOf(Slf4jRequestLogWriter.class, crl.getWriter());
+    assertEquals(CustomRequestLog.EXTENDED_NCSA_FORMAT, crl.getFormatString());
   }
 }

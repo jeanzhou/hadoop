@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.util.concurrent.ThreadLocalRandom;
@@ -33,7 +33,7 @@ import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.server.namenode.TestFileTruncate;
 import org.apache.hadoop.hdfs.tools.DFSck;
 import org.apache.hadoop.util.ToolRunner;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestHAAppend {
   static final int COUNT = 5;
@@ -60,7 +60,6 @@ public class TestHAAppend {
     // control the ingest of edits by the standby for this test.
     conf.set(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, "5000");
     conf.setInt(DFSConfigKeys.DFS_HA_LOGROLL_PERIOD_KEY, -1);
-
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
         .nnTopology(MiniDFSNNTopology.simpleHATopology())
         .numDataNodes(3).build();
@@ -115,8 +114,8 @@ public class TestHAAppend {
           new String[] { "/", "-files", "-blocks" });
       assertEquals(0, rc);
       
-      assertEquals("CorruptBlocks should be empty.", 0, cluster.getNameNode(1)
-          .getNamesystem().getCorruptReplicaBlocks());
+      assertEquals(0, cluster.getNameNode(1).getNamesystem().getCorruptReplicaBlocks(),
+          "CorruptBlocks should be empty.");
 
       AppendTestUtil.checkFullFile(fs, fileToAppend, data.length, data,
           fileToAppend.toString());

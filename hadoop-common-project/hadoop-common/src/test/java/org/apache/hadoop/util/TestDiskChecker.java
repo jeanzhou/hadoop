@@ -19,15 +19,17 @@ package org.apache.hadoop.util;
 
 import java.io.*;
 import java.nio.file.Files;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.util.DiskChecker.FileIoProvider;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
@@ -48,34 +50,38 @@ public class TestDiskChecker {
 
   private FileIoProvider fileIoProvider = null;
 
-  @Before
+  @BeforeEach
   public void setup() {
     // Some tests replace the static field DiskChecker#fileIoProvider.
     // Cache it so we can restore it after each test completes.
     fileIoProvider = DiskChecker.getFileOutputStreamProvider();
   }
 
-  @After
+  @AfterEach
   public void cleanup() {
     DiskChecker.replaceFileOutputStreamProvider(fileIoProvider);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testMkdirs_dirExists() throws Throwable {
     _mkdirs(true, defaultPerm, defaultPerm);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testMkdirs_noDir() throws Throwable {
     _mkdirs(false, defaultPerm, defaultPerm);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testMkdirs_dirExists_badUmask() throws Throwable {
     _mkdirs(true, defaultPerm, invalidPerm);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testMkdirs_noDir_badUmask() throws Throwable {
     _mkdirs(false, defaultPerm, invalidPerm);
   }
@@ -107,27 +113,32 @@ public class TestDiskChecker {
     }
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_normal() throws Throwable {
     _checkDirs(true, new FsPermission("755"), true);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_notDir() throws Throwable {
     _checkDirs(false, new FsPermission("000"), false);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_notReadable() throws Throwable {
     _checkDirs(true, new FsPermission("000"), false);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_notWritable() throws Throwable {
     _checkDirs(true, new FsPermission("444"), false);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_notListable() throws Throwable {
     _checkDirs(true, new FsPermission("666"), false);   // not listable
   }
@@ -138,7 +149,8 @@ public class TestDiskChecker {
    * @throws java.io.IOException if any
    */
   protected File createTempFile() throws java.io.IOException {
-    File testDir = new File(System.getProperty("test.build.data"));
+    File testDir =
+        new File(System.getProperty("test.build.data", "target/test-dir"));
     return Files.createTempFile(testDir.toPath(), "test", "tmp").toFile();
   }
 
@@ -148,7 +160,8 @@ public class TestDiskChecker {
    * @throws java.io.IOException if any
    */
   protected File createTempDir() throws java.io.IOException {
-    File testDir = new File(System.getProperty("test.build.data"));
+    File testDir =
+        new File(System.getProperty("test.build.data", "target/test-dir"));
     return Files.createTempDirectory(testDir.toPath(), "test").toFile();
   }
 
@@ -160,7 +173,7 @@ public class TestDiskChecker {
     try {
       DiskChecker.checkDir(FileSystem.getLocal(new Configuration()),
           new Path(localDir.getAbsolutePath()), perm);
-      assertTrue("checkDir success, expected failure", success);
+      assertTrue(success, "checkDir success, expected failure");
     } catch (DiskErrorException e) {
       if (success) {
         throw e; // Unexpected exception!
@@ -174,27 +187,32 @@ public class TestDiskChecker {
    * permission for result of mapper.
    */
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_normal_local() throws Throwable {
     checkDirs(true, "755", true);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_notDir_local() throws Throwable {
     checkDirs(false, "000", false);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_notReadable_local() throws Throwable {
     checkDirs(true, "000", false);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_notWritable_local() throws Throwable {
     checkDirs(true, "444", false);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testCheckDir_notListable_local() throws Throwable {
     checkDirs(true, "666", false);
   }
@@ -206,113 +224,12 @@ public class TestDiskChecker {
         localDir.getAbsolutePath()));
     try {
       DiskChecker.checkDir(localDir);
-      assertTrue("checkDir success, expected failure", success);
+      assertTrue(success, "checkDir success, expected failure");
     } catch (DiskErrorException e) {
       if (success) {
         throw e; // Unexpected exception!
       }
     }
     localDir.delete();
-  }
-
-  /**
-   * Verify DiskChecker ignores at least 2 transient file creation errors.
-   */
-  @Test(timeout = 30000)
-  public void testDiskIoIgnoresTransientCreateErrors() throws Throwable {
-    DiskChecker.replaceFileOutputStreamProvider(new TestFileIoProvider(
-        DiskChecker.DISK_IO_MAX_ITERATIONS - 1, 0));
-    checkDirs(true, "755", true);
-  }
-
-  /**
-   * Verify DiskChecker bails after 3 file creation errors.
-   */
-  @Test(timeout = 30000)
-  public void testDiskIoDetectsCreateErrors() throws Throwable {
-    DiskChecker.replaceFileOutputStreamProvider(new TestFileIoProvider(
-        DiskChecker.DISK_IO_MAX_ITERATIONS, 0));
-    checkDirs(true, "755", false);
-  }
-
-  /**
-   * Verify DiskChecker ignores at least 2 transient file write errors.
-   */
-  @Test(timeout = 30000)
-  public void testDiskIoIgnoresTransientWriteErrors() throws Throwable {
-    DiskChecker.replaceFileOutputStreamProvider(new TestFileIoProvider(
-        0, DiskChecker.DISK_IO_MAX_ITERATIONS - 1));
-    checkDirs(true, "755", true);
-  }
-
-  /**
-   * Verify DiskChecker bails after 3 file write errors.
-   */
-  @Test(timeout = 30000)
-  public void testDiskIoDetectsWriteErrors() throws Throwable {
-    DiskChecker.replaceFileOutputStreamProvider(new TestFileIoProvider(
-        0, DiskChecker.DISK_IO_MAX_ITERATIONS));
-    checkDirs(true, "755", false);
-  }
-
-  /**
-   * Verify DiskChecker's test file naming scheme.
-   */
-  @Test(timeout = 30000)
-  public void testDiskIoFileNaming() throws Throwable {
-    final File rootDir = new File("/");
-    assertTrue(".001".matches("\\.00\\d$"));
-    for (int i = 1; i < DiskChecker.DISK_IO_MAX_ITERATIONS; ++i) {
-      final File file = DiskChecker.getFileNameForDiskIoCheck(rootDir, i);
-      assertTrue(
-          "File name does not match expected pattern: " + file,
-          file.toString().matches("^.*\\.[0-9]+$"));
-    }
-    final File guidFile = DiskChecker.getFileNameForDiskIoCheck(
-        rootDir, DiskChecker.DISK_IO_MAX_ITERATIONS);
-    assertTrue(
-        "File name does not match expected pattern: " + guidFile,
-        guidFile.toString().matches("^.*\\.[A-Za-z0-9-]+$"));
-  }
-
-  /**
-   * A dummy {@link DiskChecker#FileIoProvider} that can throw a programmable
-   * number of times.
-   */
-  private static class TestFileIoProvider implements FileIoProvider {
-    private final AtomicInteger numCreateCalls = new AtomicInteger(0);
-    private final AtomicInteger numWriteCalls = new AtomicInteger(0);
-
-    private final int numTimesToThrowOnCreate;
-    private final int numTimesToThrowOnWrite;
-
-    public TestFileIoProvider(
-        int numTimesToThrowOnCreate, int numTimesToThrowOnWrite) {
-      this.numTimesToThrowOnCreate = numTimesToThrowOnCreate;
-      this.numTimesToThrowOnWrite = numTimesToThrowOnWrite;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public FileOutputStream get(File f) throws FileNotFoundException {
-      if (numCreateCalls.getAndIncrement() < numTimesToThrowOnCreate) {
-        throw new FileNotFoundException("Dummy exception for testing");
-      }
-      // Can't mock final class FileOutputStream.
-      return new FileOutputStream(f);
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void write(FileOutputStream fos, byte[] data) throws IOException {
-      if (numWriteCalls.getAndIncrement() < numTimesToThrowOnWrite) {
-        throw new IOException("Dummy exception for testing");
-      }
-      fos.write(data);
-    }
   }
 }

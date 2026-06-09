@@ -18,11 +18,13 @@
 package org.apache.hadoop.crypto.random;
 
 import java.io.Closeable;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.Random;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
@@ -50,7 +52,7 @@ public class OsSecureRandom extends Random implements Closeable, Configurable {
 
   private String randomDevPath;
 
-  private transient FileInputStream stream;
+  private transient InputStream stream;
 
   private final byte[] reservoir = new byte[RESERVOIR_LENGTH];
 
@@ -60,7 +62,7 @@ public class OsSecureRandom extends Random implements Closeable, Configurable {
     if (pos >= reservoir.length - min) {
       try {
         if (stream == null) {
-          stream = new FileInputStream(new File(randomDevPath));
+          stream = Files.newInputStream(Paths.get(randomDevPath));
         }
         IOUtils.readFully(stream, reservoir, 0, reservoir.length);
       } catch (IOException e) {
@@ -72,7 +74,12 @@ public class OsSecureRandom extends Random implements Closeable, Configurable {
 
   public OsSecureRandom() {
   }
-  
+
+  @VisibleForTesting
+  public boolean isClosed() {
+    return stream == null;
+  }
+
   @Override
   synchronized public void setConf(Configuration conf) {
     this.conf = conf;

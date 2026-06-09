@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.federation.router;
 
-import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 
 /**
  * Base class for objects that are unique to a namespace.
@@ -38,6 +38,13 @@ public abstract class RemoteLocationContext
    * @return Destination in this location.
    */
   public abstract String getDest();
+
+  /**
+   * Original source location.
+   *
+   * @return Source path.
+   */
+  public abstract String getSrc();
 
   @Override
   public int hashCode() {

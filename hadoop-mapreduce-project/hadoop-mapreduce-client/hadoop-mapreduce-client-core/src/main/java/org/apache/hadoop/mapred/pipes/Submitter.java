@@ -30,7 +30,6 @@ import java.util.StringTokenizer;
 import org.apache.commons.cli.BasicParser;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Option;
-import org.apache.commons.cli.OptionBuilder;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.Parser;
@@ -54,8 +53,9 @@ import org.apache.hadoop.mapred.RunningJob;
 import org.apache.hadoop.mapred.lib.HashPartitioner;
 import org.apache.hadoop.mapred.lib.LazyOutputFormat;
 import org.apache.hadoop.mapred.lib.NullOutputFormat;
+import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.MRJobConfig;
-import org.apache.hadoop.mapreduce.filecache.DistributedCache;
+import org.apache.hadoop.mapreduce.task.JobContextImpl;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.GenericOptionsParser;
 import org.apache.hadoop.util.Tool;
@@ -82,7 +82,9 @@ public class Submitter extends Configured implements Tool {
   public static final String IS_JAVA_REDUCE = "mapreduce.pipes.isjavareducer";
   public static final String PARTITIONER = "mapreduce.pipes.partitioner";
   public static final String INPUT_FORMAT = "mapreduce.pipes.inputformat";
-  public static final String PORT = "mapreduce.pipes.command.port";
+  // This is used as an environment variable, which doesn't allow dots.
+  // FIXME This also seems to be used only for tests
+  public static final String PORT = "mapreduce_pipes_command_port";
   
   public Submitter() {
     this(new Configuration());
@@ -319,7 +321,7 @@ public class Submitter extends Configured implements Tool {
       setIfUnset(conf, MRJobConfig.MAP_DEBUG_SCRIPT,defScript);
       setIfUnset(conf, MRJobConfig.REDUCE_DEBUG_SCRIPT,defScript);
     }
-    URI[] fileCache = DistributedCache.getCacheFiles(conf);
+    URI[] fileCache = JobContextImpl.getCacheFiles(conf);
     if (fileCache == null) {
       fileCache = new URI[1];
     } else {
@@ -334,7 +336,7 @@ public class Submitter extends Configured implements Tool {
       ie.initCause(e);
       throw ie;
     }
-    DistributedCache.setCacheFiles(fileCache, conf);
+    Job.setCacheFiles(fileCache, conf);
   }
 
   /**
@@ -345,12 +347,14 @@ public class Submitter extends Configured implements Tool {
     
     void addOption(String longName, boolean required, String description, 
                    String paramName) {
-      Option option = OptionBuilder.withArgName(paramName).hasArgs(1).withDescription(description).isRequired(required).create(longName);
+      Option option = Option.builder(longName).argName(paramName)
+          .hasArg().desc(description).required(required).build();
       options.addOption(option);
     }
     
     void addArgument(String name, boolean required, String description) {
-      Option option = OptionBuilder.withArgName(name).hasArgs(1).withDescription(description).isRequired(required).create();
+      Option option = Option.builder().argName(name)
+          .hasArg().desc(description).required(required).build();
       options.addOption(option);
 
     }

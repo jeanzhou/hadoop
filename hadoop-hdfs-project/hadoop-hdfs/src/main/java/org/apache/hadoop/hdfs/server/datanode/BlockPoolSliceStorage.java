@@ -38,7 +38,6 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.HardLink;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.LayoutVersion;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NodeType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
@@ -46,19 +45,19 @@ import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.StorageInfo;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.util.Daemon;
+import org.apache.hadoop.util.Lists;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * Manages storage for the set of BlockPoolSlices which share a particular 
  * block pool id, on this DataNode.
  * 
  * This class supports the following functionality:
- * <ol>
+ * <ul>
  * <li> Formatting a new block pool storage</li>
- * <li> Recovering a storage state to a consistent state (if possible></li>
+ * <li> Recovering a storage state to a consistent state (if possible)</li>
  * <li> Taking a snapshot of the block pool during upgrade</li>
  * <li> Rolling back a block pool to a previous snapshot</li>
  * <li> Finalizing block storage by deletion of a snapshot</li>
@@ -139,11 +138,12 @@ public class BlockPoolSliceStorage extends Storage {
 
   /**
    * Load one storage directory. Recover from previous transitions if required.
-   *
-   * @param nsInfo namespace information
-   * @param dataDir the root path of the storage directory
-   * @param startOpt startup option
-   * @return the StorageDirectory successfully loaded.
+   * @param nsInfo  namespace information
+   * @param location  the root path of the storage directory
+   * @param startOpt  startup option
+   * @param callables list of callable storage directory
+   * @param conf configuration
+   * @return
    * @throws IOException
    */
   private StorageDirectory loadStorageDirectory(NamespaceInfo nsInfo,
@@ -205,8 +205,10 @@ public class BlockPoolSliceStorage extends Storage {
    * data volume.
    *
    * @param nsInfo namespace information
-   * @param dataDirs storage directories of block pool
+   * @param location storage directories of block pool
    * @param startOpt startup option
+   * @param callables list of callable storage directory
+   * @param conf configuration
    * @return an array of loaded block pool directories.
    * @throws IOException on error
    */
@@ -240,8 +242,10 @@ public class BlockPoolSliceStorage extends Storage {
    * data volume.
    *
    * @param nsInfo namespace information
-   * @param dataDirs storage directories of block pool
+   * @param location storage directories of block pool
    * @param startOpt startup option
+   * @param callables list of callable storage directory
+   * @param conf configuration
    * @throws IOException on error
    */
   List<StorageDirectory> recoverTransitionRead(NamespaceInfo nsInfo,
@@ -280,7 +284,7 @@ public class BlockPoolSliceStorage extends Storage {
     LOG.info("Formatting block pool {} directory {}", blockpoolID, bpSdir
         .getCurrentDir());
     bpSdir.clearDirectory(); // create directory
-    this.layoutVersion = HdfsServerConstants.DATANODE_LAYOUT_VERSION;
+    this.layoutVersion = DataNodeLayoutVersion.getCurrentLayoutVersion();
     this.cTime = nsInfo.getCTime();
     this.namespaceID = nsInfo.getNamespaceID();
     this.blockpoolID = nsInfo.getBlockPoolID();
@@ -348,13 +352,18 @@ public class BlockPoolSliceStorage extends Storage {
    * Analyze whether a transition of the BP state is required and
    * perform it if necessary.
    * <br>
-   * Rollback if previousLV >= LAYOUT_VERSION && prevCTime <= namenode.cTime.
-   * Upgrade if this.LV > LAYOUT_VERSION || this.cTime < namenode.cTime Regular
-   * startup if this.LV = LAYOUT_VERSION && this.cTime = namenode.cTime
+   * Rollback if:
+   * previousLV &gt;= LAYOUT_VERSION && prevCTime &lt;= namenode.cTime.
+   * Upgrade if:
+   * this.LV &gt; LAYOUT_VERSION || this.cTime &lt; namenode.cTime
+   * Regular startup if:
+   * this.LV = LAYOUT_VERSION && this.cTime = namenode.cTime
    * 
-   * @param sd storage directory <SD>/current/<bpid>
+   * @param sd storage directory @{literal <SD>/current/<bpid>}
    * @param nsInfo namespace info
    * @param startOpt startup option
+   * @param callables list of callable storage directory
+   * @param conf configuration
    * @return true if the new properties has been written.
    */
   private boolean doTransition(StorageDirectory sd, NamespaceInfo nsInfo,
@@ -378,7 +387,7 @@ public class BlockPoolSliceStorage extends Storage {
     }
     readProperties(sd);
     checkVersionUpgradable(this.layoutVersion);
-    assert this.layoutVersion >= HdfsServerConstants.DATANODE_LAYOUT_VERSION
+    assert this.layoutVersion >= DataNodeLayoutVersion.getCurrentLayoutVersion()
        : "Future version is not allowed";
     if (getNamespaceID() != nsInfo.getNamespaceID()) {
       throw new IOException("Incompatible namespaceIDs in "
@@ -392,17 +401,17 @@ public class BlockPoolSliceStorage extends Storage {
           + nsInfo.getBlockPoolID() + "; datanode blockpoolID = "
           + blockpoolID);
     }
-    if (this.layoutVersion == HdfsServerConstants.DATANODE_LAYOUT_VERSION
+    if (this.layoutVersion == DataNodeLayoutVersion.getCurrentLayoutVersion()
         && this.cTime == nsInfo.getCTime()) {
       return false; // regular startup
     }
-    if (this.layoutVersion > HdfsServerConstants.DATANODE_LAYOUT_VERSION) {
+    if (this.layoutVersion > DataNodeLayoutVersion.getCurrentLayoutVersion()) {
       int restored = restoreBlockFilesFromTrash(getTrashRootDir(sd));
       LOG.info("Restored {} block files from trash " +
           "before the layout upgrade. These blocks will be moved to " +
           "the previous directory during the upgrade", restored);
     }
-    if (this.layoutVersion > HdfsServerConstants.DATANODE_LAYOUT_VERSION
+    if (this.layoutVersion > DataNodeLayoutVersion.getCurrentLayoutVersion()
         || this.cTime < nsInfo.getCTime()) {
       doUpgrade(sd, nsInfo, callables, conf); // upgrade
       return true;
@@ -416,20 +425,20 @@ public class BlockPoolSliceStorage extends Storage {
   }
 
   /**
-   * Upgrade to any release after 0.22 (0.22 included) release e.g. 0.22 => 0.23
+   * Upgrade to any release after 0.22 (0.22 included) release
+   * e.g. 0.22 =&gt; 0.23
    * Upgrade procedure is as follows:
    * <ol>
-   * <li>If <SD>/current/<bpid>/previous exists then delete it</li>
-   * <li>Rename <SD>/current/<bpid>/current to
-   * <SD>/current/bpid/current/previous.tmp</li>
-   * <li>Create new <SD>current/<bpid>/current directory</li>
-   * <ol>
+   * <li>If {@literal <SD>/current/<bpid>/previous} exists then delete it</li>
+   * <li>Rename {@literal <SD>/current/<bpid>/current} to
+   * {@literal <SD>/current/bpid/current/previous.tmp}</li>
+   * <li>Create new {@literal <SD>current/<bpid>/current} directory</li>
    * <li>Hard links for block files are created from previous.tmp to current</li>
    * <li>Save new version file in current directory</li>
+   * <li>Rename previous.tmp to previous</li>
    * </ol>
-   * <li>Rename previous.tmp to previous</li> </ol>
    * 
-   * @param bpSd storage directory <SD>/current/<bpid>
+   * @param bpSd storage directory {@literal <SD>/current/<bpid>}
    * @param nsInfo Namespace Info from the namenode
    * @throws IOException on error
    */
@@ -449,8 +458,8 @@ public class BlockPoolSliceStorage extends Storage {
     final int oldLV = getLayoutVersion();
     LOG.info("Upgrading block pool storage directory {}.\n   old LV = {}; old"
         + " CTime = {}.\n   new LV = {}; new CTime = {}",
-        bpSd.getRoot(), oldLV, this.getCTime(), HdfsServerConstants
-            .DATANODE_LAYOUT_VERSION, nsInfo.getCTime());
+        bpSd.getRoot(), oldLV, this.getCTime(),
+        DataNodeLayoutVersion.getCurrentLayoutVersion(), nsInfo.getCTime());
     // get <SD>/previous directory
     String dnRoot = getDataNodeStorageRoot(bpSd.getRoot().getCanonicalPath());
     StorageDirectory dnSdStorage = new StorageDirectory(new File(dnRoot));
@@ -497,7 +506,7 @@ public class BlockPoolSliceStorage extends Storage {
           throws IOException {
     // 3. Create new <SD>/current with block files hardlinks and VERSION
     linkAllBlocks(bpTmpDir, bpCurDir, oldLV, conf);
-    this.layoutVersion = HdfsServerConstants.DATANODE_LAYOUT_VERSION;
+    this.layoutVersion = DataNodeLayoutVersion.getCurrentLayoutVersion();
     assert this.namespaceID == nsInfo.getNamespaceID() 
         : "Data-node and name-node layout versions must be the same.";
     this.cTime = nsInfo.getCTime();
@@ -606,13 +615,15 @@ public class BlockPoolSliceStorage extends Storage {
     // the namespace state or can be further upgraded to it.
     // In another word, we can only roll back when ( storedLV >= software LV)
     // && ( DN.previousCTime <= NN.ctime)
-    if (!(prevInfo.getLayoutVersion() >= HdfsServerConstants.DATANODE_LAYOUT_VERSION &&
+    if (!(prevInfo.getLayoutVersion() >=
+        DataNodeLayoutVersion.getCurrentLayoutVersion() &&
         prevInfo.getCTime() <= nsInfo.getCTime())) { // cannot rollback
       throw new InconsistentFSStateException(bpSd.getRoot(),
           "Cannot rollback to a newer state.\nDatanode previous state: LV = "
               + prevInfo.getLayoutVersion() + " CTime = " + prevInfo.getCTime()
               + " is newer than the namespace state: LV = "
-              + HdfsServerConstants.DATANODE_LAYOUT_VERSION + " CTime = " + nsInfo.getCTime());
+              + DataNodeLayoutVersion.getCurrentLayoutVersion() + " CTime = "
+              + nsInfo.getCTime());
     }
 
     LOG.info("Rolling back storage directory {}.\n   target LV = {}; target "
@@ -777,12 +788,12 @@ public class BlockPoolSliceStorage extends Storage {
   }
 
   /**
-   * Get a target subdirectory under current/ for a given block file that is being
-   * restored from trash.
+   * Get a target subdirectory under current/ for a given block file that is
+   * being restored from trash.
    *
    * The subdirectory structure under trash/ mirrors that under current/ to keep
    * implicit memory of where the files are to be restored.
-   *
+   * @param blockFile  block file that is being restored from trash.
    * @return the target directory to restore a previously deleted block file.
    */
   @VisibleForTesting
@@ -847,6 +858,7 @@ public class BlockPoolSliceStorage extends Storage {
   /**
    * Create a rolling upgrade marker file for each BP storage root, if it
    * does not exist already.
+   * @param dnStorageDirs
    */
   public void setRollingUpgradeMarkers(List<StorageDirectory> dnStorageDirs)
       throws IOException {
@@ -872,6 +884,7 @@ public class BlockPoolSliceStorage extends Storage {
    * Check whether the rolling upgrade marker file exists for each BP storage
    * root. If it does exist, then the marker file is cleared and more
    * importantly the layout upgrade is finalized.
+   * @param dnStorageDirs
    */
   public void clearRollingUpgradeMarkers(List<StorageDirectory> dnStorageDirs)
       throws IOException {

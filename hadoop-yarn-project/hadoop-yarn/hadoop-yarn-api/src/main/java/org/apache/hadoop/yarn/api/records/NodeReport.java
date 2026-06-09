@@ -243,6 +243,7 @@ public abstract class NodeReport {
 
   /**
    * Set the decommissioning timeout in seconds (null indicates absent timeout).
+   * @param decommissioningTimeout decommissioning time out.
    * */
   public void setDecommissioningTimeout(Integer decommissioningTimeout) {}
 
@@ -256,6 +257,20 @@ public abstract class NodeReport {
 
   /**
    * Set the node update type (null indicates absent node update type).
-   * */
+   * @param nodeUpdateType node update type.
+   */
   public void setNodeUpdateType(NodeUpdateType nodeUpdateType) {}
+
+  /**
+   * Set the node attributes of node.
+   *
+   * @param nodeAttributes set of node attributes.
+   */
+  public abstract void setNodeAttributes(Set<NodeAttribute> nodeAttributes);
+
+  /**
+   * Get node attributes of node.
+   * @return the set of node attributes.
+   */
+  public abstract Set<NodeAttribute> getNodeAttributes();
 }

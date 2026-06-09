@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.hdfs.server.datanode.checker;
 
-import com.google.common.base.Optional;
-import com.google.common.util.concurrent.ListenableFuture;
+import java.util.Optional;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListenableFuture;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 

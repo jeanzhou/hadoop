@@ -18,14 +18,15 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
@@ -36,16 +37,16 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.hadoop.util.DiskChecker.DiskErrorException;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Test the ability of a DN to tolerate volume failures.
+ * specific the timeout for entire test class
  */
+@Timeout(120)
 public class TestDataNodeVolumeFailureToleration {
   private FileSystem fs;
   private MiniDFSCluster cluster;
@@ -59,11 +60,7 @@ public class TestDataNodeVolumeFailureToleration {
   // a datanode to be considered dead by the namenode.  
   final int WAIT_FOR_DEATH = 15000;
 
-  // specific the timeout for entire test class
-  @Rule
-  public Timeout timeout = new Timeout(120 * 1000);
-
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, 512L);
@@ -81,7 +78,7 @@ public class TestDataNodeVolumeFailureToleration {
     fs = cluster.getFileSystem();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -122,14 +119,12 @@ public class TestDataNodeVolumeFailureToleration {
     cluster.waitActive();
 
     try {
-      assertTrue("The DN should have started up fine.",
-          cluster.isDataNodeUp());
+      assertTrue(cluster.isDataNodeUp(), "The DN should have started up fine.");
       DataNode dn = cluster.getDataNodes().get(0);
       String si = DataNodeTestUtils.getFSDataset(dn).getStorageInfo();
-      assertTrue("The DN should have started with this directory",
-          si.contains(dataDir1Actual.getPath()));
-      assertFalse("The DN shouldn't have a bad directory.",
-          si.contains(dataDir2Actual.getPath()));
+      assertTrue(si.contains(dataDir1Actual.getPath()),
+          "The DN should have started with this directory");
+      assertFalse(si.contains(dataDir2Actual.getPath()), "The DN shouldn't have a bad directory.");
     } finally {
       cluster.shutdownDataNodes();
       FileUtil.chmod(dataDir2.toString(), "755");
@@ -201,7 +196,11 @@ public class TestDataNodeVolumeFailureToleration {
   @Test
   public void testVolumeAndTolerableConfiguration() throws Exception {
     // Check if Block Pool Service exit for an invalid conf value.
-    testVolumeConfig(-1, 0, false, true);
+    testVolumeConfig(-2, 0, false, true);
+    // Test for one good volume at least
+    testVolumeConfig(-1, 0, true, true);
+    testVolumeConfig(-1, 1, true, true);
+    testVolumeConfig(-1, 2, false, true);
 
     // Ditto if the value is too big.
     testVolumeConfig(100, 0, false, true);
@@ -238,10 +237,13 @@ public class TestDataNodeVolumeFailureToleration {
         prepareDirToFail(dirs[i]);
       }
       restartDatanodes(volumesTolerated, manageDfsDirs);
-    } catch (DiskErrorException e) {
+    } catch (HadoopIllegalArgumentException e) {
       GenericTestUtils.assertExceptionContains("Invalid value configured for "
           + "dfs.datanode.failed.volumes.tolerated", e);
     } finally {
+      for (File dir : dirs) {
+        FileUtil.chmod(dir.toString(), "755");
+      }
       boolean bpServiceState;
       // If the datanode not registered successfully,
       // because the invalid value configured for tolerated volumes
@@ -253,10 +255,6 @@ public class TestDataNodeVolumeFailureToleration {
                     .isBPServiceAlive(cluster.getNamesystem().getBlockPoolId());
       }
       assertEquals(expectedBPServiceState, bpServiceState);
-
-      for (File dir : dirs) {
-        FileUtil.chmod(dir.toString(), "755");
-      }
     }
   }
 
@@ -269,8 +267,7 @@ public class TestDataNodeVolumeFailureToleration {
   private void prepareDirToFail(File dir) throws IOException,
       InterruptedException {
     dir.mkdirs();
-    assertEquals("Couldn't chmod local vol", 0,
-        FileUtil.chmod(dir.toString(), "000"));
+    assertEquals(0, FileUtil.chmod(dir.toString(), "000"), "Couldn't chmod local vol");
   }
 
   /**
@@ -289,8 +286,8 @@ public class TestDataNodeVolumeFailureToleration {
       prepareDirToFail(dir);
       restartDatanodes(1, false);
       // The cluster is up..
-      assertEquals(true, cluster.getDataNodes().get(0)
-          .isBPServiceAlive(cluster.getNamesystem().getBlockPoolId()));
+      assertEquals(true,
+          cluster.getDataNodes().get(0).isBPServiceAlive(cluster.getNamesystem().getBlockPoolId()));
       // but there has been a single volume failure
       DFSTestUtil.waitForDatanodeStatus(dm, 1, 0, 1,
           origCapacity / 2, WAIT_FOR_HEARTBEATS);

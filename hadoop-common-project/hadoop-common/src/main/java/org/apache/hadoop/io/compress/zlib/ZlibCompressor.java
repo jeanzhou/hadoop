@@ -240,6 +240,7 @@ public class ZlibCompressor implements Compressor {
 
   /**
    * Creates a new compressor, taking settings from the configuration.
+   * @param conf configuration.
    */
   public ZlibCompressor(Configuration conf) {
     this(ZlibFactory.getCompressionLevel(conf),
@@ -435,7 +436,7 @@ public class ZlibCompressor implements Compressor {
   }
 
   /**
-   * Returns the total number of uncompressed bytes input so far.</p>
+   * Returns the total number of uncompressed bytes input so far.
    *
    * @return the total (non-negative) number of uncompressed bytes input so far
    */

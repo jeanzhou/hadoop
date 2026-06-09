@@ -21,8 +21,9 @@ package org.apache.hadoop.yarn.client.api.impl;
 import java.io.IOException;
 import java.net.URI;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import net.jodah.failsafe.RetryPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -33,21 +34,21 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelineEntityGroupId;
 import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 
-import com.sun.jersey.api.client.Client;
+import javax.ws.rs.client.Client;
 
 /**
  * A simple writer class for storing Timeline data into Leveldb store.
  */
 @Private
 @Unstable
-public class DirectTimelineWriter extends TimelineWriter{
+public class DirectTimelineWriter extends TimelineWriter {
 
-  private static final Log LOG = LogFactory
-      .getLog(DirectTimelineWriter.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(DirectTimelineWriter.class);
 
   public DirectTimelineWriter(UserGroupInformation authUgi,
-      Client client, URI resURI) {
-    super(authUgi, client, resURI);
+      Client client, URI resURI, RetryPolicy<Object> retryPolicy) {
+    super(authUgi, client, resURI, retryPolicy);
   }
 
   @Override

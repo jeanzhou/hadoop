@@ -19,12 +19,13 @@
 package org.apache.hadoop.mapred;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -33,12 +34,10 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
@@ -48,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -70,7 +70,6 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
-import org.apache.hadoop.yarn.LocalConfigurationProvider;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.ApplicationConstants.Environment;
@@ -104,12 +103,12 @@ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
 import org.apache.hadoop.yarn.client.api.impl.YarnClientImpl;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.Records;
+import org.apache.hadoop.yarn.util.resource.CustomResourceTypesConfigurationProvider;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.log4j.Appender;
 import org.apache.log4j.AppenderSkeleton;
@@ -118,17 +117,17 @@ import org.apache.log4j.Level;
 import org.apache.log4j.SimpleLayout;
 import org.apache.log4j.WriterAppender;
 import org.apache.log4j.spi.LoggingEvent;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 
 /**
  * Test YarnRunner and make sure the client side plugin works
@@ -143,30 +142,7 @@ public class TestYARNRunner {
   private static final String PROFILE_PARAMS =
       MRJobConfig.DEFAULT_TASK_PROFILE_PARAMS.substring(0,
           MRJobConfig.DEFAULT_TASK_PROFILE_PARAMS.lastIndexOf("%"));
-
-  private static class CustomResourceTypesConfigurationProvider
-      extends LocalConfigurationProvider {
-
-    @Override
-    public InputStream getConfigurationInputStream(Configuration bootstrapConf,
-        String name) throws YarnException, IOException {
-      if (YarnConfiguration.RESOURCE_TYPES_CONFIGURATION_FILE.equals(name)) {
-        return new ByteArrayInputStream(
-            ("<configuration>\n" +
-            " <property>\n" +
-            "   <name>yarn.resource-types</name>\n" +
-            "   <value>a-custom-resource</value>\n" +
-            " </property>\n" +
-            " <property>\n" +
-            "   <name>yarn.resource-types.a-custom-resource.units</name>\n" +
-            "   <value>G</value>\n" +
-            " </property>\n" +
-            "</configuration>\n").getBytes());
-      } else {
-        return super.getConfigurationInputStream(bootstrapConf, name);
-      }
-    }
-  }
+  private static final String CUSTOM_RESOURCE_NAME = "a-custom-resource";
 
   private static class TestAppender extends AppenderSkeleton {
 
@@ -203,12 +179,12 @@ public class TestYARNRunner {
   private  ClientServiceDelegate clientDelegate;
   private static final String failString = "Rejected job";
 
-  @BeforeClass
+  @BeforeAll
   public static void setupBeforeClass() {
     ResourceUtils.resetResourceTypes(new Configuration());
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     resourceMgrDelegate = mock(ResourceMgrDelegate.class);
     conf = new YarnConfiguration();
@@ -237,13 +213,14 @@ public class TestYARNRunner {
     testWorkDir.mkdirs();
   }
 
-  @After
+  @AfterEach
   public void cleanup() {
     FileUtil.fullyDelete(testWorkDir);
     ResourceUtils.resetResourceTypes(new Configuration());
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testJobKill() throws Exception {
     clientDelegate = mock(ClientServiceDelegate.class);
     when(clientDelegate.getJobStatus(any(JobID.class))).thenReturn(new
@@ -272,13 +249,15 @@ public class TestYARNRunner {
         .thenReturn(
             ApplicationReport.newInstance(appId, null, "tmp", "tmp", "tmp",
                 "tmp", 0, null, YarnApplicationState.FINISHED, "tmp", "tmp",
-                0l, 0l, FinalApplicationStatus.SUCCEEDED, null, null, 0f,
+                0L, 0L, 0L,
+                 FinalApplicationStatus.SUCCEEDED, null, null, 0f,
                 "tmp", null));
     yarnRunner.killJob(jobId);
     verify(clientDelegate).killJob(jobId);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testJobKillTimeout() throws Exception {
     long timeToWaitBeforeHardKill =
         10000 + MRJobConfig.DEFAULT_MR_AM_HARD_KILL_TIMEOUT_MS;
@@ -299,12 +278,14 @@ public class TestYARNRunner {
             State.RUNNING, JobPriority.HIGH, "tmp", "tmp", "tmp", "tmp"));
     long startTimeMillis = System.currentTimeMillis();
     yarnRunner.killJob(jobId);
-    assertTrue("killJob should have waited at least " + timeToWaitBeforeHardKill
-        + " ms.", System.currentTimeMillis() - startTimeMillis
-                  >= timeToWaitBeforeHardKill);
+    assertTrue(System.currentTimeMillis() - startTimeMillis
+        >= timeToWaitBeforeHardKill,
+        "killJob should have waited at least " + timeToWaitBeforeHardKill
+        + " ms.");
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testJobSubmissionFailure() throws Exception {
     when(resourceMgrDelegate.submitApplication(any(ApplicationSubmissionContext.class))).
     thenReturn(appId);
@@ -326,7 +307,8 @@ public class TestYARNRunner {
     }
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testResourceMgrDelegate() throws Exception {
     /* we not want a mock of resource mgr delegate */
     final ApplicationClientProtocol clientRMProtocol = mock(ApplicationClientProtocol.class);
@@ -394,7 +376,8 @@ public class TestYARNRunner {
     verify(clientRMProtocol).getQueueUserAcls(any(GetQueueUserAclsInfoRequest.class));
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testGetHSDelegationToken() throws Exception {
     try {
       Configuration conf = new Configuration();
@@ -475,7 +458,8 @@ public class TestYARNRunner {
     }
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testHistoryServerToken() throws Exception {
     //Set the master principal in the config
     conf.set(YarnConfiguration.RM_PRINCIPAL,"foo@LOCAL");
@@ -518,7 +502,8 @@ public class TestYARNRunner {
         });
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testAMAdminCommandOpts() throws Exception {
     JobConf jobConf = new JobConf();
     
@@ -542,8 +527,8 @@ public class TestYARNRunner {
 
     for(String command : commands) {
       if(command != null) {
-        assertFalse("Profiler should be disabled by default",
-            command.contains(PROFILE_PARAMS));
+        assertFalse(command.contains(PROFILE_PARAMS),
+            "Profiler should be disabled by default");
         adminPos = command.indexOf("-Djava.net.preferIPv4Stack=true");
         if(adminPos >= 0)
           adminIndex = index;
@@ -559,20 +544,21 @@ public class TestYARNRunner {
     }
 
     // Check java.io.tmpdir opts are set in the commands
-    assertTrue("java.io.tmpdir is not set for AM", tmpDirPos > 0);
+    assertTrue(tmpDirPos > 0, "java.io.tmpdir is not set for AM");
 
     // Check both admin java opts and user java opts are in the commands
-    assertTrue("AM admin command opts not in the commands.", adminPos > 0);
-    assertTrue("AM user command opts not in the commands.", userPos > 0);
+    assertTrue(adminPos > 0, "AM admin command opts not in the commands.");
+    assertTrue(userPos > 0, "AM user command opts not in the commands.");
     
     // Check the admin java opts is before user java opts in the commands
     if(adminIndex == userIndex) {
-      assertTrue("AM admin command opts is after user command opts.", adminPos < userPos);
+      assertTrue(adminPos < userPos, "AM admin command opts is after user command opts.");
     } else {
-      assertTrue("AM admin command opts is after user command opts.", adminIndex < userIndex);
+      assertTrue(adminIndex < userIndex, "AM admin command opts is after user command opts.");
     }
   }
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testWarnCommandOpts() throws Exception {
     org.apache.log4j.Logger logger =
         org.apache.log4j.Logger.getLogger(YARNRunner.class);
@@ -606,7 +592,8 @@ public class TestYARNRunner {
         "using yarn.app.mapreduce.am.env config settings."));
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testAMProfiler() throws Exception {
     JobConf jobConf = new JobConf();
 
@@ -641,9 +628,9 @@ public class TestYARNRunner {
     ApplicationSubmissionContext appSubCtx =
         buildSubmitContext(yarnRunner, jobConf);
 
-    assertEquals(appSubCtx.getNodeLabelExpression(), "GPU");
-    assertEquals(appSubCtx.getAMContainerResourceRequests().get(0)
-        .getNodeLabelExpression(), "highMem");
+    assertThat(appSubCtx.getNodeLabelExpression()).isEqualTo("GPU");
+    assertThat(appSubCtx.getAMContainerResourceRequests().get(0)
+        .getNodeLabelExpression()).isEqualTo("highMem");
   }
 
   @Test
@@ -811,15 +798,22 @@ public class TestYARNRunner {
 
   @Test
   public void testAMStandardEnvWithDefaultLibPath() throws Exception {
-    testAMStandardEnv(false);
+    testAMStandardEnv(false, false);
   }
 
   @Test
   public void testAMStandardEnvWithCustomLibPath() throws Exception {
-    testAMStandardEnv(true);
+    testAMStandardEnv(true, false);
   }
 
-  private void testAMStandardEnv(boolean customLibPath) throws Exception {
+  @Test
+  public void testAMStandardEnvWithCustomLibPathWithSeparateEnvProps()
+      throws Exception {
+    testAMStandardEnv(true, true);
+  }
+
+  private void testAMStandardEnv(boolean customLibPath,
+      boolean useSeparateEnvProps) throws Exception {
     // the Windows behavior is different and this test currently doesn't really
     // apply
     // MAPREDUCE-6588 should revisit this test
@@ -832,9 +826,16 @@ public class TestYARNRunner {
     String pathKey = Environment.LD_LIBRARY_PATH.name();
 
     if (customLibPath) {
-      jobConf.set(MRJobConfig.MR_AM_ADMIN_USER_ENV, pathKey + "=" +
-          ADMIN_LIB_PATH);
-      jobConf.set(MRJobConfig.MR_AM_ENV, pathKey + "=" + USER_LIB_PATH);
+      if (useSeparateEnvProps) {
+        // Specify these as individual variables instead of k=v lists
+        jobConf.set(MRJobConfig.MR_AM_ADMIN_USER_ENV + "." + pathKey,
+            ADMIN_LIB_PATH);
+        jobConf.set(MRJobConfig.MR_AM_ENV + "." + pathKey, USER_LIB_PATH);
+      } else {
+        jobConf.set(MRJobConfig.MR_AM_ADMIN_USER_ENV, pathKey + "=" +
+            ADMIN_LIB_PATH);
+        jobConf.set(MRJobConfig.MR_AM_ENV, pathKey + "=" + USER_LIB_PATH);
+      }
     }
     jobConf.set(MRJobConfig.MAPRED_ADMIN_USER_SHELL, USER_SHELL);
 
@@ -846,7 +847,7 @@ public class TestYARNRunner {
     ContainerLaunchContext clc = appSubCtx.getAMContainerSpec();
     Map<String, String> env = clc.getEnvironment();
     String libPath = env.get(pathKey);
-    assertNotNull(pathKey + " not set", libPath);
+    assertNotNull(libPath, pathKey + " not set");
     String cps = jobConf.getBoolean(
         MRConfig.MAPREDUCE_APP_SUBMISSION_CROSS_PLATFORM,
         MRConfig.DEFAULT_MAPREDUCE_APP_SUBMISSION_CROSS_PLATFORM)
@@ -861,12 +862,12 @@ public class TestYARNRunner {
           MRJobConfig.DEFAULT_MR_AM_ADMIN_USER_ENV.substring(
               pathKey.length() + 1);
     }
-    assertEquals("Bad AM " + pathKey + " setting", expectedLibPath, libPath);
+    assertEquals(expectedLibPath, libPath, "Bad AM " + pathKey + " setting");
 
     // make sure SHELL is set
     String shell = env.get(Environment.SHELL.name());
-    assertNotNull("SHELL not set", shell);
-    assertEquals("Bad SHELL setting", USER_SHELL, shell);
+    assertNotNull(shell, "SHELL not set");
+    assertEquals(USER_SHELL, shell, "Bad SHELL setting");
   }
 
   @Test
@@ -938,13 +939,13 @@ public class TestYARNRunner {
     Configuration confSent = BuilderUtils.parseTokensConf(submissionContext);
 
     // configs that match regex should be included
-    Assert.assertEquals("123.0.0.1",
+    assertEquals("123.0.0.1",
         confSent.get("dfs.namenode.rpc-address.mycluster2.nn1"));
-    Assert.assertEquals("123.0.0.2",
+    assertEquals("123.0.0.2",
         confSent.get("dfs.namenode.rpc-address.mycluster2.nn2"));
 
     // configs that aren't matching regex should not be included
-    Assert.assertTrue(confSent.get("hadoop.tmp.dir") == null || !confSent
+    assertTrue(confSent.get("hadoop.tmp.dir") == null || !confSent
         .get("hadoop.tmp.dir").equals("testconfdir"));
     UserGroupInformation.reset();
   }
@@ -952,12 +953,11 @@ public class TestYARNRunner {
   @Test
   public void testCustomAMRMResourceType() throws Exception {
     initResourceTypes();
-    String customResourceName = "a-custom-resource";
 
     JobConf jobConf = new JobConf();
 
     jobConf.setInt(MRJobConfig.MR_AM_RESOURCE_PREFIX +
-        customResourceName, 5);
+        CUSTOM_RESOURCE_NAME, 5);
     jobConf.setInt(MRJobConfig.MR_AM_CPU_VCORES, 3);
 
     yarnRunner = new YARNRunner(jobConf);
@@ -967,15 +967,15 @@ public class TestYARNRunner {
     List<ResourceRequest> resourceRequests =
         submissionContext.getAMContainerResourceRequests();
 
-    Assert.assertEquals(1, resourceRequests.size());
+    assertEquals(1, resourceRequests.size());
     ResourceRequest resourceRequest = resourceRequests.get(0);
 
     ResourceInformation resourceInformation = resourceRequest.getCapability()
-        .getResourceInformation(customResourceName);
-    Assert.assertEquals("Expecting the default unit (G)",
-        "G", resourceInformation.getUnits());
-    Assert.assertEquals(5L, resourceInformation.getValue());
-    Assert.assertEquals(3, resourceRequest.getCapability().getVirtualCores());
+        .getResourceInformation(CUSTOM_RESOURCE_NAME);
+    assertEquals("G", resourceInformation.getUnits(),
+        "Expecting the default unit (G)");
+    assertEquals(5L, resourceInformation.getValue());
+    assertEquals(3, resourceRequest.getCapability().getVirtualCores());
   }
 
   @Test
@@ -993,11 +993,11 @@ public class TestYARNRunner {
       List<ResourceRequest> resourceRequests =
           submissionContext.getAMContainerResourceRequests();
 
-      Assert.assertEquals(1, resourceRequests.size());
+      assertEquals(1, resourceRequests.size());
       ResourceRequest resourceRequest = resourceRequests.get(0);
 
       long memorySize = resourceRequest.getCapability().getMemorySize();
-      Assert.assertEquals(3072, memorySize);
+      assertEquals(3072, memorySize);
     }
   }
 
@@ -1022,11 +1022,11 @@ public class TestYARNRunner {
         List<ResourceRequest> resourceRequests =
             submissionContext.getAMContainerResourceRequests();
 
-        Assert.assertEquals(1, resourceRequests.size());
+        assertEquals(1, resourceRequests.size());
         ResourceRequest resourceRequest = resourceRequests.get(0);
 
         long memorySize = resourceRequest.getCapability().getMemorySize();
-        Assert.assertEquals(3072, memorySize);
+        assertEquals(3072, memorySize);
         assertTrue(testAppender.getLogEvents().stream().anyMatch(
             e -> e.getLevel() == Level.WARN && ("Configuration " +
                 "yarn.app.mapreduce.am.resource." + memoryName + "=3Gi is " +
@@ -1039,9 +1039,9 @@ public class TestYARNRunner {
   }
 
   private void initResourceTypes() {
-    Configuration configuration = new Configuration();
-    configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
-        CustomResourceTypesConfigurationProvider.class.getName());
-    ResourceUtils.resetResourceTypes(configuration);
+    CustomResourceTypesConfigurationProvider.initResourceTypes(
+        ImmutableMap.<String, String>builder()
+        .put(CUSTOM_RESOURCE_NAME, "G")
+        .build());
   }
 }

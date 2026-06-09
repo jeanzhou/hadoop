@@ -27,9 +27,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
 
-import com.google.common.collect.ImmutableList;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.ParentNotDirectoryException;
 import org.apache.hadoop.fs.Path;
@@ -43,22 +41,26 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import com.google.common.collect.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test {@link FSDirectory}, the in-memory namespace tree.
  */
 public class TestFSDirectory {
-  public static final Log LOG = LogFactory.getLog(TestFSDirectory.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestFSDirectory.class);
 
   private static final long seed = 0;
   private static final short REPLICATION = 3;
@@ -87,7 +89,7 @@ public class TestFSDirectory {
   private static final ImmutableList<XAttr> generatedXAttrs =
       ImmutableList.copyOf(generateXAttrs(numGeneratedXAttrs));
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_MAX_XATTRS_PER_INODE_KEY, 2);
@@ -108,7 +110,7 @@ public class TestFSDirectory {
     hdfs.mkdirs(sub2);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -133,9 +135,8 @@ public class TestFSDirectory {
     for(; (line = in.readLine()) != null; ) {
       line = line.trim();
       if (!line.isEmpty() && !line.contains("snapshot")) {
-        assertTrue("line=" + line,
-            line.startsWith(INodeDirectory.DUMPTREE_LAST_ITEM)
-                || line.startsWith(INodeDirectory.DUMPTREE_EXCEPT_LAST_ITEM)
+        assertTrue(line.startsWith(INodeDirectory.DUMPTREE_LAST_ITEM)
+            || line.startsWith(INodeDirectory.DUMPTREE_EXCEPT_LAST_ITEM), "line=" + line
         );
         checkClassName(line);
       }
@@ -233,12 +234,11 @@ public class TestFSDirectory {
    */
   private static void verifyXAttrsPresent(List<XAttr> newXAttrs,
       final int num) {
-    assertEquals("Unexpected number of XAttrs after multiset", num,
-        newXAttrs.size());
-    for (int i=0; i<num; i++) {
+    assertEquals(num, newXAttrs.size(), "Unexpected number of XAttrs after multiset");
+    for (int i = 0; i < num; i++) {
       XAttr search = generatedXAttrs.get(i);
-      assertTrue("Did not find set XAttr " + search + " + after multiset",
-          newXAttrs.contains(search));
+      assertTrue(newXAttrs.contains(search),
+          "Did not find set XAttr " + search + " + after multiset");
     }
   }
 
@@ -258,7 +258,8 @@ public class TestFSDirectory {
   /**
    * Test setting and removing multiple xattrs via single operations
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testXAttrMultiSetRemove() throws Exception {
     List<XAttr> existingXAttrs = Lists.newArrayListWithCapacity(0);
 
@@ -306,14 +307,15 @@ public class TestFSDirectory {
       List<XAttr> newXAttrs = FSDirXAttrOp.filterINodeXAttrs(existingXAttrs,
                                                              toRemove,
                                                              removedXAttrs);
-      assertEquals("Unexpected number of removed XAttrs",
-          expectedNumToRemove, removedXAttrs.size());
+      assertEquals(expectedNumToRemove, removedXAttrs.size(),
+          "Unexpected number of removed XAttrs");
       verifyXAttrsPresent(newXAttrs, numExpectedXAttrs);
       existingXAttrs = newXAttrs;
     }
   }
 
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testXAttrMultiAddRemoveErrors() throws Exception {
 
     // Test that the same XAttr can not be multiset twice
@@ -355,9 +357,9 @@ public class TestFSDirectory {
     List<XAttr> newXAttrs = FSDirXAttrOp.setINodeXAttrs(fsdir, existingXAttrs,
                                                         toAdd, EnumSet.of(
             XAttrSetFlag.CREATE));
-    assertEquals("Unexpected toAdd size", 2, toAdd.size());
+    assertEquals(2, toAdd.size(), "Unexpected toAdd size");
     for (XAttr x : toAdd) {
-      assertTrue("Did not find added XAttr " + x, newXAttrs.contains(x));
+      assertTrue(newXAttrs.contains(x), "Did not find added XAttr " + x);
     }
     existingXAttrs = newXAttrs;
 
@@ -373,10 +375,10 @@ public class TestFSDirectory {
     }
     newXAttrs = FSDirXAttrOp.setINodeXAttrs(fsdir, existingXAttrs, toAdd,
                                             EnumSet.of(XAttrSetFlag.REPLACE));
-    assertEquals("Unexpected number of new XAttrs", 3, newXAttrs.size());
-    for (int i=0; i<3; i++) {
-      assertArrayEquals("Unexpected XAttr value",
-          new byte[] {(byte)(i*2)}, newXAttrs.get(i).getValue());
+    assertEquals(3, newXAttrs.size(), "Unexpected number of new XAttrs");
+    for (int i = 0; i < 3; i++) {
+      assertArrayEquals(new byte[]{(byte) (i * 2)}, newXAttrs.get(i).getValue(),
+          "Unexpected XAttr value");
     }
     existingXAttrs = newXAttrs;
 

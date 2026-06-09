@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.mapred.nativetask.kvtest;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.util.List;
@@ -31,21 +31,17 @@ import org.apache.hadoop.mapred.nativetask.NativeRuntime;
 import org.apache.hadoop.mapred.nativetask.testutil.ResultVerifier;
 import org.apache.hadoop.mapred.nativetask.testutil.ScenarioConfiguration;
 import org.apache.hadoop.mapred.nativetask.testutil.TestConstants;
-import org.junit.AfterClass;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.AfterAll;
 import org.apache.hadoop.util.NativeCodeLoader;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Splitter;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
 
-@RunWith(Parameterized.class)
 public class KVTest {
   private static final Logger LOG =
       LoggerFactory.getLogger(KVTest.class);
@@ -74,7 +70,6 @@ public class KVTest {
   /**
    * Parameterize the test with the specified key and value types.
    */
-  @Parameters(name = "key:{0}\nvalue:{1}")
   public static Iterable<Class<?>[]> data() throws Exception {
     // Parse the config.
     final String valueClassesStr = nativekvtestconf
@@ -99,22 +94,24 @@ public class KVTest {
     return pairs;
   }
 
-  private final Class<?> keyclass;
-  private final Class<?> valueclass;
+  private Class<?> keyclass;
+  private Class<?> valueclass;
 
-  public KVTest(Class<?> keyclass, Class<?> valueclass) {
-    this.keyclass = keyclass;
-    this.valueclass = valueclass;
+  public void initKVTest(Class<?> paramKeyclass, Class<?> paramValueclass) {
+    this.keyclass = paramKeyclass;
+    this.valueclass = paramValueclass;
   }
 
-  @Before
+  @BeforeEach
   public void startUp() throws Exception {
-    Assume.assumeTrue(NativeCodeLoader.isNativeCodeLoaded());
-    Assume.assumeTrue(NativeRuntime.isNativeLibraryLoaded());
+    assumeTrue(NativeCodeLoader.isNativeCodeLoaded());
+    assumeTrue(NativeRuntime.isNativeLibraryLoaded());
   }
 
-  @Test
-  public void testKVCompability() throws Exception {
+  @MethodSource("data")
+  @ParameterizedTest(name = "key:{0}\nvalue:{1}")
+  public void testKVCompatibility(Class<?> pkeyclass, Class<?> pValueclass) throws Exception {
+    initKVTest(pkeyclass, pValueclass);
     final FileSystem fs = FileSystem.get(nativekvtestconf);
     final String jobName = "Test:" + keyclass.getSimpleName() + "--"
         + valueclass.getSimpleName();
@@ -127,7 +124,9 @@ public class KVTest {
     nativekvtestconf.set(TestConstants.NATIVETASK_KVTEST_CREATEFILE, "true");
     final KVJob nativeJob = new KVJob(jobName, nativekvtestconf, keyclass,
         valueclass, inputPath, nativeOutputPath);
-    assertTrue("job should complete successfully", nativeJob.runJob());
+    assertThat(nativeJob.runJob())
+        .withFailMessage("job should complete successfully")
+        .isTrue();
 
     final String normalOutputPath = TestConstants.NATIVETASK_KVTEST_NORMAL_OUTPUTDIR
         + "/" + keyclass.getName() + "/" + valueclass.getName();
@@ -136,16 +135,18 @@ public class KVTest {
     hadoopkvtestconf.set(TestConstants.NATIVETASK_KVTEST_CREATEFILE, "false");
     final KVJob normalJob = new KVJob(jobName, hadoopkvtestconf, keyclass,
         valueclass, inputPath, normalOutputPath);
-    assertTrue("job should complete successfully", normalJob.runJob());
+    assertThat(normalJob.runJob())
+        .withFailMessage("job should complete successfully")
+        .isTrue();
 
     final boolean compareRet = ResultVerifier.verify(normalOutputPath,
         nativeOutputPath);
-    assertEquals("job output not the same", true, compareRet);
+    assertThat(compareRet).withFailMessage("job output not the same").isTrue();
     ResultVerifier.verifyCounters(normalJob.job, nativeJob.job);
     fs.close();
   }
 
-  @AfterClass
+  @AfterAll
   public static void cleanUp() throws IOException {
     final FileSystem fs = FileSystem.get(new ScenarioConfiguration());
     fs.delete(new Path(TestConstants.NATIVETASK_KVTEST_DIR), true);

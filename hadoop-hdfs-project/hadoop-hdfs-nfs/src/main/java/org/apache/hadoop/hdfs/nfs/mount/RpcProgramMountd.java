@@ -26,8 +26,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.HashMap;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import io.netty.channel.ChannelHandler;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.nfs.conf.NfsConfigKeys;
@@ -51,17 +55,16 @@ import org.apache.hadoop.oncrpc.XDR;
 import org.apache.hadoop.oncrpc.security.VerifierNone;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.buffer.ChannelBuffers;
-import org.jboss.netty.channel.ChannelHandlerContext;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * RPC program corresponding to mountd daemon. See {@link Mountd}.
  */
+@ChannelHandler.Sharable
 public class RpcProgramMountd extends RpcProgram implements MountInterface {
-  private static final Log LOG = LogFactory.getLog(RpcProgramMountd.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(RpcProgramMountd.class);
   public static final int PROGRAM = 100005;
   public static final int VERSION_1 = 1;
   public static final int VERSION_2 = 2;
@@ -261,8 +264,8 @@ public class RpcProgramMountd extends RpcProgram implements MountInterface {
           RpcAcceptedReply.AcceptState.PROC_UNAVAIL, new VerifierNone()).write(
           out);
     }
-    ChannelBuffer buf =
-        ChannelBuffers.wrappedBuffer(out.asReadOnlyWrap().buffer());
+    ByteBuf buf =
+        Unpooled.wrappedBuffer(out.asReadOnlyWrap().buffer());
     RpcResponse rsp = new RpcResponse(buf, info.remoteAddress());
     RpcUtil.sendRpcResponse(ctx, rsp);
   }

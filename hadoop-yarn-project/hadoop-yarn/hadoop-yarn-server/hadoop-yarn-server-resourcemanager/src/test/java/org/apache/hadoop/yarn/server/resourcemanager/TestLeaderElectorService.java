@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.curator.CuratorZookeeperClient;
 import org.apache.curator.test.InstanceSpec;
 import org.apache.curator.test.KillSession;
@@ -26,18 +26,18 @@ import org.apache.curator.test.TestingCluster;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.event.Level;
 import org.apache.zookeeper.ZooKeeper;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.util.Collection;
@@ -56,10 +56,9 @@ public class TestLeaderElectorService {
   MockRM rm1;
   MockRM rm2;
   TestingCluster zkCluster;
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.INFO);
+    GenericTestUtils.setRootLogLevel(Level.INFO);
     conf = new Configuration();
     conf.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
     conf.setBoolean(YarnConfiguration.CURATOR_LEADER_ELECTOR, true);
@@ -76,7 +75,7 @@ public class TestLeaderElectorService {
     zkCluster.start();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (rm1 != null) {
       rm1.stop();
@@ -90,7 +89,8 @@ public class TestLeaderElectorService {
   // 2. rm2 standby
   // 3. stop rm1
   // 4. rm2 become active
-  @Test (timeout = 20000)
+  @Test
+  @Timeout(value = 20)
   public void testRMShutDownCauseFailover() throws Exception {
     rm1 = startRM("rm1", HAServiceState.ACTIVE);
     rm2 = startRM("rm2", HAServiceState.STANDBY);
@@ -129,7 +129,14 @@ public class TestLeaderElectorService {
     rm2 = startRM("rm2", HAServiceState.STANDBY);
 
     // submit an app which will trigger state-store failure.
-    rm1.submitApp(200, "app1", "user1", null, "default", false);
+    MockRMAppSubmitter.submit(rm1,
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+        .withAppName("app1")
+        .withUser("user1")
+        .withAcls(null)
+        .withQueue("default")
+        .withWaitForAppAcceptedState(false)
+        .build());
     waitFor(rm1, HAServiceState.STANDBY);
 
     // rm2 should become active;
@@ -172,8 +179,7 @@ public class TestLeaderElectorService {
         service.getCuratorClient().getZookeeperClient();
     // this will expire current curator client session. curator will re-establish
     // the session. RM will first relinquish leadership and re-acquire leadership
-    KillSession
-        .kill(client.getZooKeeper(), client.getCurrentConnectionString());
+    KillSession.kill(client.getZooKeeper());
 
     waitFor(rm1, HAServiceState.ACTIVE);
   }
@@ -184,9 +190,9 @@ public class TestLeaderElectorService {
   public void testRMFailToTransitionToActive() throws Exception{
     conf.set(YarnConfiguration.RM_HA_ID, "rm1");
     final AtomicBoolean throwException = new AtomicBoolean(true);
-    Thread launchRM = new Thread() {
+    SubjectInheritingThread launchRM = new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         rm1 = new MockRM(conf, true) {
           @Override
           synchronized void transitionToActive() throws Exception {

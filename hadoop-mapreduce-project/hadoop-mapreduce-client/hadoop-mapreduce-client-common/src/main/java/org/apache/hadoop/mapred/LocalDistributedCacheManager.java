@@ -37,7 +37,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.UUID;
 
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileUtil;
@@ -45,18 +45,16 @@ import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
-import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.v2.util.MRApps;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.concurrent.HadoopExecutors;
 import org.apache.hadoop.yarn.api.records.LocalResource;
 import org.apache.hadoop.yarn.api.records.LocalResourceType;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.FSDownload;
 
-import com.google.common.collect.Maps;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,6 +71,7 @@ class LocalDistributedCacheManager {
   private List<String> localClasspaths = new ArrayList<String>();
   
   private List<File> symlinksCreated = new ArrayList<File>();
+  private URLClassLoader classLoaderCreated = null;
   
   private boolean setupCalled = false;
   
@@ -82,7 +81,7 @@ class LocalDistributedCacheManager {
    * @param conf
    * @throws IOException
    */
-  public void setup(JobConf conf) throws IOException {
+  public synchronized void setup(JobConf conf, JobID jobId) throws IOException {
     File workDir = new File(System.getProperty("user.dir"));
     
     // Generate YARN local resources objects corresponding to the distributed
@@ -91,18 +90,16 @@ class LocalDistributedCacheManager {
       new LinkedHashMap<String, LocalResource>();
     MRApps.setupDistributedCache(conf, localResources);
     // Generating unique numbers for FSDownload.
-    AtomicLong uniqueNumberGenerator =
-        new AtomicLong(System.currentTimeMillis());
-    
+
     // Find which resources are to be put on the local classpath
     Map<String, Path> classpaths = new HashMap<String, Path>();
-    Path[] archiveClassPaths = DistributedCache.getArchiveClassPaths(conf);
+    Path[] archiveClassPaths = JobContextImpl.getArchiveClassPaths(conf);
     if (archiveClassPaths != null) {
       for (Path p : archiveClassPaths) {
         classpaths.put(p.toUri().getPath().toString(), p);
       }
     }
-    Path[] fileClassPaths = DistributedCache.getFileClassPaths(conf);
+    Path[] fileClassPaths = JobContextImpl.getFileClassPaths(conf);
     if (fileClassPaths != null) {
       for (Path p : fileClassPaths) {
         classpaths.put(p.toUri().getPath().toString(), p);
@@ -124,9 +121,10 @@ class LocalDistributedCacheManager {
       Path destPath = localDirAllocator.getLocalPathForWrite(".", conf);
       Map<LocalResource, Future<Path>> resourcesToPaths = Maps.newHashMap();
       for (LocalResource resource : localResources.values()) {
+        Path destPathForDownload = new Path(destPath,
+            jobId.toString() + "_" + UUID.randomUUID().toString());
         Callable<Path> download =
-            new FSDownload(localFSFileContext, ugi, conf, new Path(destPath,
-                Long.toString(uniqueNumberGenerator.incrementAndGet())),
+            new FSDownload(localFSFileContext, ugi, conf, destPathForDownload,
                 resource);
         Future<Path> future = exec.submit(download);
         resourcesToPaths.put(resource, future);
@@ -213,7 +211,7 @@ class LocalDistributedCacheManager {
    * Should be called after setup().
    * 
    */
-  public boolean hasLocalClasspaths() {
+  public synchronized boolean hasLocalClasspaths() {
     if (!setupCalled) {
       throw new IllegalStateException(
           "hasLocalClasspaths() should be called after setup()");
@@ -225,8 +223,11 @@ class LocalDistributedCacheManager {
    * Creates a class loader that includes the designated
    * files and archives.
    */
-  public ClassLoader makeClassLoader(final ClassLoader parent)
+  public synchronized ClassLoader makeClassLoader(final ClassLoader parent)
       throws MalformedURLException {
+    if (classLoaderCreated != null) {
+      throw new IllegalStateException("A classloader was already created");
+    }
     final URL[] urls = new URL[localClasspaths.size()];
     for (int i = 0; i < localClasspaths.size(); ++i) {
       urls[i] = new File(localClasspaths.get(i)).toURI().toURL();
@@ -235,12 +236,29 @@ class LocalDistributedCacheManager {
     return AccessController.doPrivileged(new PrivilegedAction<ClassLoader>() {
       @Override
       public ClassLoader run() {
-        return new URLClassLoader(urls, parent);
+        classLoaderCreated = new URLClassLoader(urls, parent);
+        return classLoaderCreated;
       }
     });
   }
 
-  public void close() throws IOException {
+  public synchronized void close() throws IOException {
+    if(classLoaderCreated != null) {
+      AccessController.doPrivileged(new PrivilegedAction<Void>() {
+        @Override
+        public Void run() {
+          try {
+            classLoaderCreated.close();
+            classLoaderCreated = null;
+          } catch (IOException e) {
+            LOG.warn("Failed to close classloader created " +
+                "by LocalDistributedCacheManager");
+          }
+          return null;
+        }
+      });
+    }
+
     for (File symlink : symlinksCreated) {
       if (!symlink.delete()) {
         LOG.warn("Failed to delete symlink created by the local job runner: " +

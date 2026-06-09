@@ -24,8 +24,8 @@ import javax.xml.bind.annotation.XmlRootElement;
 import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.service.Service.STATE;
 import org.apache.hadoop.util.VersionInfo;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
-import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
 import org.apache.hadoop.yarn.util.YarnVersionInfo;
 
 @XmlRootElement
@@ -44,6 +44,9 @@ public class ClusterInfo {
   protected String hadoopBuildVersion;
   protected String hadoopVersionBuiltOn;
   protected String haZooKeeperConnectionState;
+
+  private String subClusterId;
+  private boolean schedulerUiEnabled;
 
   public ClusterInfo() {
   } // JAXB needs this
@@ -65,6 +68,10 @@ public class ClusterInfo {
     this.hadoopVersionBuiltOn = VersionInfo.getDate();
     this.haZooKeeperConnectionState =
         rm.getRMContext().getHAZookeeperConnectionState();
+    this.schedulerUiEnabled = rm.getConfig().getBoolean(
+        YarnConfiguration.YARN_WEBAPP_SCHEDULER_UI_ENABLE,
+        YarnConfiguration.DEFAULT_YARN_WEBAPP_SCHEDULER_UI_ENABLE
+    );
   }
 
   public String getState() {
@@ -113,5 +120,21 @@ public class ClusterInfo {
 
   public String getHAZookeeperConnectionState() {
     return this.haZooKeeperConnectionState;
+  }
+
+  public String getSubClusterId() {
+    return subClusterId;
+  }
+
+  public void setSubClusterId(String subClusterId) {
+    this.subClusterId = subClusterId;
+  }
+
+  public boolean isSchedulerUiEnabled() {
+    return schedulerUiEnabled;
+  }
+
+  public void setSchedulerUiEnabled(boolean schedulerUiEnabled) {
+    this.schedulerUiEnabled = schedulerUiEnabled;
   }
 }

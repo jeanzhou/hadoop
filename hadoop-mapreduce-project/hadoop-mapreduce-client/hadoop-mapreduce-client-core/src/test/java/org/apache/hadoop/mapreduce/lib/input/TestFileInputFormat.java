@@ -23,38 +23,43 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
-
-import javax.annotation.Nullable;
-
-import org.junit.Assert;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.HdfsBlockLocation;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.hdfs.protocol.DatanodeID;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.mapred.SplitLocationInfo;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.Job;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
+import org.apache.hadoop.util.Lists;
+import org.apache.hadoop.util.Sets;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Function;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
-@RunWith(value = Parameterized.class)
 public class TestFileInputFormat {
   
   private static final Logger LOG =
@@ -67,18 +72,17 @@ public class TestFileInputFormat {
   
   private int numThreads;
   
-  public TestFileInputFormat(int numThreads) {
-    this.numThreads = numThreads;
-    LOG.info("Running with numThreads: " + numThreads);
+  public void initTestFileInputFormat(int pNumThreads) {
+    this.numThreads = pNumThreads;
+    LOG.info("Running with numThreads: " + pNumThreads);
   }
-  
-  @Parameters
+
   public static Collection<Object[]> data() {
-    Object[][] data = new Object[][] { { 1 }, { 5 }};
+    Object[][] data = new Object[][]{{1}, {5}};
     return Arrays.asList(data);
   }
   
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     LOG.info("Using Test Dir: " + TEST_ROOT_DIR);
     localFs = FileSystem.getLocal(new Configuration());
@@ -86,20 +90,22 @@ public class TestFileInputFormat {
     localFs.mkdirs(TEST_ROOT_DIR);
   }
   
-  @After
+  @AfterEach
   public void cleanup() throws IOException {
     localFs.delete(TEST_ROOT_DIR, true);
   }
 
-  @Test
-  public void testNumInputFilesRecursively() throws Exception {
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testNumInputFilesRecursively(int pNumThreads) throws Exception {
+    initTestFileInputFormat(pNumThreads);
     Configuration conf = getConfiguration();
     conf.set(FileInputFormat.INPUT_DIR_RECURSIVE, "true");
     conf.setInt(FileInputFormat.LIST_STATUS_NUM_THREADS, numThreads);
     Job job = Job.getInstance(conf);
     FileInputFormat<?, ?> fileInputFormat = new TextInputFormat();
     List<InputSplit> splits = fileInputFormat.getSplits(job);
-    Assert.assertEquals("Input splits are not correct", 3, splits.size());
+    assertEquals(3, splits.size(), "Input splits are not correct");
     verifySplits(Lists.newArrayList("test:/a1/a2/file2", "test:/a1/a2/file3",
         "test:/a1/file1"), splits);
 
@@ -112,38 +118,58 @@ public class TestFileInputFormat {
         "test:/a1/file1"), splits);
   }
 
-  @Test
-  public void testNumInputFilesWithoutRecursively() throws Exception {
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testNumInputFilesWithoutRecursively(int pNumThreads) throws Exception {
+    initTestFileInputFormat(pNumThreads);
     Configuration conf = getConfiguration();
     conf.setInt(FileInputFormat.LIST_STATUS_NUM_THREADS, numThreads);
     Job job = Job.getInstance(conf);
     FileInputFormat<?, ?> fileInputFormat = new TextInputFormat();
     List<InputSplit> splits = fileInputFormat.getSplits(job);
-    Assert.assertEquals("Input splits are not correct", 2, splits.size());
+    assertEquals(2, splits.size(), "Input splits are not correct");
     verifySplits(Lists.newArrayList("test:/a1/a2", "test:/a1/file1"), splits);
   }
 
-  @Test
-  public void testListLocatedStatus() throws Exception {
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testNumInputFilesIgnoreDirs(int pNumThreads) throws Exception {
+    initTestFileInputFormat(pNumThreads);
+    Configuration conf = getConfiguration();
+    conf.setInt(FileInputFormat.LIST_STATUS_NUM_THREADS, numThreads);
+    conf.setBoolean(FileInputFormat.INPUT_DIR_NONRECURSIVE_IGNORE_SUBDIRS, true);
+    Job job = Job.getInstance(conf);
+    FileInputFormat<?, ?> fileInputFormat = new TextInputFormat();
+    List<InputSplit> splits = fileInputFormat.getSplits(job);
+    assertEquals(1, splits.size(), "Input splits are not correct");
+    verifySplits(Lists.newArrayList("test:/a1/file1"), splits);
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testListLocatedStatus(int pNumThreads) throws Exception {
+    initTestFileInputFormat(pNumThreads);
     Configuration conf = getConfiguration();
     conf.setInt(FileInputFormat.LIST_STATUS_NUM_THREADS, numThreads);
     conf.setBoolean("fs.test.impl.disable.cache", false);
     conf.set(FileInputFormat.INPUT_DIR, "test:///a1/a2");
     MockFileSystem mockFs =
         (MockFileSystem) new Path("test:///").getFileSystem(conf);
-    Assert.assertEquals("listLocatedStatus already called",
-        0, mockFs.numListLocatedStatusCalls);
+    assertEquals(0, mockFs.numListLocatedStatusCalls,
+        "listLocatedStatus already called");
     Job job = Job.getInstance(conf);
     FileInputFormat<?, ?> fileInputFormat = new TextInputFormat();
     List<InputSplit> splits = fileInputFormat.getSplits(job);
-    Assert.assertEquals("Input splits are not correct", 2, splits.size());
-    Assert.assertEquals("listLocatedStatuss calls",
-        1, mockFs.numListLocatedStatusCalls);
+    assertEquals(2, splits.size(), "Input splits are not correct");
+    assertEquals(1, mockFs.numListLocatedStatusCalls,
+        "listLocatedStatus calls");
     FileSystem.closeAll();
   }
-  
-  @Test
-  public void testSplitLocationInfo() throws Exception {
+
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testSplitLocationInfo(int pNumThreads) throws Exception {
+    initTestFileInputFormat(pNumThreads);
     Configuration conf = getConfiguration();
     conf.set(org.apache.hadoop.mapreduce.lib.input.FileInputFormat.INPUT_DIR,
         "test:///a1/a2");
@@ -151,21 +177,23 @@ public class TestFileInputFormat {
     TextInputFormat fileInputFormat = new TextInputFormat();
     List<InputSplit> splits = fileInputFormat.getSplits(job);
     String[] locations = splits.get(0).getLocations();
-    Assert.assertEquals(2, locations.length);
+    assertEquals(2, locations.length);
     SplitLocationInfo[] locationInfo = splits.get(0).getLocationInfo();
-    Assert.assertEquals(2, locationInfo.length);
+    assertEquals(2, locationInfo.length);
     SplitLocationInfo localhostInfo = locations[0].equals("localhost") ?
         locationInfo[0] : locationInfo[1];
     SplitLocationInfo otherhostInfo = locations[0].equals("otherhost") ?
         locationInfo[0] : locationInfo[1];
-    Assert.assertTrue(localhostInfo.isOnDisk());
-    Assert.assertTrue(localhostInfo.isInMemory());
-    Assert.assertTrue(otherhostInfo.isOnDisk());
-    Assert.assertFalse(otherhostInfo.isInMemory());
+    assertTrue(localhostInfo.isOnDisk());
+    assertTrue(localhostInfo.isInMemory());
+    assertTrue(otherhostInfo.isOnDisk());
+    assertFalse(otherhostInfo.isInMemory());
   }
 
-  @Test
-  public void testListStatusSimple() throws IOException {
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testListStatusSimple(int pNumThreads) throws IOException {
+    initTestFileInputFormat(pNumThreads);
     Configuration conf = new Configuration();
     conf.setInt(FileInputFormat.LIST_STATUS_NUM_THREADS, numThreads);
 
@@ -178,8 +206,10 @@ public class TestFileInputFormat {
     verifyFileStatuses(expectedPaths, statuses, localFs);
   }
 
-  @Test
-  public void testListStatusNestedRecursive() throws IOException {
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testListStatusNestedRecursive(int pNumThreads) throws IOException {
+    initTestFileInputFormat(pNumThreads);
     Configuration conf = new Configuration();
     conf.setInt(FileInputFormat.LIST_STATUS_NUM_THREADS, numThreads);
 
@@ -192,8 +222,10 @@ public class TestFileInputFormat {
   }
 
 
-  @Test
-  public void testListStatusNestedNonRecursive() throws IOException {
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testListStatusNestedNonRecursive(int pNumThreads) throws IOException {
+    initTestFileInputFormat(pNumThreads);
     Configuration conf = new Configuration();
     conf.setInt(FileInputFormat.LIST_STATUS_NUM_THREADS, numThreads);
 
@@ -205,8 +237,10 @@ public class TestFileInputFormat {
     verifyFileStatuses(expectedPaths, statuses, localFs);
   }
 
-  @Test
-  public void testListStatusErrorOnNonExistantDir() throws IOException {
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testListStatusErrorOnNonExistantDir(int pNumThreads) throws IOException {
+    initTestFileInputFormat(pNumThreads);
     Configuration conf = new Configuration();
     conf.setInt(FileInputFormat.LIST_STATUS_NUM_THREADS, numThreads);
 
@@ -215,15 +249,61 @@ public class TestFileInputFormat {
     FileInputFormat<?, ?> fif = new TextInputFormat();
     try {
       fif.listStatus(job);
-      Assert.fail("Expecting an IOException for a missing Input path");
+      fail("Expecting an IOException for a missing Input path");
     } catch (IOException e) {
       Path expectedExceptionPath = new Path(TEST_ROOT_DIR, "input2");
       expectedExceptionPath = localFs.makeQualified(expectedExceptionPath);
-      Assert.assertTrue(e instanceof InvalidInputException);
-      Assert.assertEquals(
+      assertInstanceOf(InvalidInputException.class, e);
+      assertEquals(
           "Input path does not exist: " + expectedExceptionPath.toString(),
           e.getMessage());
     }
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest
+  public void testShrinkStatus(int pNumThreads) throws IOException {
+    initTestFileInputFormat(pNumThreads);
+    Configuration conf = getConfiguration();
+    MockFileSystem mockFs =
+        (MockFileSystem) new Path("test:///").getFileSystem(conf);
+    Path dir1  = new Path("test:/a1");
+    RemoteIterator<LocatedFileStatus> statuses = mockFs.listLocatedStatus(dir1);
+    boolean verified = false;
+    while (statuses.hasNext()) {
+      LocatedFileStatus orig = statuses.next();
+      LocatedFileStatus shrink =
+          (LocatedFileStatus)FileInputFormat.shrinkStatus(orig);
+      assertTrue(orig.equals(shrink));
+      if (shrink.getBlockLocations() != null) {
+        assertEquals(orig.getBlockLocations().length,
+            shrink.getBlockLocations().length);
+        for (int i = 0; i < shrink.getBlockLocations().length; i++) {
+          verified = true;
+          BlockLocation location = shrink.getBlockLocations()[i];
+          BlockLocation actual = orig.getBlockLocations()[i];
+          assertNotNull(((HdfsBlockLocation)actual).getLocatedBlock());
+          assertEquals(BlockLocation.class.getName(),
+              location.getClass().getName());
+          assertArrayEquals(actual.getHosts(), location.getHosts());
+          assertArrayEquals(actual.getCachedHosts(),
+              location.getCachedHosts());
+          assertArrayEquals(actual.getStorageIds(),
+              location.getStorageIds());
+          assertArrayEquals(actual.getStorageTypes(),
+              location.getStorageTypes());
+          assertArrayEquals(actual.getTopologyPaths(),
+              location.getTopologyPaths());
+          assertArrayEquals(actual.getNames(), location.getNames());
+          assertEquals(actual.getLength(), location.getLength());
+          assertEquals(actual.getOffset(), location.getOffset());
+          assertEquals(actual.isCorrupt(), location.isCorrupt());
+        }
+      } else {
+        assertTrue(orig.getBlockLocations() == null);
+      }
+    }
+    assertTrue(verified);
   }
 
   public static List<Path> configureTestSimple(Configuration conf, FileSystem localFs)
@@ -339,46 +419,38 @@ public class TestFileInputFormat {
 
   public static void verifyFileStatuses(List<Path> expectedPaths,
       List<FileStatus> fetchedStatuses, final FileSystem localFs) {
-    Assert.assertEquals(expectedPaths.size(), fetchedStatuses.size());
+    assertEquals(expectedPaths.size(), fetchedStatuses.size());
 
-    Iterable<Path> fqExpectedPaths = Iterables.transform(expectedPaths,
-        new Function<Path, Path>() {
-          @Override
-          public Path apply(Path input) {
-            return localFs.makeQualified(input);
-          }
-        });
+    Iterable<Path> fqExpectedPaths =
+        expectedPaths.stream().map(
+            input -> localFs.makeQualified(input)).collect(Collectors.toList());
+
 
     Set<Path> expectedPathSet = Sets.newHashSet(fqExpectedPaths);
     for (FileStatus fileStatus : fetchedStatuses) {
       if (!expectedPathSet.remove(localFs.makeQualified(fileStatus.getPath()))) {
-        Assert.fail("Found extra fetched status: " + fileStatus.getPath());
+        fail("Found extra fetched status: " + fileStatus.getPath());
       }
     }
-    Assert.assertEquals(
-        "Not all expectedPaths matched: " + expectedPathSet.toString(), 0,
-        expectedPathSet.size());
+    assertEquals(0, expectedPathSet.size(),
+        "Not all expectedPaths matched: " + expectedPathSet);
   }
 
 
   private void verifySplits(List<String> expected, List<InputSplit> splits) {
-    Iterable<String> pathsFromSplits = Iterables.transform(splits,
-        new Function<InputSplit, String>() {
-          @Override
-          public String apply(@Nullable InputSplit input) {
-            return ((FileSplit) input).getPath().toString();
-          }
-        });
+    Iterable<String> pathsFromSplits =
+        splits.stream().map(
+            input-> ((FileSplit) input).getPath().toString())
+            .collect(Collectors.toList());
 
     Set<String> expectedSet = Sets.newHashSet(expected);
     for (String splitPathString : pathsFromSplits) {
       if (!expectedSet.remove(splitPathString)) {
-        Assert.fail("Found extra split: " + splitPathString);
+        fail("Found extra split: " + splitPathString);
       }
     }
-    Assert.assertEquals(
-        "Not all expectedPaths matched: " + expectedSet.toString(), 0,
-        expectedSet.size());
+    assertEquals(0, expectedSet.size(),
+        "Not all expectedPaths matched: " + expectedSet);
   }
   
   private Configuration getConfiguration() {
@@ -425,10 +497,31 @@ public class TestFileInputFormat {
     @Override
     public BlockLocation[] getFileBlockLocations(FileStatus file, long start, long len)
         throws IOException {
-      return new BlockLocation[] {
-          new BlockLocation(new String[] { "localhost:9866", "otherhost:9866" },
-              new String[] { "localhost", "otherhost" }, new String[] { "localhost" },
-              new String[0], 0, len, false) };    }
+      DatanodeInfo[] ds = new DatanodeInfo[2];
+      ds[0] = new DatanodeDescriptor(
+          new DatanodeID("127.0.0.1", "localhost", "abcd",
+              9866, 9867, 9868, 9869));
+      ds[1] = new DatanodeDescriptor(
+          new DatanodeID("1.0.0.1", "otherhost", "efgh",
+              9866, 9867, 9868, 9869));
+      long blockLen = len / 3;
+      ExtendedBlock b1 = new ExtendedBlock("bpid", 0, blockLen, 0);
+      ExtendedBlock b2 = new ExtendedBlock("bpid", 1, blockLen, 1);
+      ExtendedBlock b3 = new ExtendedBlock("bpid", 2, len - 2 * blockLen, 2);
+      String[] names = new String[]{ "localhost:9866", "otherhost:9866" };
+      String[] hosts = new String[]{ "localhost", "otherhost" };
+      String[] cachedHosts = {"localhost"};
+      BlockLocation loc1 = new BlockLocation(names, hosts, cachedHosts,
+          new String[0], 0, blockLen, false);
+      BlockLocation loc2 = new BlockLocation(names, hosts, cachedHosts,
+          new String[0], blockLen, blockLen, false);
+      BlockLocation loc3 = new BlockLocation(names, hosts, cachedHosts,
+          new String[0], 2 * blockLen, len - 2 * blockLen, false);
+      return new BlockLocation[]{
+          new HdfsBlockLocation(loc1, new LocatedBlock(b1, ds)),
+          new HdfsBlockLocation(loc2, new LocatedBlock(b2, ds)),
+          new HdfsBlockLocation(loc3, new LocatedBlock(b3, ds)) };
+    }
 
     @Override
     protected RemoteIterator<LocatedFileStatus> listLocatedStatus(Path f,

@@ -17,7 +17,6 @@
  */
 package org.apache.hadoop.hdfs.tools.offlineImageViewer;
 
-import com.google.common.base.Charsets;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
@@ -30,20 +29,21 @@ import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.QueryStringDecoder;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hdfs.web.JsonUtil;
 import org.apache.hadoop.util.StringUtils;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
-import static io.netty.handler.codec.http.HttpHeaders.Names.CONNECTION;
-import static io.netty.handler.codec.http.HttpHeaders.Names.CONTENT_LENGTH;
-import static io.netty.handler.codec.http.HttpHeaders.Names.CONTENT_TYPE;
-import static io.netty.handler.codec.http.HttpHeaders.Values.CLOSE;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONNECTION;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
+import static io.netty.handler.codec.http.HttpHeaderValues.CLOSE;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
@@ -58,7 +58,8 @@ import static org.apache.hadoop.hdfs.server.datanode.web.webhdfs.WebHdfsHandler.
  * Implement the read-only WebHDFS API for fsimage.
  */
 class FSImageHandler extends SimpleChannelInboundHandler<HttpRequest> {
-  public static final Log LOG = LogFactory.getLog(FSImageHandler.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(FSImageHandler.class);
   private final FSImageLoader image;
   private final ChannelGroup activeChannels;
 
@@ -75,7 +76,7 @@ class FSImageHandler extends SimpleChannelInboundHandler<HttpRequest> {
   @Override
   public void channelRead0(ChannelHandlerContext ctx, HttpRequest request)
       throws Exception {
-    if (request.getMethod() != HttpMethod.GET) {
+    if (request.method() != HttpMethod.GET) {
       DefaultHttpResponse resp = new DefaultHttpResponse(HTTP_1_1,
           METHOD_NOT_ALLOWED);
       resp.headers().set(CONNECTION, CLOSE);
@@ -83,11 +84,16 @@ class FSImageHandler extends SimpleChannelInboundHandler<HttpRequest> {
       return;
     }
 
-    QueryStringDecoder decoder = new QueryStringDecoder(request.getUri());
+    QueryStringDecoder decoder = new QueryStringDecoder(request.uri());
+    // check path. throw exception if path doesn't start with WEBHDFS_PREFIX
+    String path = getPath(decoder);
     final String op = getOp(decoder);
+    // check null op
+    if (op == null) {
+      throw new IllegalArgumentException("Param op must be specified.");
+    }
 
     final String content;
-    String path = getPath(decoder);
     switch (op) {
     case "GETFILESTATUS":
       content = image.getFileStatus(path);
@@ -118,7 +124,7 @@ class FSImageHandler extends SimpleChannelInboundHandler<HttpRequest> {
 
     DefaultFullHttpResponse resp = new DefaultFullHttpResponse(HTTP_1_1,
         HttpResponseStatus.OK, Unpooled.wrappedBuffer(content
-            .getBytes(Charsets.UTF_8)));
+            .getBytes(StandardCharsets.UTF_8)));
     resp.headers().set(CONTENT_TYPE, APPLICATION_JSON_UTF8);
     resp.headers().set(CONTENT_LENGTH, resp.content().readableBytes());
     resp.headers().set(CONNECTION, CLOSE);
@@ -134,9 +140,9 @@ class FSImageHandler extends SimpleChannelInboundHandler<HttpRequest> {
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause)
           throws Exception {
     Exception e = cause instanceof Exception ? (Exception) cause : new
-      Exception(cause);
+        Exception(cause);
     final String output = JsonUtil.toJsonString(e);
-    ByteBuf content = Unpooled.wrappedBuffer(output.getBytes(Charsets.UTF_8));
+    ByteBuf content = Unpooled.wrappedBuffer(output.getBytes(StandardCharsets.UTF_8));
     final DefaultFullHttpResponse resp = new DefaultFullHttpResponse(
             HTTP_1_1, INTERNAL_SERVER_ERROR, content);
 

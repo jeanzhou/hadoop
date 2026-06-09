@@ -81,6 +81,10 @@ public abstract class MembershipStats extends BaseRecord {
 
   public abstract int getNumOfDeadDatanodes();
 
+  public abstract void setNumOfStaleDatanodes(int nodes);
+
+  public abstract int getNumOfStaleDatanodes();
+
   public abstract void setNumOfDecommissioningDatanodes(int nodes);
 
   public abstract int getNumOfDecommissioningDatanodes();
@@ -92,6 +96,51 @@ public abstract class MembershipStats extends BaseRecord {
   public abstract void setNumOfDecomDeadDatanodes(int nodes);
 
   public abstract int getNumOfDecomDeadDatanodes();
+
+  public abstract void setNumOfInMaintenanceLiveDataNodes(int nodes);
+
+  public abstract int getNumOfInMaintenanceLiveDataNodes();
+
+  public abstract void setNumOfInMaintenanceDeadDataNodes(int nodes);
+
+  public abstract int getNumOfInMaintenanceDeadDataNodes();
+
+  public abstract void setNumOfEnteringMaintenanceDataNodes(int nodes);
+
+  public abstract int getNumOfEnteringMaintenanceDataNodes();
+
+  public abstract void setCorruptFilesCount(int num);
+
+  public abstract int getCorruptFilesCount();
+
+  public abstract void setScheduledReplicationBlocks(long blocks);
+
+  public abstract long getScheduledReplicationBlocks();
+
+  public abstract void setNumberOfMissingBlocksWithReplicationFactorOne(
+      long blocks);
+
+  public abstract long getNumberOfMissingBlocksWithReplicationFactorOne();
+
+  public abstract void setNumberOfBadlyDistributedBlocks(
+      long blocks);
+
+  public abstract long getNumberOfBadlyDistributedBlocks();
+
+  public abstract void setHighestPriorityLowRedundancyReplicatedBlocks(
+      long blocks);
+
+  public abstract long getHighestPriorityLowRedundancyReplicatedBlocks();
+
+
+  public abstract void setHighestPriorityLowRedundancyECBlocks(
+      long blocks);
+
+  public abstract long getHighestPriorityLowRedundancyECBlocks();
+
+  public abstract void setPendingSPSPaths(int pendingSPSPaths);
+
+  public abstract int getPendingSPSPaths();
 
   @Override
   public SortedMap<String, String> getPrimaryKeys() {

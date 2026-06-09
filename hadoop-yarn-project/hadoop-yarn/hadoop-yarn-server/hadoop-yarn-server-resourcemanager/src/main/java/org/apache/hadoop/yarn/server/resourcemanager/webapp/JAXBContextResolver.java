@@ -18,67 +18,60 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
-import com.google.inject.Singleton;
-import com.sun.jersey.api.json.JSONConfiguration;
-import com.sun.jersey.api.json.JSONJAXBContext;
+import org.eclipse.persistence.jaxb.JAXBContextFactory;
+import org.eclipse.persistence.jaxb.MarshallerProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.Set;
 
+import javax.inject.Inject;
+import javax.inject.Singleton;
 import javax.ws.rs.ext.ContextResolver;
 import javax.ws.rs.ext.Provider;
 import javax.xml.bind.JAXBContext;
 
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.UserInfo;
-import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.*;
-import org.apache.hadoop.yarn.webapp.RemoteExceptionData;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.jsonprovider.ClassSerialisationConfig;
 
 @Singleton
 @Provider
 public class JAXBContextResolver implements ContextResolver<JAXBContext> {
-
-  private final Map<Class, JAXBContext> typesContextMap;
+  private static final Logger LOG = LoggerFactory.getLogger(JAXBContextResolver.class.getName());
+  private final Map<Class, JAXBContext> typesContextMap = new HashMap<>();
 
   public JAXBContextResolver() throws Exception {
+    this(new Configuration());
+  }
 
-    JAXBContext context;
-    JAXBContext unWrappedRootContext;
+  @Inject
+  public JAXBContextResolver(@javax.inject.Named("conf") Configuration conf) throws Exception {
+    ClassSerialisationConfig classSerialisationConfig = new ClassSerialisationConfig(conf);
+    Set<Class<?>> wrappedClasses = classSerialisationConfig.getWrappedClasses();
+    Set<Class<?>> unWrappedClasses = classSerialisationConfig.getUnWrappedClasses();
 
-    // you have to specify all the dao classes here
-    final Class[] cTypes =
-        { AppInfo.class, AppAttemptInfo.class, AppAttemptsInfo.class,
-            ClusterInfo.class, CapacitySchedulerQueueInfo.class,
-            FifoSchedulerInfo.class, SchedulerTypeInfo.class, NodeInfo.class,
-            UserMetricsInfo.class, CapacitySchedulerInfo.class,
-            ClusterMetricsInfo.class, SchedulerInfo.class, AppsInfo.class,
-            NodesInfo.class, RemoteExceptionData.class,
-            CapacitySchedulerQueueInfoList.class, ResourceInfo.class,
-            UsersInfo.class, UserInfo.class, ApplicationStatisticsInfo.class,
-            StatisticsItemInfo.class, CapacitySchedulerHealthInfo.class,
-            FairSchedulerQueueInfoList.class, AppTimeoutsInfo.class,
-            AppTimeoutInfo.class, ResourceInformationsInfo.class };
-    // these dao classes need root unwrapping
-    final Class[] rootUnwrappedTypes =
-        { NewApplication.class, ApplicationSubmissionContextInfo.class,
-            ContainerLaunchContextInfo.class, LocalResourceInfo.class,
-            DelegationToken.class, AppQueue.class, AppPriority.class };
+    //WARNING: AFAIK these properties not respected by MOXyJsonProvider
+    //For details check MOXyJsonProvider#readFrom method
+    JAXBContext wrappedContext = JAXBContextFactory.createContext(
+        wrappedClasses.toArray(new Class[0]),
+        Collections.singletonMap(MarshallerProperties.JSON_INCLUDE_ROOT, true)
+    );
+    JAXBContext unWrappedContext = JAXBContextFactory.createContext(
+        unWrappedClasses.toArray(new Class[0]),
+        Collections.singletonMap(MarshallerProperties.JSON_INCLUDE_ROOT, false)
+    );
 
-    this.typesContextMap = new HashMap<Class, JAXBContext>();
-    context =
-        new JSONJAXBContext(JSONConfiguration.natural().rootUnwrapping(false)
-          .build(), cTypes);
-    unWrappedRootContext =
-        new JSONJAXBContext(JSONConfiguration.natural().rootUnwrapping(true)
-          .build(), rootUnwrappedTypes);
-    for (Class type : cTypes) {
-      typesContextMap.put(type, context);
-    }
-    for (Class type : rootUnwrappedTypes) {
-      typesContextMap.put(type, unWrappedRootContext);
-    }
+    wrappedClasses.forEach(type -> typesContextMap.put(type, wrappedContext));
+    unWrappedClasses.forEach(type -> typesContextMap.put(type, unWrappedContext));
   }
 
   @Override
   public JAXBContext getContext(Class<?> objectType) {
-    return typesContextMap.get(objectType);
+    JAXBContext jaxbContext = typesContextMap.get(objectType);
+    LOG.trace("Context for {} is {}", objectType,  jaxbContext);
+    return jaxbContext;
   }
 }

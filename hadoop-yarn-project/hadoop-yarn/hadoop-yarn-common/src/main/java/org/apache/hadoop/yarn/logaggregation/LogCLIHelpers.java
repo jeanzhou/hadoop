@@ -26,8 +26,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
@@ -35,13 +34,14 @@ import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileController;
 import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileControllerFactory;
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 public class LogCLIHelpers implements Configurable {
 
@@ -68,6 +68,75 @@ public class LogCLIHelpers implements Configurable {
     return dumpAContainerLogsForLogType(options, false);
   }
 
+  public static String guessOwnerWithFileFormat(
+      LogAggregationFileController fileFormat, ApplicationId appId,
+      String bestGuess, Configuration conf) throws IOException {
+
+    boolean scanOldPath = LogAggregationUtils.isOlderPathEnabled(conf);
+    Path remoteRootLogDir = fileFormat.getRemoteRootLogDir();
+    String suffix = fileFormat.getRemoteRootLogDirSuffix();
+    Path fullPath = fileFormat.getRemoteAppLogDir(appId, bestGuess);
+    FileContext fc =
+        FileContext.getFileContext(remoteRootLogDir.toUri(), conf);
+    String pathAccess = fullPath.toString();
+
+    try {
+      if (fc.util().exists(fullPath)) {
+        return bestGuess;
+      }
+
+      if (scanOldPath) {
+        Path olderAppPath = fileFormat.getOlderRemoteAppLogDir(appId,
+            bestGuess);
+        pathAccess = olderAppPath.toString();
+        if (fc.util().exists(olderAppPath)) {
+          return bestGuess;
+        }
+      }
+    } catch (AccessControlException | AccessDeniedException ex) {
+      logDirNoAccessPermission(pathAccess, bestGuess, ex.getMessage());
+      throw ex;
+    }
+
+    try {
+      Path toMatch = fileFormat.getRemoteAppLogDir(appId, null);
+      FileStatus[] matching = fc.util().globStatus(toMatch);
+      if (matching != null && matching.length == 1) {
+        //fetch user from new path /app-logs/user[/suffix]/bucket/app_id
+        Path parent = matching[0].getPath().getParent();
+        //skip the suffix too
+        if (suffix != null && !StringUtils.isEmpty(suffix)) {
+          parent = parent.getParent();
+        }
+        //skip the bucket
+        parent = parent.getParent();
+        return parent.getName();
+      }
+    } catch (IOException e) {
+      // Ignore IOException thrown from wrong file format
+    }
+
+    if (scanOldPath) {
+      try {
+        Path toMatch = fileFormat.getOlderRemoteAppLogDir(appId, null);
+        FileStatus[] matching = fc.util().globStatus(toMatch);
+        if (matching != null && matching.length == 1) {
+          //fetch user from old path /app-logs/user[/suffix]/app_id
+          Path parent = matching[0].getPath().getParent();
+          //skip the suffix too
+          if (suffix != null && !StringUtils.isEmpty(suffix)) {
+            parent = parent.getParent();
+          }
+          return parent.getName();
+        }
+      } catch (IOException e) {
+        // Ignore IOException thrown from wrong file format
+      }
+    }
+
+    return null;
+  }
+
   @Private
   @VisibleForTesting
   /**
@@ -81,38 +150,31 @@ public class LogCLIHelpers implements Configurable {
    */
   public static String getOwnerForAppIdOrNull(
       ApplicationId appId, String bestGuess,
-      Configuration conf) throws IOException {
-    Path remoteRootLogDir = new Path(conf.get(
-        YarnConfiguration.NM_REMOTE_APP_LOG_DIR,
-        YarnConfiguration.DEFAULT_NM_REMOTE_APP_LOG_DIR));
-    String suffix = LogAggregationUtils.getRemoteNodeLogDirSuffix(conf);
-    Path fullPath = LogAggregationUtils.getRemoteAppLogDir(remoteRootLogDir,
-        appId, bestGuess, suffix);
-    FileContext fc =
-        FileContext.getFileContext(remoteRootLogDir.toUri(), conf);
-    String pathAccess = fullPath.toString();
-    try {
-      if (fc.util().exists(fullPath)) {
-        return bestGuess;
+      Configuration conf) {
+    LogAggregationFileControllerFactory factory =
+        new LogAggregationFileControllerFactory(conf);
+    List<LogAggregationFileController> fileControllers = factory
+        .getConfiguredLogAggregationFileControllerList();
+
+    if (fileControllers != null && !fileControllers.isEmpty()) {
+      String owner = null;
+      for (LogAggregationFileController fileFormat : fileControllers) {
+        try {
+          owner = guessOwnerWithFileFormat(fileFormat, appId, bestGuess, conf);
+          if (owner != null) {
+            return owner;
+          }
+        } catch (IOException e) {
+          return null;
+        }
       }
-      Path toMatch = LogAggregationUtils.
-          getRemoteAppLogDir(remoteRootLogDir, appId, "*", suffix);
-      pathAccess = toMatch.toString();
-      FileStatus[] matching  = fc.util().globStatus(toMatch);
-      if (matching == null || matching.length != 1) {
-        return null;
-      }
-      //fetch the user from the full path /app-logs/user[/suffix]/app_id
-      Path parent = matching[0].getPath().getParent();
-      //skip the suffix too
-      if (suffix != null && !StringUtils.isEmpty(suffix)) {
-        parent = parent.getParent();
-      }
-      return parent.getName();
-    } catch (AccessControlException | AccessDeniedException ex) {
-      logDirNoAccessPermission(pathAccess, bestGuess, ex.getMessage());
-      return null;
+    } else {
+      System.err.println("Can not find any valid fileControllers. " +
+          " The configurated fileControllers: " +
+          YarnConfiguration.LOG_AGGREGATION_FILE_FORMATS);
     }
+
+    return null;
   }
 
   @Private
@@ -183,7 +245,8 @@ public class LogCLIHelpers implements Configurable {
     }
     if (!foundAnyLogs) {
       emptyLogDir(LogAggregationUtils.getRemoteAppLogDir(
-          conf, options.getAppId(), options.getAppOwner())
+          conf, options.getAppId(), options.getAppOwner(),
+          fc.getRemoteRootLogDir(), fc.getRemoteRootLogDirSuffix())
           .toString());
       return -1;
     }
@@ -254,12 +317,11 @@ public class LogCLIHelpers implements Configurable {
           appOwner, fileFormat.getRemoteRootLogDir(),
           fileFormat.getRemoteRootLogDirSuffix());
     } catch (FileNotFoundException fnf) {
-      logDirNotExist(LogAggregationUtils.getRemoteAppLogDir(
-          conf, appId, appOwner).toString());
+      logDirNotExist(fileFormat.getRemoteAppLogDir(appId,
+          appOwner).toString());
     } catch (AccessControlException | AccessDeniedException ace) {
-      logDirNoAccessPermission(LogAggregationUtils.getRemoteAppLogDir(
-          conf, appId, appOwner).toString(), appOwner,
-          ace.getMessage());
+      logDirNoAccessPermission(fileFormat.getRemoteAppLogDir(appId,
+          appOwner).toString(), appOwner, ace.getMessage());
     }
     if (nodeFiles == null) {
       return;
@@ -345,7 +407,7 @@ public class LogCLIHelpers implements Configurable {
 
   public void closePrintStream(PrintStream out) {
     if (out != System.out) {
-      IOUtils.closeQuietly(out);
+      IOUtils.closeStream(out);
     }
   }
 

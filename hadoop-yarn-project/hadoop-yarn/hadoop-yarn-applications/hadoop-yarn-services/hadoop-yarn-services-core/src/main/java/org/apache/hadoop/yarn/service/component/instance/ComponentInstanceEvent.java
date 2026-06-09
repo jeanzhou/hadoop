@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.service.component.instance;
 
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.event.AbstractEvent;
@@ -32,6 +33,7 @@ public class ComponentInstanceEvent
   public ComponentInstanceEvent(ContainerId containerId,
       ComponentInstanceEventType componentInstanceEventType) {
     super(componentInstanceEventType);
+    Preconditions.checkNotNull(containerId);
     this.id = containerId;
   }
 

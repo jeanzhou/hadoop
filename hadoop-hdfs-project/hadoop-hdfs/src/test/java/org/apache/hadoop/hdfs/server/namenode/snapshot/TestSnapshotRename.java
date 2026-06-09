@@ -17,10 +17,11 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.snapshot;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -33,6 +34,7 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.protocol.NSQuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.SnapshotException;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
@@ -41,11 +43,11 @@ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeat
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Test for renaming snapshot
@@ -66,7 +68,7 @@ public class TestSnapshotRename {
   DistributedFileSystem hdfs;
   FSDirectory fsdir;
   
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(REPLICATION)
@@ -77,16 +79,13 @@ public class TestSnapshotRename {
     fsdir = fsn.getFSDirectory();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
       cluster = null;
     }
   }
-  
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
   
   /**
    * Check the correctness of snapshot list within snapshottable dir
@@ -113,7 +112,8 @@ public class TestSnapshotRename {
    * Rename snapshot(s), and check the correctness of the snapshot list within
    * {@link INodeDirectorySnapshottable}
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSnapshotList() throws Exception {
     DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, REPLICATION, seed);
     // Create three snapshots for sub1
@@ -142,7 +142,8 @@ public class TestSnapshotRename {
   /**
    * Test FileStatus of snapshot file before/after rename
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSnapshotRename() throws Exception {
     DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, REPLICATION, seed);
     // Create snapshot for sub1
@@ -171,34 +172,56 @@ public class TestSnapshotRename {
   /**
    * Test rename a non-existing snapshot
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRenameNonExistingSnapshot() throws Exception {
     DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, REPLICATION, seed);
     // Create snapshot for sub1
     SnapshotTestHelper.createSnapshot(hdfs, sub1, "s1");
-    
-    exception.expect(SnapshotException.class);
+
     String error = "The snapshot wrongName does not exist for directory "
         + sub1.toString();
-    exception.expectMessage(error);
-    hdfs.renameSnapshot(sub1, "wrongName", "s2");
+    SnapshotException ex = assertThrows(SnapshotException.class, () -> {
+      hdfs.renameSnapshot(sub1, "wrongName", "s2");
+    });
+    assertTrue(ex.getMessage().contains(error));
+  }
+
+  /**
+   * Test rename a non-existing snapshot to itself.
+   */
+  @Test
+  @Timeout(value = 60)
+  public void testRenameNonExistingSnapshotToItself() throws Exception {
+    DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, REPLICATION, seed);
+    // Create snapshot for sub1
+    SnapshotTestHelper.createSnapshot(hdfs, sub1, "s1");
+
+    String error = "The snapshot wrongName does not exist for directory "
+        + sub1.toString();
+    SnapshotException ex = assertThrows(SnapshotException.class, () -> {
+      hdfs.renameSnapshot(sub1, "wrongName", "wrongName");
+    });
+    assertTrue(ex.getMessage().contains(error));
   }
   
   /**
    * Test rename a snapshot to another existing snapshot 
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRenameToExistingSnapshot() throws Exception {
     DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, REPLICATION, seed);
     // Create snapshots for sub1
     SnapshotTestHelper.createSnapshot(hdfs, sub1, "s1");
     SnapshotTestHelper.createSnapshot(hdfs, sub1, "s2");
-    
-    exception.expect(SnapshotException.class);
+
     String error = "The snapshot s2 already exists for directory "
         + sub1.toString();
-    exception.expectMessage(error);
-    hdfs.renameSnapshot(sub1, "s1", "s2");
+    SnapshotException ex = assertThrows(SnapshotException.class, () -> {
+      hdfs.renameSnapshot(sub1, "s1", "s2");
+    });
+    assertTrue(ex.getMessage().contains(error));
   }
   
   /**
@@ -264,4 +287,150 @@ public class TestSnapshotRename {
       System.setErr(oldErr);
     }
   }
+
+  // Test rename of a snapshotted by setting quota in same directory.
+  @Test
+  public void testQuotaAndRenameWithSnapshot() throws Exception {
+    String dirr = "/dir2";
+    Path dir2 = new Path(dirr);
+    Path fil1 = new Path(dir2, "file1");
+    hdfs.mkdirs(dir2);
+    hdfs.setQuota(dir2, 3, 0);
+    hdfs.allowSnapshot(dir2);
+    hdfs.create(fil1);
+    hdfs.createSnapshot(dir2, "snap1");
+    Path file2 = new Path(dir2, "file2");
+    hdfs.rename(fil1, file2);
+    hdfs.getFileStatus(dir2);
+    Path filex = new Path(dir2, "filex");
+    // create a file after exceeding namespace quota
+    LambdaTestUtils.intercept(NSQuotaExceededException.class,
+        "The NameSpace quota (directories and files) of "
+            + "directory /dir2 is exceeded",
+        () -> hdfs.create(filex));
+    hdfs.createSnapshot(dir2, "snap2");
+    // rename a file after exceeding namespace quota
+    Path file3 = new Path(dir2, "file3");
+    LambdaTestUtils
+        .intercept(NSQuotaExceededException.class,
+            "The NameSpace quota (directories and files) of"
+                + " directory /dir2 is exceeded",
+            () -> hdfs.rename(file2, file3));
+  }
+
+  // Test Rename across directories within snapshot with quota set on source
+  // directory.
+  @Test
+  public void testRenameAcrossDirWithinSnapshot() throws Exception {
+    // snapshottable directory
+    String dirr = "/dir";
+    Path rootDir = new Path(dirr);
+    hdfs.mkdirs(rootDir);
+    hdfs.allowSnapshot(rootDir);
+
+    // set quota for source directory under snapshottable root directory
+    Path dir2 = new Path(rootDir, "dir2");
+    Path fil1 = new Path(dir2, "file1");
+    hdfs.mkdirs(dir2);
+    hdfs.setQuota(dir2, 3, 0);
+    hdfs.create(fil1);
+    Path file2 = new Path(dir2, "file2");
+    hdfs.rename(fil1, file2);
+    Path fil3 = new Path(dir2, "file3");
+    hdfs.create(fil3);
+
+    // destination directory under snapshottable root directory
+    Path dir1 = new Path(rootDir, "dir1");
+    Path dir1fil1 = new Path(dir1, "file1");
+    hdfs.mkdirs(dir1);
+    hdfs.create(dir1fil1);
+    Path dir1fil2 = new Path(dir1, "file2");
+    hdfs.rename(dir1fil1, dir1fil2);
+
+    hdfs.createSnapshot(rootDir, "snap1");
+    Path filex = new Path(dir2, "filex");
+    // create a file after exceeding namespace quota
+    LambdaTestUtils.intercept(NSQuotaExceededException.class,
+        "The NameSpace quota (directories and files) of "
+            + "directory /dir/dir2 is exceeded",
+        () -> hdfs.create(filex));
+
+    // Rename across directories within snapshot with quota set on source
+    // directory
+    assertTrue(hdfs.rename(fil3, dir1));
+  }
+
+  // Test rename within the same directory within a snapshottable root with
+  // quota set.
+  @Test
+  public void testRenameInSameDirWithSnapshotableRoot() throws Exception {
+
+    // snapshottable root directory
+    String rootStr = "/dir";
+    Path rootDir = new Path(rootStr);
+    hdfs.mkdirs(rootDir);
+    hdfs.setQuota(rootDir, 3, 0);
+    hdfs.allowSnapshot(rootDir);
+
+    // rename to be performed directory
+    String dirr = "dir2";
+    Path dir2 = new Path(rootDir, dirr);
+    Path fil1 = new Path(dir2, "file1");
+    hdfs.mkdirs(dir2);
+    hdfs.create(fil1);
+    hdfs.createSnapshot(rootDir, "snap1");
+    Path file2 = new Path(dir2, "file2");
+    // rename a file after exceeding namespace quota
+    LambdaTestUtils
+        .intercept(NSQuotaExceededException.class,
+            "The NameSpace quota (directories and files) of"
+                + " directory /dir is exceeded",
+            () -> hdfs.rename(fil1, file2));
+
+  }
+
+  // Test rename from a directory under snapshottable root to a directory with
+  // quota set to a directory not under under any snapshottable root.
+  @Test
+  public void testRenameAcrossDirWithSnapshotableSrc() throws Exception {
+    // snapshottable directory
+    String dirr = "/dir";
+    Path rootDir = new Path(dirr);
+    hdfs.mkdirs(rootDir);
+    hdfs.allowSnapshot(rootDir);
+
+    // set quota for source directory
+    Path dir2 = new Path(rootDir, "dir2");
+    Path fil1 = new Path(dir2, "file1");
+    hdfs.mkdirs(dir2);
+    hdfs.setQuota(dir2, 3, 0);
+    hdfs.create(fil1);
+    Path file2 = new Path(dir2, "file2");
+    hdfs.rename(fil1, file2);
+    Path fil3 = new Path(dir2, "file3");
+    hdfs.create(fil3);
+
+    hdfs.createSnapshot(rootDir, "snap1");
+
+    // destination directory not under any snapshot
+    String dirr1 = "/dir1";
+    Path dir1 = new Path(dirr1);
+    Path dir1fil1 = new Path(dir1, "file1");
+    hdfs.mkdirs(dir1);
+    hdfs.create(dir1fil1);
+    Path dir1fil2 = new Path(dir1, "file2");
+    hdfs.rename(dir1fil1, dir1fil2);
+
+    Path filex = new Path(dir2, "filex");
+    // create a file after exceeding namespace quota on source
+    LambdaTestUtils.intercept(NSQuotaExceededException.class,
+        "The NameSpace quota (directories and files) of "
+            + "directory /dir/dir2 is exceeded",
+        () -> hdfs.create(filex));
+
+    // Rename across directories source dir under snapshot with quota set and
+    // destination directory not under any snapshot
+    assertTrue(hdfs.rename(fil3, dir1));
+  }
+
 }

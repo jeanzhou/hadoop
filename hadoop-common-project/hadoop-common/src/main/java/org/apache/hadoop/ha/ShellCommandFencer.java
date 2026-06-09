@@ -19,11 +19,12 @@ package org.apache.hadoop.ha;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.util.Arrays;
 import java.util.Map;
 
 import org.apache.hadoop.conf.Configured;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.util.Shell;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,8 +39,8 @@ import org.slf4j.LoggerFactory;
  * (cmd.exe on Windows) and may not include any closing parentheses.<p>
  * 
  * The shell command will be run with an environment set up to contain
- * all of the current Hadoop configuration variables, with the '_' character 
- * replacing any '.' characters in the configuration keys.<p>
+ * all of the current Hadoop configuration variables, with the '_' character
+ * replacing any '.' or '-' characters in the configuration keys.<p>
  * 
  * If the shell command returns an exit code of 0, the fencing is
  * determined to be successful. If it returns any other exit code, the
@@ -60,6 +61,11 @@ public class ShellCommandFencer
   /** Prefix for target parameters added to the environment */
   private static final String TARGET_PREFIX = "target_";
 
+  /** Prefix for source parameters added to the environment */
+  private static final String SOURCE_PREFIX = "source_";
+
+  private static final String ARG_DELIMITER = ",";
+
   @VisibleForTesting
   static Logger LOG = LoggerFactory.getLogger(ShellCommandFencer.class);
 
@@ -73,8 +79,9 @@ public class ShellCommandFencer
   }
 
   @Override
-  public boolean tryFence(HAServiceTarget target, String cmd) {
+  public boolean tryFence(HAServiceTarget target, String args) {
     ProcessBuilder builder;
+    String cmd = parseArgs(target.getTransitionTargetHAStatus(), args);
 
     if (!Shell.WINDOWS) {
       builder = new ProcessBuilder("bash", "-e", "-c", cmd);
@@ -127,6 +134,28 @@ public class ShellCommandFencer
     return rc == 0;
   }
 
+  private String parseArgs(HAServiceProtocol.HAServiceState state,
+      String cmd) {
+    String[] args = cmd.split(ARG_DELIMITER);
+    if (args.length == 1) {
+      // only one command is given, assuming both src and dst
+      // will execute the same command/script.
+      return args[0];
+    }
+    if (args.length > 2) {
+      throw new IllegalArgumentException("Expecting arguments size of at most "
+          + "two, getting " + Arrays.asList(args));
+    }
+    if (HAServiceProtocol.HAServiceState.ACTIVE.equals(state)) {
+      return args[0];
+    } else if (HAServiceProtocol.HAServiceState.STANDBY.equals(state)) {
+      return args[1];
+    } else {
+      throw new IllegalArgumentException(
+          "Unexpected HA service state:" + state);
+    }
+  }
+
   /**
    * Abbreviate a string by putting '...' in the middle of it,
    * in an attempt to keep logs from getting too messy.
@@ -173,11 +202,11 @@ public class ShellCommandFencer
 
   /**
    * Set the environment of the subprocess to be the Configuration,
-   * with '.'s replaced by '_'s.
+   * with '.'s and '-'s replaced by '_'s.
    */
   private void setConfAsEnvVars(Map<String, String> env) {
     for (Map.Entry<String, String> pair : getConf()) {
-      env.put(pair.getKey().replace('.', '_'), pair.getValue());
+      env.put(pair.getKey().replaceAll("[.-]", "_"), pair.getValue());
     }
   }
 
@@ -190,10 +219,25 @@ public class ShellCommandFencer
    */
   private void addTargetInfoAsEnvVars(HAServiceTarget target,
       Map<String, String> environment) {
+    String prefix;
+    HAServiceProtocol.HAServiceState targetState =
+        target.getTransitionTargetHAStatus();
+    if (targetState == null ||
+        HAServiceProtocol.HAServiceState.ACTIVE.equals(targetState)) {
+      // null is assumed to be same as ACTIVE, this is to be compatible
+      // with existing tests/use cases where target state is not specified
+      // but assuming it's active.
+      prefix = TARGET_PREFIX;
+    } else if (HAServiceProtocol.HAServiceState.STANDBY.equals(targetState)) {
+      prefix = SOURCE_PREFIX;
+    } else {
+      throw new IllegalArgumentException(
+          "Unexpected HA service state:" + targetState);
+    }
     for (Map.Entry<String, String> e :
          target.getFencingParameters().entrySet()) {
-      String key = TARGET_PREFIX + e.getKey();
-      key = key.replace('.', '_');
+      String key = prefix + e.getKey();
+      key = key.replaceAll("[.-]", "_");
       environment.put(key, e.getValue());
     }
   }

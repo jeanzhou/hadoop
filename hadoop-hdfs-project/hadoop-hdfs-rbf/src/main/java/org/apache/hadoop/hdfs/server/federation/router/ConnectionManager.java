@@ -32,10 +32,11 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.eclipse.jetty.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,13 +50,6 @@ public class ConnectionManager {
   private static final Logger LOG =
       LoggerFactory.getLogger(ConnectionManager.class);
 
-  /** Number of parallel new connections to create. */
-  protected static final int MAX_NEW_CONNECTIONS = 100;
-
-  /** Minimum amount of active connections: 50%. */
-  protected static final float MIN_ACTIVE_RATIO = 0.5f;
-
-
   /** Configuration for the connection manager, pool and sockets. */
   private final Configuration conf;
 
@@ -63,6 +57,8 @@ public class ConnectionManager {
   private final int minSize = 1;
   /** Max number of connections per user + nn. */
   private final int maxSize;
+  /** Min ratio of active connections per user + nn. */
+  private final float minActiveRatio;
 
   /** How often we close a pool for a particular user + nn. */
   private final long poolCleanupPeriodMs;
@@ -77,8 +73,14 @@ public class ConnectionManager {
   private final Lock writeLock = readWriteLock.writeLock();
 
   /** Queue for creating new connections. */
-  private final BlockingQueue<ConnectionPool> creatorQueue =
-      new ArrayBlockingQueue<>(MAX_NEW_CONNECTIONS);
+  private final BlockingQueue<ConnectionPool> creatorQueue;
+  /**
+   * Global federated namespace context for router.
+   */
+  private final RouterStateIdContext routerStateIdContext;
+  /** Max size of queue for creating new connections. */
+  private final int creatorQueueMaxSize;
+
   /** Create new connections asynchronously. */
   private final ConnectionCreator creator;
   /** Periodic executor to remove stale connection pools. */
@@ -88,25 +90,37 @@ public class ConnectionManager {
   /** If the connection manager is running. */
   private boolean running = false;
 
+  public ConnectionManager(Configuration config) {
+    this(config, new RouterStateIdContext(config));
+  }
 
   /**
    * Creates a proxy client connection pool manager.
    *
    * @param config Configuration for the connections.
+   * @param routerStateIdContext Federated namespace context for router.
    */
-  public ConnectionManager(Configuration config) {
+  public ConnectionManager(Configuration config, RouterStateIdContext routerStateIdContext) {
     this.conf = config;
-
-    // Configure minimum and maximum connection pools
+    this.routerStateIdContext = routerStateIdContext;
+    // Configure minimum, maximum and active connection pools
     this.maxSize = this.conf.getInt(
         RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_POOL_SIZE,
         RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_POOL_SIZE_DEFAULT);
+    this.minActiveRatio = this.conf.getFloat(
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_MIN_ACTIVE_RATIO,
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_MIN_ACTIVE_RATIO_DEFAULT);
 
     // Map with the connections indexed by UGI and Namenode
     this.pools = new HashMap<>();
 
     // Create connections in a thread asynchronously
-    this.creator = new ConnectionCreator(creatorQueue);
+    this.creatorQueueMaxSize = this.conf.getInt(
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_CREATOR_QUEUE_SIZE,
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_CREATOR_QUEUE_SIZE_DEFAULT
+        );
+    this.creatorQueue = new ArrayBlockingQueue<>(this.creatorQueueMaxSize);
+    this.creator = new ConnectionCreator(this.creatorQueue);
     this.creator.setDaemon(true);
 
     // Cleanup periods
@@ -130,12 +144,12 @@ public class ConnectionManager {
     this.creator.start();
 
     // Schedule a task to remove stale connection pools and sockets
-    long recyleTimeMs = Math.min(
+    long recycleTimeMs = Math.min(
         poolCleanupPeriodMs, connectionCleanupPeriodMs);
     LOG.info("Cleaning every {} seconds",
-        TimeUnit.MILLISECONDS.toSeconds(recyleTimeMs));
+        TimeUnit.MILLISECONDS.toSeconds(recycleTimeMs));
     this.cleaner.scheduleAtFixedRate(
-        new CleanupTask(), 0, recyleTimeMs, TimeUnit.MILLISECONDS);
+        new CleanupTask(), 0, recycleTimeMs, TimeUnit.MILLISECONDS);
 
     // Mark the manager as running
     this.running = true;
@@ -160,18 +174,24 @@ public class ConnectionManager {
     }
   }
 
+  @VisibleForTesting
+  public void closeConnectionCreator(){
+    this.creator.shutdown();
+  }
+
   /**
    * Fetches the next available proxy client in the pool. Each client connection
    * is reserved for a single user and cannot be reused until free.
    *
    * @param ugi User group information.
    * @param nnAddress Namenode address for the connection.
+   * @param protocol Protocol for the connection.
+   * @param nsId Nameservice identity.
    * @return Proxy client to connect to nnId as UGI.
    * @throws IOException If the connection cannot be obtained.
    */
-  public ConnectionContext getConnection(
-      UserGroupInformation ugi, String nnAddress) throws IOException {
-
+  public ConnectionContext getConnection(UserGroupInformation ugi,
+      String nnAddress, Class<?> protocol, String nsId) throws IOException {
     // Check if the manager is shutdown
     if (!this.running) {
       LOG.error(
@@ -181,7 +201,8 @@ public class ConnectionManager {
     }
 
     // Try to get the pool if created
-    ConnectionPoolId connectionId = new ConnectionPoolId(ugi, nnAddress);
+    ConnectionPoolId connectionId =
+        new ConnectionPoolId(ugi, nnAddress, protocol);
     ConnectionPool pool = null;
     readLock.lock();
     try {
@@ -197,7 +218,9 @@ public class ConnectionManager {
         pool = this.pools.get(connectionId);
         if (pool == null) {
           pool = new ConnectionPool(
-              this.conf, nnAddress, ugi, this.minSize, this.maxSize);
+              this.conf, nnAddress, ugi, this.minSize, this.maxSize,
+              this.minActiveRatio, protocol,
+              new PoolAlignmentContext(this.routerStateIdContext, nsId));
           this.pools.put(connectionId, pool);
         }
       } finally {
@@ -205,13 +228,16 @@ public class ConnectionManager {
       }
     }
 
+    long clientStateId = RouterStateIdContext.getClientStateIdFromCurrentCall(nsId);
+    pool.getPoolAlignmentContext().advanceClientStateId(clientStateId);
+
     ConnectionContext conn = pool.getConnection();
 
     // Add a new connection to the pool if it wasn't usable
     if (conn == null || !conn.isUsable()) {
-      if (!this.creatorQueue.offer(pool)) {
+      if (!this.creatorQueue.contains(pool) && !this.creatorQueue.offer(pool)) {
         LOG.error("Cannot add more than {} connections at the same time",
-            MAX_NEW_CONNECTIONS);
+            this.creatorQueueMaxSize);
       }
     }
 
@@ -274,6 +300,42 @@ public class ConnectionManager {
   }
 
   /**
+   * Get number of idle connections.
+   *
+   * @return Number of active connections.
+   */
+  public int getNumIdleConnections() {
+    int total = 0;
+    readLock.lock();
+    try {
+      for (ConnectionPool pool : this.pools.values()) {
+        total += pool.getNumIdleConnections();
+      }
+    } finally {
+      readLock.unlock();
+    }
+    return total;
+  }
+
+  /**
+   * Get number of recently active connections.
+   *
+   * @return Number of recently active connections.
+   */
+  public int getNumActiveConnectionsRecently() {
+    int total = 0;
+    readLock.lock();
+    try {
+      for (ConnectionPool pool : this.pools.values()) {
+        total += pool.getNumActiveConnectionsRecently();
+      }
+    } finally {
+      readLock.unlock();
+    }
+    return total;
+  }
+
+  /**
    * Get the number of connections to be created.
    *
    * @return Number of connections to be created.
@@ -319,12 +381,22 @@ public class ConnectionManager {
       // Check if the pool hasn't been active in a while or not 50% are used
       long timeSinceLastActive = Time.now() - pool.getLastActiveTime();
       int total = pool.getNumConnections();
-      int active = pool.getNumActiveConnections();
+      // Active is a transient status in many cases for a connection since
+      // the handler thread uses the connection very quickly. Thus, the number
+      // of connections with handlers using at the call time is constantly low.
+      // Recently active is more lasting status, and it shows how many
+      // connections have been used with a recent time period. (i.e. 30 seconds)
+      int active = pool.getNumActiveConnectionsRecently();
+      float poolMinActiveRatio = pool.getMinActiveRatio();
       if (timeSinceLastActive > connectionCleanupPeriodMs ||
-          active < MIN_ACTIVE_RATIO * total) {
-        // Remove and close 1 connection
-        List<ConnectionContext> conns = pool.removeConnections(1);
-        for (ConnectionContext conn : conns) {
+          active < poolMinActiveRatio * total) {
+        // Be greedy here to close as many connections as possible in one shot
+        // The number should at least be 1
+        int targetConnectionsCount = Math.max(1,
+            (int)(poolMinActiveRatio * total) - active);
+        List<ConnectionContext> connections =
+            pool.removeConnections(targetConnectionsCount);
+        for (ConnectionContext conn : connections) {
           conn.close();
         }
         LOG.debug("Removed connection {} used {} seconds ago. " +
@@ -387,7 +459,7 @@ public class ConnectionManager {
   /**
    * Thread that creates connections asynchronously.
    */
-  private static class ConnectionCreator extends Thread {
+  static class ConnectionCreator extends SubjectInheritingThread {
     /** If the creator is running. */
     private boolean running = true;
     /** Queue to push work to. */
@@ -399,15 +471,16 @@ public class ConnectionManager {
     }
 
     @Override
-    public void run() {
+    public void work() {
       while (this.running) {
         try {
           ConnectionPool pool = this.queue.take();
           try {
             int total = pool.getNumConnections();
-            int active = pool.getNumActiveConnections();
+            int active = pool.getNumActiveConnectionsRecently();
+            float poolMinActiveRatio = pool.getMinActiveRatio();
             if (pool.getNumConnections() < pool.getMaxSize() &&
-                active >= MIN_ACTIVE_RATIO * total) {
+                active >= poolMinActiveRatio * total) {
               ConnectionContext conn = pool.newConnection();
               pool.addConnection(conn);
             } else {
@@ -415,11 +488,13 @@ public class ConnectionManager {
                   pool.getMaxSize(), pool);
             }
           } catch (IOException e) {
-            LOG.error("Cannot create a new connection", e);
+            LOG.error("Cannot create a new connection for {} {}", pool, e);
           }
         } catch (InterruptedException e) {
           LOG.error("The connection creator was interrupted");
           this.running = false;
+        } catch (Throwable e) {
+          LOG.error("Fatal error caught by connection creator ", e);
         }
       }
     }

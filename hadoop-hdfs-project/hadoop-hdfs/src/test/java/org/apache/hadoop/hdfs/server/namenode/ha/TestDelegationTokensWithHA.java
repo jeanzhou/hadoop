@@ -17,14 +17,16 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import com.google.common.base.Joiner;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.AbstractFileSystem;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.hdfs.*;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
@@ -43,10 +45,12 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.event.Level;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
@@ -57,7 +61,13 @@ import java.security.PrivilegedExceptionAction;
 import java.util.Collection;
 import java.util.HashSet;
 
-import static org.junit.Assert.*;
+import static org.apache.hadoop.hdfs.server.namenode.ha.ObserverReadProxyProvider.OBSERVER_PROBE_RETRY_PERIOD_KEY;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test case for client support of delegation tokens in an HA cluster.
@@ -65,8 +75,8 @@ import static org.junit.Assert.*;
  **/
 public class TestDelegationTokensWithHA {
   private static final Configuration conf = new Configuration();
-  private static final Log LOG =
-    LogFactory.getLog(TestDelegationTokensWithHA.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDelegationTokensWithHA.class);
   private static MiniDFSCluster cluster;
   private static NameNode nn0;
   private static NameNode nn1;
@@ -76,7 +86,7 @@ public class TestDelegationTokensWithHA {
 
   private volatile boolean catchup = false;
   
-  @Before
+  @BeforeEach
   public void setupCluster() throws Exception {
     SecurityUtilTestHelper.setTokenServiceUseIp(true);
     
@@ -92,7 +102,7 @@ public class TestDelegationTokensWithHA {
     cluster.waitActive();
     
     String logicalName = HATestUtil.getLogicalHostname(cluster);
-    HATestUtil.setFailoverConfigurations(cluster, conf, logicalName, 0);
+    HATestUtil.setFailoverConfigurations(cluster, conf, logicalName, null, 0);
 
     nn0 = cluster.getNameNode(0);
     nn1 = cluster.getNameNode(1);
@@ -104,7 +114,7 @@ public class TestDelegationTokensWithHA {
         nn0.getNamesystem());
   }
 
-  @After
+  @AfterEach
   public void shutdownCluster() throws IOException {
     if (cluster != null) {
       cluster.shutdown();
@@ -112,7 +122,54 @@ public class TestDelegationTokensWithHA {
     }
   }
 
-  @Test(timeout = 300000)
+  /**
+   * Test that, when using ObserverReadProxyProvider with DT authentication,
+   * the ORPP gracefully handles when the Standby NN throws a StandbyException.
+   */
+  @Test
+  @Timeout(value = 300)
+  public void testObserverReadProxyProviderWithDT() throws Exception {
+    // Make the first node standby, so that the ORPP will try it first
+    // instead of just using and succeeding on the active
+    conf.setInt(OBSERVER_PROBE_RETRY_PERIOD_KEY, 0);
+    cluster.transitionToStandby(0);
+    cluster.transitionToActive(1);
+
+    HATestUtil.setFailoverConfigurations(cluster, conf,
+        HATestUtil.getLogicalHostname(cluster), 0,
+        ObserverReadProxyProvider.class);
+    conf.setBoolean("fs.hdfs.impl.disable.cache", true);
+
+    dfs = (DistributedFileSystem) FileSystem.get(conf);
+    final UserGroupInformation ugi = UserGroupInformation
+        .createRemoteUser("JobTracker");
+    final Token<DelegationTokenIdentifier> token =
+        getDelegationToken(dfs, ugi.getShortUserName());
+    ugi.addToken(token);
+    // Recreate the DFS, this time authenticating using a DT
+    dfs = ugi.doAs((PrivilegedExceptionAction<DistributedFileSystem>)
+        () -> (DistributedFileSystem) FileSystem.get(conf));
+
+    GenericTestUtils.setLogLevel(ObserverReadProxyProvider.LOG, Level.DEBUG);
+    GenericTestUtils.LogCapturer logCapture = GenericTestUtils.LogCapturer
+        .captureLogs(ObserverReadProxyProvider.LOG);
+    try {
+      dfs.access(new Path("/"), FsAction.READ);
+      assertTrue(logCapture.getOutput()
+          .contains("threw StandbyException when fetching HAState"));
+      HATestUtil.isSentToAnyOfNameNodes(dfs, cluster, 1);
+
+      cluster.shutdownNameNode(0);
+      logCapture.clearOutput();
+      dfs.access(new Path("/"), FsAction.READ);
+      assertTrue(logCapture.getOutput().contains("Failed to connect to"));
+    } finally {
+      logCapture.stopCapturing();
+    }
+  }
+
+  @Test
+  @Timeout(value = 300)
   public void testDelegationTokenDFSApi() throws Exception {
     final Token<DelegationTokenIdentifier> token =
         getDelegationToken(fs, "JobTracker");
@@ -175,7 +232,8 @@ public class TestDelegationTokensWithHA {
    * Test if correct exception (StandbyException or RetriableException) can be
    * thrown during the NN failover. 
    */
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testDelegationTokenDuringNNFailover() throws Exception {
     EditLogTailer editLogTailer = nn1.getNamesystem().getEditLogTailer();
     // stop the editLogTailer of nn1
@@ -211,9 +269,9 @@ public class TestDelegationTokensWithHA {
           HAServiceState.STANDBY.toString(), e);
     }
     
-    new Thread() {
+    new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         try {
           cluster.transitionToActive(1);
         } catch (Exception e) {
@@ -243,7 +301,8 @@ public class TestDelegationTokensWithHA {
     doRenewOrCancel(token, clientConf, TokenTestAction.CANCEL);
   }
 
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testDelegationTokenWithDoAs() throws Exception {
     final Token<DelegationTokenIdentifier> token =
         getDelegationToken(fs, "JobTracker");
@@ -269,13 +328,14 @@ public class TestDelegationTokensWithHA {
     longUgi.doAs(new PrivilegedExceptionAction<Void>() {
       @Override
       public Void run() throws Exception {
-        token.cancel(conf);;
+        token.cancel(conf);
         return null;
       }
     });
   }
 
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testHAUtilClonesDelegationTokens() throws Exception {
     final Token<DelegationTokenIdentifier> token =
         getDelegationToken(fs, "JobTracker");
@@ -337,7 +397,8 @@ public class TestDelegationTokensWithHA {
    * exception if the URI is a logical URI. This bug fails the combination of
    * ha + mapred + security.
    */
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testDFSGetCanonicalServiceName() throws Exception {
     URI hAUri = HATestUtil.getLogicalUri(cluster);
     String haService = HAUtilClient.buildTokenServiceForLogicalUri(hAUri,
@@ -352,7 +413,8 @@ public class TestDelegationTokensWithHA {
     token.cancel(dfs.getConf());
   }
 
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testHdfsGetCanonicalServiceName() throws Exception {
     Configuration conf = dfs.getConf();
     URI haUri = HATestUtil.getLogicalUri(cluster);
@@ -368,7 +430,8 @@ public class TestDelegationTokensWithHA {
     token.cancel(conf);
   }
 
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testCancelAndUpdateDelegationTokens() throws Exception {
     // Create UGI with token1
     String user = UserGroupInformation.getCurrentUser().getShortUserName();

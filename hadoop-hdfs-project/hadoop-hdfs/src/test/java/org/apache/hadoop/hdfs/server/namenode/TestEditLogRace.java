@@ -17,9 +17,11 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes.OP_SET_OWNER;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
@@ -28,12 +30,22 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.function.Supplier;
+
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -46,17 +58,20 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
+import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.OpInstanceCache;
+import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.SetOwnerOp;
 import org.apache.hadoop.hdfs.server.namenode.JournalSet.JournalAndStream;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.mockito.ArgumentMatcher;
 import org.slf4j.event.Level;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
@@ -64,13 +79,13 @@ import org.mockito.stubbing.Answer;
  * This class tests various synchronization bugs in FSEditLog rolling
  * and namespace saving.
  */
-@RunWith(Parameterized.class)
+@MethodSource("data")
+@ParameterizedClass
 public class TestEditLogRace {
   static {
     GenericTestUtils.setLogLevel(FSEditLog.LOG, Level.DEBUG);
   }
 
-  @Parameters
   public static Collection<Object[]> data() {
     Collection<Object[]> params = new ArrayList<Object[]>();
     params.add(new Object[]{ false });
@@ -84,7 +99,10 @@ public class TestEditLogRace {
     TestEditLogRace.useAsyncEditLog = useAsyncEditLog;
   }
 
-  private static final Log LOG = LogFactory.getLog(TestEditLogRace.class);
+  private static final String NAME_DIR = MiniDFSCluster.getBaseDirectory() + "name-0-1";
+
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestEditLogRace.class);
 
   // This test creates NUM_THREADS threads and each thread continuously writes
   // transactions
@@ -188,7 +206,7 @@ public class TestEditLogRace {
     // Create threads and make them run transactions concurrently.
     for (int i = 0; i < NUM_THREADS; i++) {
       Transactions trans = new Transactions(cluster, caughtErr);
-      new Thread(trans, "TransactionThread-" + i).start();
+      new SubjectInheritingThread(trans, "TransactionThread-" + i).start();
       workers.add(trans);
     }
   }
@@ -248,7 +266,7 @@ public class TestEditLogRace {
         assertEquals(previousLogTxId, nextLog);
         
         File expectedLog = NNStorage.getInProgressEditsFile(sd, previousLogTxId);
-        assertTrue("Expect " + expectedLog + " to exist", expectedLog.exists());
+        assertTrue(expectedLog.exists(), "Expect " + expectedLog + " to exist");
       }
     } finally {
       stopTransactionWorkers();
@@ -275,12 +293,12 @@ public class TestEditLogRace {
 
       File editFile = new File(sd.getCurrentDir(), logFileName);
         
-      System.out.println("Verifying file: " + editFile);
+      LOG.info("Verifying file: " + editFile);
       FSEditLogLoader loader = new FSEditLogLoader(namesystem, startTxId);
       long numEditsThisLog = loader.loadFSEdits(
           new EditLogFileInputStream(editFile), startTxId);
       
-      System.out.println("Number of edits: " + numEditsThisLog);
+      LOG.info("Number of edits: " + numEditsThisLog);
       assertTrue(numEdits == -1 || numEditsThisLog == numEdits);
       numEdits = numEditsThisLog;
     }
@@ -342,7 +360,7 @@ public class TestEditLogRace {
         // The checkpoint id should be 1 less than the last written ID, since
         // the log roll writes the "BEGIN" transaction to the new log.
         assertEquals(fsimage.getStorage().getMostRecentCheckpointTxId(),
-                     editLog.getLastWrittenTxId() - 1);
+            editLog.getLastWrittenTxId() - 1);
 
         namesystem.leaveSafeMode(false);
         LOG.info("Save " + i + ": complete");
@@ -363,8 +381,8 @@ public class TestEditLogRace {
         useAsyncEditLog);
     FileSystem.setDefaultUri(conf, "hdfs://localhost:0");
     conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY, "0.0.0.0:0");
-    //conf.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY, NAME_DIR);
-    //conf.set(DFSConfigKeys.DFS_NAMENODE_EDITS_DIR_KEY, NAME_DIR);
+    conf.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY, NAME_DIR);
+    conf.set(DFSConfigKeys.DFS_NAMENODE_EDITS_DIR_KEY, NAME_DIR);
     conf.setBoolean(DFSConfigKeys.DFS_PERMISSIONS_ENABLED_KEY, false);
     return conf;
   }
@@ -408,9 +426,9 @@ public class TestEditLogRace {
           new AtomicReference<Throwable>();
       final CountDownLatch waitToEnterFlush = new CountDownLatch(1);
       
-      final Thread doAnEditThread = new Thread() {
+      final SubjectInheritingThread doAnEditThread = new SubjectInheritingThread() {
         @Override
-        public void run() {
+        public void work() {
           try {
             LOG.info("Starting mkdirs");
             namesystem.mkdirs("/test",
@@ -418,7 +436,7 @@ public class TestEditLogRace {
                 true);
             LOG.info("mkdirs complete");
           } catch (Throwable ioe) {
-            LOG.fatal("Got exception", ioe);
+            LOG.error("Got exception", ioe);
             deferredException.set(ioe);
             waitToEnterFlush.countDown();
           }
@@ -468,13 +486,11 @@ public class TestEditLogRace {
       assertNull(deferredException.get());
 
       // We did 3 edits: begin, txn, and end
-      assertEquals(3, verifyEditLogs(namesystem, fsimage,
-          NNStorage.getFinalizedEditsFileName(1, 3),
-          1));
+      assertEquals(3,
+          verifyEditLogs(namesystem, fsimage, NNStorage.getFinalizedEditsFileName(1, 3), 1));
       // after the save, just the one "begin"
-      assertEquals(1, verifyEditLogs(namesystem, fsimage,
-          NNStorage.getInProgressEditsFileName(4),
-          4));
+      assertEquals(1,
+          verifyEditLogs(namesystem, fsimage, NNStorage.getInProgressEditsFileName(4), 4));
     } finally {
       LOG.info("Closing nn");
       if(namesystem != null) namesystem.close();
@@ -503,16 +519,16 @@ public class TestEditLogRace {
           new AtomicReference<Throwable>();
       final CountDownLatch sleepingBeforeSync = new CountDownLatch(1);
 
-      final Thread doAnEditThread = new Thread() {
+      final SubjectInheritingThread doAnEditThread = new SubjectInheritingThread() {
         @Override
-        public void run() {
+        public void work() {
           try {
             LOG.info("Starting setOwner");
-            namesystem.writeLock();
+            namesystem.writeLock(RwLockMode.FS);
             try {
               editLog.logSetOwner("/","test","test");
             } finally {
-              namesystem.writeUnlock();
+              namesystem.writeUnlock(RwLockMode.FS, "testSaveRightBeforeSync");
             }
             sleepingBeforeSync.countDown();
             LOG.info("edit thread: sleeping for " + BLOCK_TIME + "secs");
@@ -520,7 +536,7 @@ public class TestEditLogRace {
             editLog.logSync();
             LOG.info("edit thread: logSync complete");
           } catch (Throwable ioe) {
-            LOG.fatal("Got exception", ioe);
+            LOG.error("Got exception", ioe);
             deferredException.set(ioe);
             sleepingBeforeSync.countDown();
           }
@@ -552,16 +568,177 @@ public class TestEditLogRace {
       assertNull(deferredException.get());
 
       // We did 3 edits: begin, txn, and end
-      assertEquals(3, verifyEditLogs(namesystem, fsimage,
-          NNStorage.getFinalizedEditsFileName(1, 3),
-          1));
+      assertEquals(3,
+          verifyEditLogs(namesystem, fsimage, NNStorage.getFinalizedEditsFileName(1, 3), 1));
       // after the save, just the one "begin"
-      assertEquals(1, verifyEditLogs(namesystem, fsimage,
-          NNStorage.getInProgressEditsFileName(4),
-          4));
+      assertEquals(1,
+          verifyEditLogs(namesystem, fsimage, NNStorage.getInProgressEditsFileName(4), 4));
     } finally {
       LOG.info("Closing nn");
       if(namesystem != null) namesystem.close();
     }
-  }  
+  }
+
+  static SetOwnerOp getSetOwnerOp(OpInstanceCache cache, String group) {
+    SetOwnerOp setOwnerOp = cache.get(OP_SET_OWNER);
+    return setOwnerOp.setSource("/").setUser("u").setGroup(group);
+  }
+
+  static class BlockingOpMatcher implements ArgumentMatcher<FSEditLogOp> {
+    @Override
+    public boolean matches(FSEditLogOp o) {
+      if(o instanceof FSEditLogOp.SetOwnerOp) {
+        FSEditLogOp.SetOwnerOp op = (FSEditLogOp.SetOwnerOp)o;
+        if("b".equals(op.groupname)) {
+          LOG.info("Blocking op: " + op);
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
+  @Test
+  @Timeout(value = 180)
+  public void testDeadlock() throws Throwable {
+    GenericTestUtils.setLogLevel(FSEditLog.LOG, Level.DEBUG);
+    GenericTestUtils.setLogLevel(FSEditLogAsync.LOG, Level.DEBUG);
+
+    Configuration conf = getConf();
+    NameNode.initMetrics(conf, NamenodeRole.NAMENODE);
+    DFSTestUtil.formatNameNode(conf);
+    final FSNamesystem namesystem = FSNamesystem.loadFromDisk(conf);
+
+    final AtomicBoolean done = new AtomicBoolean(false);
+    final Semaphore blockerSemaphore = new Semaphore(0);
+    final CountDownLatch startSpamLatch = new CountDownLatch(1);
+
+    ExecutorService executor = Executors.newCachedThreadPool();
+    try {
+      final FSEditLog editLog = spy(namesystem.getEditLog());
+      DFSTestUtil.setEditLogForTesting(namesystem, editLog);
+
+      final OpInstanceCache cache = editLog.cache.get();
+
+      // only job is spam edits.  it will fill the queue when the test
+      // loop injects the blockingOp.
+      Future<?>[] logSpammers = new Future<?>[16];
+      for (int i=0; i < logSpammers.length; i++) {
+        final int ii = i;
+        logSpammers[i] = executor.submit(new Callable<Void>() {
+          @Override
+          public Void call() throws Exception {
+            Thread.currentThread().setName("Log spammer " + ii);
+            // wait until a blocking edit op notifies us to go.
+            startSpamLatch.await();
+            for (int i = 0; !done.get() && i < 1000000; i++) {
+              // do not logSync here because we need to congest the queue.
+              editLog.logEdit(getSetOwnerOp(cache, "g"));
+              if (i % 2048 == 0) {
+                LOG.info("thread[" + ii +"] edits=" + i);
+              }
+            }
+                assertTrue(done.get(), "too many edits");
+                return null;
+          }
+        });
+      }
+
+      // doEditTransaction is set while the edit log monitor is held, so this
+      // will effectively stall the async processing thread which will cause
+      // the edit queue to fill up.
+      doAnswer(
+        new Answer<Void>() {
+          @Override
+          public Void answer(InvocationOnMock invocation) throws Throwable {
+            // flip the latch to unleash the spamming threads to congest
+            // the queue.
+            startSpamLatch.countDown();
+            // wait until unblocked after a synchronized thread is started.
+            blockerSemaphore.acquire();
+            invocation.callRealMethod();
+            return null;
+          }
+        }
+      ).when(editLog).doEditTransaction(argThat(new BlockingOpMatcher()));
+
+      // repeatedly overflow the queue and verify it doesn't deadlock.
+      for (int i = 0; i < 8; i++) {
+        // when the blockingOp is logged, it triggers the latch to unleash the
+        // spammers to overflow the edit queue, then waits for a permit
+        // from blockerSemaphore that will be released at the bottom of
+        // this loop.
+        Future<Void> blockingEdit = executor.submit(new Callable<Void>() {
+          @Override
+          public Void call() throws Exception {
+            Thread.currentThread().setName("Log blocker");
+            final FSEditLogOp blockingOp = getSetOwnerOp(cache, "b");
+            editLog.logEdit(blockingOp);
+            editLog.logSync();
+            return null;
+          }
+        });
+
+        // wait for spammers to seize up the edit log.
+        long startTxId = editLog.getLastWrittenTxIdWithoutLock();
+        final long[] txIds = { startTxId, startTxId, startTxId };
+        GenericTestUtils.waitFor(new Supplier<Boolean>() {
+          @Override
+          public Boolean get() {
+            txIds[0] = txIds[1];
+            txIds[1] = txIds[2];
+            txIds[2] = editLog.getLastWrittenTxIdWithoutLock();
+            return (txIds[0] == txIds[1] &&
+                    txIds[1] == txIds[2] &&
+                    txIds[2] > startTxId);
+          }
+        }, 100, 10000);
+
+        // callers that synchronize on the edit log while the queue is full
+        // are prone to deadlock if the locking is incorrect.  at this point:
+        // 1. the blocking edit is holding the log's monitor.
+        // 2. the spammers have filled the queue.
+        // 3. the spammers are blocked waiting to queue another edit.
+        // Now we'll start another thread to synchronize on the log (simulates
+        // what log rolling does), unblock the op currently holding the
+        // monitor, and ensure deadlock does not occur.
+        CountDownLatch readyLatch = new CountDownLatch(1);
+        Future<Void> synchedEdits = executor.submit(new Callable<Void>() {
+          @Override
+          public Void call() throws Exception {
+            Thread.currentThread().setName("Log synchronizer");
+            // the sync is CRUCIAL for this test.  it's what causes edit
+            // log rolling to deadlock when queue is full.
+            readyLatch.countDown();
+            synchronized (editLog) {
+              editLog.logEdit(getSetOwnerOp(cache, "g"));
+              editLog.logSync();
+            }
+            return null;
+          }
+        });
+        // unblock the edit jammed in setting its txid.  queued edits should
+        // start flowing and the synced edits should complete.
+        readyLatch.await();
+        blockerSemaphore.release();
+        blockingEdit.get();
+        synchedEdits.get();
+      }
+
+      // tell spammers to stop.
+      done.set(true);
+      for (int i=0; i < logSpammers.length; i++) {
+        logSpammers[i].get();
+      }
+      // just make sure everything can be synced.
+      editLog.logSyncAll();
+    } finally {
+      LOG.info("Closing nn");
+      executor.shutdownNow();
+      if (namesystem != null) {
+        namesystem.getFSImage().getStorage().close();
+        namesystem.close();
+      }
+    }
+  }
 }

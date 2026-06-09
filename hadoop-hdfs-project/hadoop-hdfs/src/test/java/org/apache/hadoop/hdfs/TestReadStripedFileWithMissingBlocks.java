@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,8 +17,9 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.Path;
@@ -26,10 +27,8 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.junit.Assert;
-import org.junit.Test;
-import org.junit.Rule;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
@@ -37,9 +36,10 @@ import java.io.IOException;
  * Test reading a striped file when some of its blocks are missing (not included
  * in the block locations returned by the NameNode).
  */
+@Timeout(300)
 public class TestReadStripedFileWithMissingBlocks {
-  public static final Log LOG = LogFactory
-      .getLog(TestReadStripedFileWithMissingBlocks.class);
+  public static final Logger LOG = LoggerFactory
+      .getLogger(TestReadStripedFileWithMissingBlocks.class);
   private MiniDFSCluster cluster;
   private DistributedFileSystem fs;
   private DFSClient dfsClient;
@@ -56,9 +56,6 @@ public class TestReadStripedFileWithMissingBlocks {
   // test to pass.
   private final int numDNs = dataBlocks + parityBlocks + 2;
   private final int fileLength = blockSize * dataBlocks + 123;
-
-  @Rule
-  public Timeout globalTimeout = new Timeout(300000);
 
   public void setup() throws IOException {
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
@@ -124,7 +121,7 @@ public class TestReadStripedFileWithMissingBlocks {
 
     // make sure there are missing block locations
     BlockLocation[] newLocs = fs.getFileBlockLocations(srcPath, 0, cellSize);
-    Assert.assertTrue(
+    Assertions.assertTrue(
         newLocs[0].getNames().length < locs[0].getNames().length);
 
     byte[] smallBuf = new byte[1024];

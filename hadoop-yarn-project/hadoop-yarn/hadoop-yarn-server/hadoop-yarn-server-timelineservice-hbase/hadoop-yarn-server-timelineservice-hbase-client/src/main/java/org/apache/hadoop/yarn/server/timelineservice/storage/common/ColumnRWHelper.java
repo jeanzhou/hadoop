@@ -296,9 +296,7 @@ public final class ColumnRWHelper {
             .entrySet()) {
           K converterColumnKey = null;
           if (columnPrefixBytes == null) {
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("null prefix was specified; returning all columns");
-            }
+            LOG.debug("null prefix was specified; returning all columns");
             try {
               converterColumnKey = keyConverter.decode(entry.getKey());
             } catch (IllegalArgumentException iae) {
@@ -332,7 +330,7 @@ public final class ColumnRWHelper {
               for (Map.Entry<Long, byte[]> cell : cells.entrySet()) {
                 V value =
                     (V) valueConverter.decodeValue(cell.getValue());
-                Long ts = supplementTs ? TimestampGenerator.
+                long ts = supplementTs ? TimestampGenerator.
                     getTruncatedTimestamp(cell.getKey()) : cell.getKey();
                 cellResults.put(ts, value);
               }

@@ -17,28 +17,109 @@
  */
 package org.apache.hadoop.fs.ftp;
 
-import com.google.common.base.Preconditions;
-import org.apache.commons.net.ftp.FTP;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.Comparator;
 
+import org.apache.hadoop.util.Preconditions;
+import org.apache.commons.net.ftp.FTP;
 import org.apache.commons.net.ftp.FTPClient;
 import org.apache.commons.net.ftp.FTPFile;
+import org.apache.ftpserver.usermanager.impl.BaseUser;
+import org.apache.ftpserver.usermanager.impl.WritePermission;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsAction;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test basic @{link FTPFileSystem} class methods. Contract tests are in
  * TestFTPContractXXXX.
  */
+@Timeout(180)
 public class TestFTPFileSystem {
 
-  @Rule
-  public Timeout testTimeout = new Timeout(180000);
+  private FtpTestServer server;
+  private java.nio.file.Path testDir;
+
+  @BeforeEach
+  public void setUp() throws Exception {
+    testDir = Files.createTempDirectory(
+        GenericTestUtils.getTestDir().toPath(), getClass().getName()
+    );
+    server = new FtpTestServer(testDir).start();
+  }
+
+  @AfterEach
+  @SuppressWarnings("ResultOfMethodCallIgnored")
+  public void tearDown() throws Exception {
+    if (server != null) {
+      server.stop();
+      Files.walk(testDir)
+          .sorted(Comparator.reverseOrder())
+          .map(java.nio.file.Path::toFile)
+          .forEach(File::delete);
+    }
+  }
+
+  @Test
+  public void testCreateWithWritePermissions() throws Exception {
+    BaseUser user = server.addUser("test", "password", new WritePermission());
+    Configuration configuration = new Configuration();
+    configuration.set("fs.defaultFS", "ftp:///");
+    configuration.set("fs.ftp.host", "localhost");
+    configuration.setInt("fs.ftp.host.port", server.getPort());
+    configuration.set("fs.ftp.user.localhost", user.getName());
+    configuration.set("fs.ftp.password.localhost", user.getPassword());
+    configuration.setBoolean("fs.ftp.impl.disable.cache", true);
+
+    FileSystem fs = FileSystem.get(configuration);
+    byte[] bytesExpected = "hello world".getBytes(StandardCharsets.UTF_8);
+    try (FSDataOutputStream outputStream = fs.create(new Path("test1.txt"))) {
+      outputStream.write(bytesExpected);
+    }
+    try (FSDataInputStream input = fs.open(new Path("test1.txt"))) {
+      assertThat(bytesExpected).isEqualTo(IOUtils.readFullyToByteArray(input));
+    }
+  }
+
+  @Test
+  public void testCreateWithoutWritePermissions() throws Exception {
+    BaseUser user = server.addUser("test", "password");
+    Configuration configuration = new Configuration();
+    configuration.set("fs.defaultFS", "ftp:///");
+    configuration.set("fs.ftp.host", "localhost");
+    configuration.setInt("fs.ftp.host.port", server.getPort());
+    configuration.set("fs.ftp.user.localhost", user.getName());
+    configuration.set("fs.ftp.password.localhost", user.getPassword());
+    configuration.setBoolean("fs.ftp.impl.disable.cache", true);
+
+    FileSystem fs = FileSystem.get(configuration);
+    byte[] bytesExpected = "hello world".getBytes(StandardCharsets.UTF_8);
+    LambdaTestUtils.intercept(
+        IOException.class, "Unable to create file: test1.txt, Aborting",
+        () -> {
+          try (FSDataOutputStream out = fs.create(new Path("test1.txt"))) {
+            out.write(bytesExpected);
+          }
+        }
+    );
+  }
 
   @Test
   public void testFTPDefaultPort() throws Exception {
@@ -108,7 +189,7 @@ public class TestFTPFileSystem {
     String errorMessageFormat = "expect FsAction is %s, whereas it is %s now.";
     String notEqualErrorMessage = String.format(errorMessageFormat,
         actionA.name(), actionB.name());
-    assertEquals(notEqualErrorMessage, actionA, actionB);
+    assertEquals(actionA, actionB, notEqualErrorMessage);
   }
 
   private FTPFile getFTPFileOf(int access, FsAction action) {
@@ -137,4 +218,61 @@ public class TestFTPFileSystem {
     return ftpFile;
   }
 
+  @Test
+  public void testFTPSetTimeout() {
+    Configuration conf = new Configuration();
+    FTPClient client = new FTPClient();
+    FTPFileSystem ftp = new FTPFileSystem();
+
+    ftp.setTimeout(client, conf);
+    assertEquals(client.getControlKeepAliveTimeout(),
+        FTPFileSystem.DEFAULT_TIMEOUT);
+
+    long timeout = 600;
+    conf.setLong(FTPFileSystem.FS_FTP_TIMEOUT, timeout);
+    ftp.setTimeout(client, conf);
+    assertEquals(client.getControlKeepAliveTimeout(), timeout);
+  }
+
+  private static void touch(FileSystem fs, Path filePath)
+          throws IOException {
+    // Create a file with a single byte of data.
+    touch(fs, filePath, new byte[] {1});
+  }
+
+  private static void touch(FileSystem fs, Path path, byte[] data)
+          throws IOException {
+    try (FSDataOutputStream out = fs.create(path)) {
+      if (data != null) {
+        out.write(data);
+      }
+    }
+  }
+
+  /**
+   * Test renaming a file.
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testRenameFileWithFullQualifiedPath() throws Exception {
+    BaseUser user = server.addUser("test", "password", new WritePermission());
+    Configuration configuration = new Configuration();
+    configuration.set("fs.defaultFS", "ftp:///");
+    configuration.set("fs.ftp.host", "localhost");
+    configuration.setInt("fs.ftp.host.port", server.getPort());
+    configuration.set("fs.ftp.user.localhost", user.getName());
+    configuration.set("fs.ftp.password.localhost", user.getPassword());
+    configuration.setBoolean("fs.ftp.impl.disable.cache", true);
+
+    FileSystem fs = FileSystem.get(configuration);
+
+    // All the file operations will be relative to the root directory specified by the testDir
+    // member variable.
+    Path ftpDir = fs.makeQualified(new Path("/"));
+    Path file1 = fs.makeQualified(new Path(ftpDir, "renamefile" + "1"));
+    Path file2 = fs.makeQualified(new Path(ftpDir, "renamefile" + "2"));
+    touch(fs, file1);
+    assertTrue(fs.rename(file1, file2));
+  }
 }

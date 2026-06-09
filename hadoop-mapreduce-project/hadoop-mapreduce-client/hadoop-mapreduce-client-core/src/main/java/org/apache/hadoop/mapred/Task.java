@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.crypto.SecretKey;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
@@ -72,6 +72,7 @@ import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.StringInterner;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -86,6 +87,7 @@ abstract public class Task implements Writable, Configurable {
 
   public static String MERGED_OUTPUT_PREFIX = ".merged";
   public static final long DEFAULT_COMBINE_RECORDS_BEFORE_PROGRESS = 10000;
+  private static final String HDFS_URI_SCHEME = "hdfs";
   
   /**
    * @deprecated Provided for compatibility. Use {@link TaskCounter} instead.
@@ -951,7 +953,7 @@ abstract public class Task implements Writable, Configurable {
     }
     public void startCommunicationThread() {
       if (pingThread == null) {
-        pingThread = new Thread(this, "communication thread");
+        pingThread = new SubjectInheritingThread(this, "communication thread");
         pingThread.setDaemon(true);
         pingThread.start();
       }
@@ -962,7 +964,7 @@ abstract public class Task implements Writable, Configurable {
           MRJobConfig.JOB_SINGLE_DISK_LIMIT_BYTES,
           MRJobConfig.DEFAULT_JOB_SINGLE_DISK_LIMIT_BYTES) >= 0) {
         try {
-          diskLimitCheckThread = new Thread(new DiskLimitCheck(conf),
+          diskLimitCheckThread = new SubjectInheritingThread(new DiskLimitCheck(conf),
               "disk limit check thread");
           diskLimitCheckThread.setDaemon(true);
           diskLimitCheckThread.start();
@@ -1125,7 +1127,8 @@ abstract public class Task implements Writable, Configurable {
   class FileSystemStatisticUpdater {
     private List<FileSystem.Statistics> stats;
     private Counters.Counter readBytesCounter, writeBytesCounter,
-        readOpsCounter, largeReadOpsCounter, writeOpsCounter;
+        readOpsCounter, largeReadOpsCounter, writeOpsCounter,
+        readBytesEcCounter;
     private String scheme;
     FileSystemStatisticUpdater(List<FileSystem.Statistics> stats, String scheme) {
       this.stats = stats;
@@ -1153,23 +1156,33 @@ abstract public class Task implements Writable, Configurable {
         writeOpsCounter = counters.findCounter(scheme,
             FileSystemCounter.WRITE_OPS);
       }
+      if (readBytesEcCounter == null && scheme.equals(HDFS_URI_SCHEME)) {
+        // EC bytes only applies to hdfs
+        readBytesEcCounter =
+            counters.findCounter(scheme, FileSystemCounter.BYTES_READ_EC);
+      }
       long readBytes = 0;
       long writeBytes = 0;
       long readOps = 0;
       long largeReadOps = 0;
       long writeOps = 0;
+      long readBytesEC = 0;
       for (FileSystem.Statistics stat: stats) {
         readBytes = readBytes + stat.getBytesRead();
         writeBytes = writeBytes + stat.getBytesWritten();
         readOps = readOps + stat.getReadOps();
         largeReadOps = largeReadOps + stat.getLargeReadOps();
         writeOps = writeOps + stat.getWriteOps();
+        readBytesEC = readBytesEC + stat.getBytesReadErasureCoded();
       }
       readBytesCounter.setValue(readBytes);
       writeBytesCounter.setValue(writeBytes);
       readOpsCounter.setValue(readOps);
       largeReadOpsCounter.setValue(largeReadOps);
       writeOpsCounter.setValue(writeOps);
+      if (readBytesEcCounter != null) {
+        readBytesEcCounter.setValue(readBytesEC);
+      }
     }
   }
   

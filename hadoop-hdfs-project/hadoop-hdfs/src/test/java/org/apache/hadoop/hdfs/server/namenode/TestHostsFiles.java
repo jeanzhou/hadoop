@@ -17,13 +17,16 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.management.ManagementFactory;
 import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileSystem;
@@ -37,9 +40,7 @@ import org.apache.hadoop.hdfs.server.blockmanagement.CombinedHostFileManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.HostConfigManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.HostFileManager;
 import org.apache.hadoop.hdfs.util.HostsFileWriter;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.Test;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
@@ -48,17 +49,17 @@ import javax.management.ObjectName;
  * DFS_HOSTS and DFS_HOSTS_EXCLUDE tests
  * 
  */
-@RunWith(Parameterized.class)
+@MethodSource("data")
+@ParameterizedClass
 public class TestHostsFiles {
-  private static final Log LOG =
-    LogFactory.getLog(TestHostsFiles.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestHostsFiles.class.getName());
   private Class hostFileMgrClass;
 
   public TestHostsFiles(Class hostFileMgrClass) {
     this.hostFileMgrClass = hostFileMgrClass;
   }
 
-  @Parameterized.Parameters
   public static Iterable<Object[]> data() {
     return Arrays.asList(new Object[][]{
         {HostFileManager.class}, {CombinedHostFileManager.class}});
@@ -135,8 +136,8 @@ public class TestHostsFiles {
       ObjectName mxbeanName = new ObjectName(
               "Hadoop:service=NameNode,name=NameNodeInfo");
       String nodes = (String) mbs.getAttribute(mxbeanName, "LiveNodes");
-      assertTrue("Live nodes should contain the decommissioned node",
-              nodes.contains("Decommissioned"));
+      assertTrue(nodes.contains("Decommissioned"),
+          "Live nodes should contain the decommissioned node");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -173,6 +174,40 @@ public class TestHostsFiles {
         cluster.shutdown();
       }
       hostsFileWriter.cleanup();
+    }
+  }
+
+  @Test
+  public void testNewHostAndExcludeFile() throws Exception {
+    Configuration conf = getConf();
+
+    HostsFileWriter writer1 = new HostsFileWriter();
+    writer1.initialize(conf, "old_temp/decommission");
+    writer1.initIncludeHosts(new String[]{"localhost:52", "127.0.0.1:7777"});
+
+    // Write all hosts to a new dfs.hosts file.
+    HostsFileWriter writer2 = new HostsFileWriter();
+    Configuration newConf = new Configuration(getConf());
+    writer2.initialize(newConf, "new_temp/decommission");
+    writer2.initIncludeHosts(new String[]{
+        "localhost:52", "127.0.0.1:7777", "localhost:100"});
+
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
+      final FSNamesystem ns = cluster.getNameNode().getNamesystem();
+      assertEquals(2, ns.getNumDeadDataNodes());
+      assertEquals(0, ns.getNumLiveDataNodes());
+
+      ns.getBlockManager().getDatanodeManager().refreshNodes(newConf);
+      assertEquals(3, ns.getNumDeadDataNodes());
+      assertEquals(0, ns.getNumLiveDataNodes());
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+      writer1.cleanup();
+      writer2.cleanup();
     }
   }
 }

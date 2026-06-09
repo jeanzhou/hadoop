@@ -53,7 +53,7 @@ import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * Static utility functions for serializing various pieces of data in the correct
@@ -538,7 +538,7 @@ public class FSImageSerialization {
       writeString(directive.getPool(), out);
     }
     if (directive.getExpiration() != null) {
-      writeLong(directive.getExpiration().getMillis(), out);
+      writeLong(directive.getExpiration().getAbsoluteMillis(), out);
     }
   }
 
@@ -610,7 +610,7 @@ public class FSImageSerialization {
     }
     if (directive.getExpiration() != null) {
       XMLUtils.addSaxString(contentHandler, "EXPIRATION",
-          "" + directive.getExpiration().getMillis());
+          "" + directive.getExpiration().getAbsoluteMillis());
     }
   }
 

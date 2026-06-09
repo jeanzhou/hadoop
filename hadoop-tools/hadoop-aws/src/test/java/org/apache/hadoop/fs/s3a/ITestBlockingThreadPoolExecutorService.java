@@ -18,32 +18,33 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.hadoop.test.AbstractHadoopTestBase;
 import org.apache.hadoop.util.BlockingThreadPoolExecutorService;
 import org.apache.hadoop.util.SemaphoredDelegatingExecutor;
 import org.apache.hadoop.util.StopWatch;
 
-import org.junit.AfterClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Basic test for S3A's blocking executor service.
  */
-public class ITestBlockingThreadPoolExecutorService {
+@Timeout(60)
+public class ITestBlockingThreadPoolExecutorService extends AbstractHadoopTestBase {
 
   private static final Logger LOG = LoggerFactory.getLogger(
-      BlockingThreadPoolExecutorService.class);
+      ITestBlockingThreadPoolExecutorService.class);
 
   private static final int NUM_ACTIVE_TASKS = 4;
   private static final int NUM_WAITING_TASKS = 2;
@@ -56,10 +57,7 @@ public class ITestBlockingThreadPoolExecutorService {
 
   private static BlockingThreadPoolExecutorService tpe;
 
-  @Rule
-  public Timeout testTimeout = new Timeout(60 * 1000);
-
-  @AfterClass
+  @AfterAll
   public static void afterClass() throws Exception {
     ensureDestroyed();
   }
@@ -70,7 +68,7 @@ public class ITestBlockingThreadPoolExecutorService {
   @Test
   public void testSubmitCallable() throws Exception {
     ensureCreated();
-    ListenableFuture<Integer> f = tpe.submit(callableSleeper);
+    Future<Integer> f = tpe.submit(callableSleeper);
     Integer v = f.get();
     assertEquals(SOME_VALUE, v);
   }
@@ -92,11 +90,12 @@ public class ITestBlockingThreadPoolExecutorService {
    */
   protected void verifyQueueSize(ExecutorService executorService,
       int expectedQueueSize) {
-    StopWatch stopWatch = new StopWatch().start();
+    CountDownLatch latch = new CountDownLatch(1);
     for (int i = 0; i < expectedQueueSize; i++) {
-      executorService.submit(sleeper);
-      assertDidntBlock(stopWatch);
+      executorService.submit(new LatchedSleeper(latch));
     }
+    StopWatch stopWatch = new StopWatch().start();
+    latch.countDown();
     executorService.submit(sleeper);
     assertDidBlock(stopWatch);
   }
@@ -123,15 +122,6 @@ public class ITestBlockingThreadPoolExecutorService {
   }
 
   // Helper functions, etc.
-
-  private void assertDidntBlock(StopWatch sw) {
-    try {
-      assertFalse("Non-blocking call took too long.",
-          sw.now(TimeUnit.MILLISECONDS) > BLOCKING_THRESHOLD_MSEC);
-    } finally {
-      sw.reset().start();
-    }
-  }
 
   private void assertDidBlock(StopWatch sw) {
     try {
@@ -163,6 +153,25 @@ public class ITestBlockingThreadPoolExecutorService {
       return SOME_VALUE;
     }
   };
+
+  private class LatchedSleeper implements Runnable {
+    private final CountDownLatch latch;
+
+    LatchedSleeper(CountDownLatch latch) {
+      this.latch = latch;
+    }
+
+    @Override
+    public void run() {
+      try {
+        latch.await();
+        Thread.sleep(TASK_SLEEP_MSEC);
+      } catch (InterruptedException e) {
+        LOG.info("Thread {} interrupted.", Thread.currentThread().getName());
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
 
   /**
    * Helper function to create thread pool under test.

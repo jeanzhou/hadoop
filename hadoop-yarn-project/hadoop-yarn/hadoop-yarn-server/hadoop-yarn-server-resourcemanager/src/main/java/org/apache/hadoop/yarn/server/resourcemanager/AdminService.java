@@ -23,12 +23,14 @@ import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -39,7 +41,7 @@ import org.apache.hadoop.ha.ServiceFailedException;
 import org.apache.hadoop.ha.proto.HAServiceProtocolProtos;
 import org.apache.hadoop.ha.protocolPB.HAServiceProtocolPB;
 import org.apache.hadoop.ha.protocolPB.HAServiceProtocolServerSideTranslatorPB;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RPC.Server;
 import org.apache.hadoop.ipc.StandbyException;
@@ -50,6 +52,7 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.authorize.PolicyProvider;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.service.CompositeService;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.ResourceOption;
 import org.apache.hadoop.yarn.conf.HAUtil;
@@ -59,6 +62,7 @@ import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.ipc.RPCUtil;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
+import org.apache.hadoop.yarn.nodelabels.NodeAttributesManager;
 import org.apache.hadoop.yarn.security.ConfiguredYarnAuthorizer;
 import org.apache.hadoop.yarn.security.YarnAuthorizationProvider;
 import org.apache.hadoop.yarn.server.api.ResourceManagerAdministrationProtocol;
@@ -66,6 +70,9 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.AddToClusterNodeLabelsR
 import org.apache.hadoop.yarn.server.api.protocolrecords.AddToClusterNodeLabelsResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.CheckForDecommissioningNodesRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.CheckForDecommissioningNodesResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.NodeToAttributes;
+import org.apache.hadoop.yarn.server.api.protocolrecords.NodesToAttributesMappingRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.NodesToAttributesMappingResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshAdminAclsRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshAdminAclsResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshClusterMaxPriorityRequest;
@@ -88,6 +95,20 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeRequ
 import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeregisterSubClusterRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeregisterSubClusterResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.SaveFederationQueuePolicyRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.SaveFederationQueuePolicyResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.BatchSaveFederationQueuePoliciesRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.BatchSaveFederationQueuePoliciesResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.QueryFederationQueuePoliciesRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.QueryFederationQueuePoliciesResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeleteFederationApplicationRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeleteFederationApplicationResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.GetSubClustersRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.GetSubClustersResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeleteFederationQueuePoliciesRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeleteFederationQueuePoliciesResponse;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NodeLabelsUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystem;
 import org.apache.hadoop.yarn.server.resourcemanager.resource.DynamicResourceConfiguration;
@@ -97,13 +118,14 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.MutableConfSchedu
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.security.authorize.RMPolicyProvider;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.BlockingService;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.protobuf.BlockingService;
 
 public class AdminService extends CompositeService implements
     HAServiceProtocol, ResourceManagerAdministrationProtocol {
 
-  private static final Log LOG = LogFactory.getLog(AdminService.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AdminService.class);
 
   private final ResourceManager rm;
   private String rmId;
@@ -193,7 +215,7 @@ public class AdminService extends CompositeService implements
 
     if (rm.getRMContext().isHAEnabled()) {
       RPC.setProtocolEngine(conf, HAServiceProtocolPB.class,
-          ProtobufRpcEngine.class);
+          ProtobufRpcEngine2.class);
 
       HAServiceProtocolServerSideTranslatorPB haServiceProtocolXlator =
           new HAServiceProtocolServerSideTranslatorPB(this);
@@ -353,6 +375,13 @@ public class AdminService extends CompositeService implements
       throw new ServiceFailedException(
           "Error when transitioning to Standby mode", e);
     }
+  }
+
+  @Override
+  public synchronized void transitionToObserver(
+      StateChangeRequestInfo reqInfo) throws IOException {
+    // Should NOT get here, as RMHAServiceTarget doesn't support observer.
+    throw new ServiceFailedException("Does not support transition to Observer");
   }
 
   /**
@@ -715,6 +744,14 @@ public class AdminService extends CompositeService implements
       // refresh dynamic resource in ResourceTrackerService
       this.rm.getRMContext().getResourceTrackerService().
           updateDynamicResourceConfiguration(newConf);
+
+      // Update our heartbeat configuration as well
+      Configuration ysconf =
+          getConfiguration(new Configuration(false),
+              YarnConfiguration.YARN_SITE_CONFIGURATION_FILE);
+      this.rm.getRMContext().getResourceTrackerService()
+        .updateHeartBeatConfiguration(ysconf);
+
       RMAuditLogger.logSuccess(user.getShortUserName(), operation,
               "AdminService");
       return response;
@@ -960,5 +997,217 @@ public class AdminService extends CompositeService implements
             YarnConfiguration.YARN_SITE_CONFIGURATION_FILE);
 
     rm.getRMContext().getScheduler().setClusterMaxPriority(conf);
+  }
+
+  @Override
+  public NodesToAttributesMappingResponse mapAttributesToNodes(
+      NodesToAttributesMappingRequest request)
+      throws YarnException, IOException {
+
+    final String operation = "mapAttributesToNodes";
+    final String msg = "Map Attributes to Nodes";
+    UserGroupInformation user = checkAcls(operation);
+    checkRMStatus(user.getShortUserName(), operation, msg);
+
+
+    List<NodeToAttributes> nodesToAttributes = request.getNodesToAttributes();
+    boolean failOnUnknownNodes = request.getFailOnUnknownNodes();
+
+    NodeAttributesManager nodeAttributesManager =
+        rm.getRMContext().getNodeAttributesManager();
+    try {
+      Map<String, Set<NodeAttribute>> nodeAttributeMapping =
+          validateAndFetch(nodesToAttributes, failOnUnknownNodes);
+      switch (request.getOperation()) {
+      case ADD:
+        nodeAttributesManager.addNodeAttributes(nodeAttributeMapping);
+        break;
+      case REMOVE:
+        validateAttributesExists(nodesToAttributes);
+        nodeAttributesManager.removeNodeAttributes(nodeAttributeMapping);
+        break;
+      case REPLACE:
+        nodeAttributesManager.replaceNodeAttributes(
+            NodeAttribute.PREFIX_CENTRALIZED, nodeAttributeMapping);
+        break;
+      default:
+        throw new IOException("Invalid operation " + request.getOperation()
+            + " specified in the mapAttributesToNodes request ");
+
+      }
+    } catch (IOException ioe) {
+      throw logAndWrapException(ioe, user.getShortUserName(), operation, msg);
+    }
+    RMAuditLogger.logSuccess(user.getShortUserName(), operation,
+        "AdminService");
+    return recordFactory
+        .newRecordInstance(NodesToAttributesMappingResponse.class);
+  }
+
+  /**
+   * In YARN Federation mode, We allow users to mark subClusters
+   * With no heartbeat for a long time as SC_LOST state.
+   *
+   * RM does not support deregisterSubCluster, deregisterSubCluster is supported by Router.
+   *
+   * If we include a specific subClusterId in the request, check for the specified subCluster.
+   * If subClusterId is empty, all subClusters are checked.
+   *
+   * @param request deregisterSubCluster request.
+   * The request contains the id of to deregister sub-cluster.
+   * @return Response from deregisterSubCluster.
+   * @throws YarnException exceptions from yarn servers.
+   */
+  @Override
+  public DeregisterSubClusterResponse deregisterSubCluster(
+      DeregisterSubClusterRequest request) throws YarnException {
+    throw new YarnException("It is not allowed to call the RM's deregisterSubCluster to " +
+        "set the subCluster(s) state to SC_LOST, " +
+        "Please call Router's deregisterSubCluster to set.");
+  }
+
+  /**
+   * In YARN-Federation mode, We will be storing the Policy information for Queues.
+   *
+   * RM does not support saveFederationQueuePolicy,
+   * saveFederationQueuePolicy is supported by Router.
+   *
+   * @param request saveFederationQueuePolicy Request
+   * @return Response from saveFederationQueuePolicy.
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException if an IO error occurred.
+   */
+  @Override
+  public SaveFederationQueuePolicyResponse saveFederationQueuePolicy(
+      SaveFederationQueuePolicyRequest request) throws YarnException, IOException {
+    throw new YarnException("It is not allowed to call the RM's saveFederationQueuePolicy. " +
+        " Please call Router's saveFederationQueuePolicy to set Policy.");
+  }
+
+  /**
+   * In YARN-Federation mode, this method provides a way to save queue policies in batches.
+   *
+   * RM does not support batchSaveFederationQueuePolicies,
+   * batchSaveFederationQueuePolicies is supported by Router.
+   *
+   * @param request BatchSaveFederationQueuePolicies Request
+   * @return Response from batchSaveFederationQueuePolicies.
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException if an IO error occurred.
+   */
+  @Override
+  public BatchSaveFederationQueuePoliciesResponse batchSaveFederationQueuePolicies(
+      BatchSaveFederationQueuePoliciesRequest request) throws YarnException, IOException {
+    throw new YarnException("It is not allowed to call the RM's " +
+        " batchSaveFederationQueuePolicies. " +
+        " Please call Router's batchSaveFederationQueuePolicies to set Policies.");
+  }
+
+  @Override
+  public QueryFederationQueuePoliciesResponse listFederationQueuePolicies(
+      QueryFederationQueuePoliciesRequest request) throws YarnException, IOException {
+    throw new YarnException("It is not allowed to call the RM's " +
+        " listFederationQueuePolicies. " +
+        " Please call Router's listFederationQueuePolicies to list Policies.");
+  }
+
+  @Override
+  public DeleteFederationApplicationResponse deleteFederationApplication(
+      DeleteFederationApplicationRequest request) throws YarnException, IOException {
+    throw new YarnException("It is not allowed to call the RM's " +
+        " deleteFederationApplication. " +
+        " Please call Router's deleteFederationApplication to delete Application.");
+  }
+
+  @Override
+  public GetSubClustersResponse getFederationSubClusters(
+      GetSubClustersRequest request) throws YarnException, IOException {
+    throw new YarnException("It is not allowed to call the RM's " +
+        " getFederationSubClusters. " +
+        " Please call Router's getFederationSubClusters to get SubClusters.");
+  }
+
+  @Override
+  public DeleteFederationQueuePoliciesResponse deleteFederationPoliciesByQueues(
+      DeleteFederationQueuePoliciesRequest request) throws YarnException, IOException {
+    throw new YarnException("It is not allowed to call the RM's " +
+        " deleteFederationQueuePoliciesByQueues. " +
+        " Please call Router's deleteFederationQueuePoliciesByQueues to delete Policies.");
+  }
+
+  private void validateAttributesExists(
+      List<NodeToAttributes> nodesToAttributes) throws IOException {
+    NodeAttributesManager nodeAttributesManager =
+        rm.getRMContext().getNodeAttributesManager();
+    for (NodeToAttributes nodeToAttrs : nodesToAttributes) {
+      String hostname = nodeToAttrs.getNode();
+      if (hostname == null) {
+        continue;
+      }
+      Set<NodeAttribute> attrs =
+          nodeAttributesManager.getAttributesForNode(hostname).keySet();
+      List<NodeAttribute> attributes = nodeToAttrs.getNodeAttributes();
+      for (NodeAttribute nodeAttr : attributes) {
+        if (!attrs.contains(nodeAttr)) {
+          throw new IOException("Node attribute [" + nodeAttr.getAttributeKey()
+              + "] doesn't exist on node " + nodeToAttrs.getNode());
+        }
+      }
+    }
+  }
+
+  /**
+   * @param nodesToAttributesMapping input to be validated
+   * @param failOnUnknownNodes indicates to fail if the nodes are not available.
+   * @return the map of Node host name to set of NodeAttributes
+   * @throws IOException if validation fails for node existence or the attribute
+   *           has a wrong prefix
+   */
+  private Map<String, Set<NodeAttribute>> validateAndFetch(
+      List<NodeToAttributes> nodesToAttributesMapping,
+      boolean failOnUnknownNodes) throws IOException {
+    Map<String, Set<NodeAttribute>> attributeMapping = new HashMap<>();
+    List<String> invalidNodes = new ArrayList<>();
+    for (NodeToAttributes nodeToAttributes : nodesToAttributesMapping) {
+      String node = nodeToAttributes.getNode();
+      if (!validateForInvalidNode(node, failOnUnknownNodes)) {
+        invalidNodes.add(node);
+        continue;
+      }
+      List<NodeAttribute> nodeAttributes = nodeToAttributes.getNodeAttributes();
+      if (!nodeAttributes.stream()
+          .allMatch(nodeAttribute -> NodeAttribute.PREFIX_CENTRALIZED
+              .equals(nodeAttribute.getAttributeKey().getAttributePrefix()))) {
+        throw new IOException("Invalid Attribute Mapping for the node " + node
+            + ". Prefix should be " + NodeAttribute.PREFIX_CENTRALIZED);
+      }
+      attributeMapping.put(node, new HashSet<>(nodeAttributes));
+    }
+    if (!invalidNodes.isEmpty()) {
+      String message = " Following nodes does not exist : " + invalidNodes;
+      LOG.error(message);
+      throw new IOException(message);
+    }
+    return attributeMapping;
+  }
+
+  /**
+   * @param node
+   * @return true if valid else false;
+   */
+  private boolean validateForInvalidNode(String node,
+      boolean failOnUnknownNodes) {
+    if (!failOnUnknownNodes) {
+      return true;
+    }
+    // both active and inactive nodes are recognized as known nodes
+    boolean isKnown = rm.getRMContext().getRMNodes().keySet().stream()
+        .anyMatch(activeNode -> activeNode.getHost().equals(node));
+
+    if (!isKnown) {
+      isKnown = rm.getRMContext().getInactiveRMNodes().keySet().stream()
+          .anyMatch(inactiveNode -> inactiveNode.getHost().equals(node));
+    }
+    return isKnown;
   }
 }

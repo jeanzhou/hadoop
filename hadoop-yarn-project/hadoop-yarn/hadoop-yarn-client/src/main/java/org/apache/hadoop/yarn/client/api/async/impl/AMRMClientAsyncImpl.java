@@ -30,6 +30,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
 import org.apache.hadoop.yarn.api.records.Container;
@@ -37,6 +38,7 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.NodeReport;
+import org.apache.hadoop.yarn.api.records.PreemptionMessage;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.RejectedSchedulingRequest;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -53,7 +55,7 @@ import org.apache.hadoop.yarn.exceptions.ApplicationAttemptNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -286,13 +288,18 @@ extends AMRMClientAsync<T> {
                               List<String> blacklistRemovals) {
     client.updateBlacklist(blacklistAdditions, blacklistRemovals);
   }
+
+  @Override
+  public void updateTrackingUrl(String trackingUrl) {
+    client.updateTrackingUrl(trackingUrl);
+  }
   
-  private class HeartbeatThread extends Thread {
+  private class HeartbeatThread extends SubjectInheritingThread {
     public HeartbeatThread() {
       super("AMRM Heartbeater thread");
     }
     
-    public void run() {
+    public void work() {
       while (true) {
         Object response = null;
         // synchronization ensures we don't send heartbeats after unregistering
@@ -331,12 +338,12 @@ extends AMRMClientAsync<T> {
     }
   }
   
-  private class CallbackHandlerThread extends Thread {
+  private class CallbackHandlerThread extends SubjectInheritingThread {
     public CallbackHandlerThread() {
       super("AMRM Callback Handler Thread");
     }
     
-    public void run() {
+    public void work() {
       while (true) {
         if (!keepRunning) {
           return;
@@ -394,6 +401,14 @@ extends AMRMClientAsync<T> {
           List<Container> allocated = response.getAllocatedContainers();
           if (!allocated.isEmpty()) {
             handler.onContainersAllocated(allocated);
+          }
+
+          PreemptionMessage preemptionMessage = response.getPreemptionMessage();
+          if (preemptionMessage != null) {
+            if (handler instanceof AMRMClientAsync.AbstractCallbackHandler) {
+              ((AMRMClientAsync.AbstractCallbackHandler) handler)
+                  .onPreemptionMessageReceived(preemptionMessage);
+            }
           }
 
           if (!response.getContainersFromPreviousAttempts().isEmpty()) {

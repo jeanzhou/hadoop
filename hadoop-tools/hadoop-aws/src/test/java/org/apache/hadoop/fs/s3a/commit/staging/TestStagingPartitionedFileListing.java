@@ -28,9 +28,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-import com.google.common.collect.Lists;
-import org.junit.After;
-import org.junit.Test;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -39,8 +39,7 @@ import org.apache.hadoop.fs.Path;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.*;
 import static org.apache.hadoop.fs.s3a.S3AUtils.*;
 import static org.apache.hadoop.fs.s3a.commit.staging.StagingTestBase.*;
-import static org.hamcrest.CoreMatchers.allOf;
-import static org.hamcrest.CoreMatchers.hasItem;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test partitioned staging committer's logic for putting data in the right
@@ -51,19 +50,19 @@ public class TestStagingPartitionedFileListing
 
   @Override
   PartitionedStagingCommitter newJobCommitter() throws IOException {
-    return new PartitionedStagingCommitter(OUTPUT_PATH,
+    return new PartitionedStagingCommitter(getOutputPath(),
         createTaskAttemptForJob());
   }
 
   @Override
   PartitionedStagingCommitter newTaskCommitter() throws IOException {
-    return new PartitionedStagingCommitter(OUTPUT_PATH, getTAC());
+    return new PartitionedStagingCommitter(getOutputPath(), getTAC());
   }
 
   private FileSystem attemptFS;
   private Path attemptPath;
 
-  @After
+  @AfterEach
   public void cleanupAttempt() {
     cleanup("teardown", attemptFS, attemptPath);
   }
@@ -96,7 +95,7 @@ public class TestStagingPartitionedFileListing
           .collect(Collectors.toList());
       Collections.sort(expectedFiles);
       Collections.sort(actualFiles);
-      assertEquals("File sets should match", expectedFiles, actualFiles);
+      assertEquals(expectedFiles, actualFiles, "File sets should match");
     } finally {
       deleteQuietly(attemptFS, attemptPath, true);
     }
@@ -136,7 +135,7 @@ public class TestStagingPartitionedFileListing
           .collect(Collectors.toList());
       Collections.sort(expectedFiles);
       Collections.sort(actualFiles);
-      assertEquals("File sets should match", expectedFiles, actualFiles);
+      assertEquals(expectedFiles, actualFiles, "File sets should match");
     } finally {
       deleteQuietly(attemptFS, attemptPath, true);
     }
@@ -158,14 +157,13 @@ public class TestStagingPartitionedFileListing
     String oct2017 = "year=2017/month=10";
     Path octLog = new Path(attemptPath, oct2017 + "/log-2017-10-04.txt");
     touch(attemptFS, octLog);
-    assertThat(listPartitions(attemptFS, attemptPath), hasItem(oct2017));
+    assertThat(listPartitions(attemptFS, attemptPath)).contains(oct2017);
 
     // add a root entry and it ends up under the table_root entry
     Path rootFile = new Path(attemptPath, "root.txt");
     touch(attemptFS, rootFile);
-    assertThat(listPartitions(attemptFS, attemptPath),
-        allOf(hasItem(oct2017),
-            hasItem(StagingCommitterConstants.TABLE_ROOT)));
+    assertThat(listPartitions(attemptFS, attemptPath)).
+        containsAnyOf(oct2017, StagingCommitterConstants.TABLE_ROOT);
   }
 
   /**

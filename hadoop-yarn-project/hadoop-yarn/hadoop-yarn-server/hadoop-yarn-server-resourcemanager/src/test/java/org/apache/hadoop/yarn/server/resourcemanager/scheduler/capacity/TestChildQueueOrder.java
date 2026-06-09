@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.eq;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
@@ -29,15 +29,11 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import java.util.HashMap;
-import java.util.Map;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -62,21 +58,23 @@ import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 public class TestChildQueueOrder {
 
-  private static final Log LOG = LogFactory.getLog(TestChildQueueOrder.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestChildQueueOrder.class);
 
   RMContext rmContext;
   YarnConfiguration conf;
   CapacitySchedulerConfiguration csConf;
   CapacitySchedulerContext csContext;
+  CapacitySchedulerQueueContext queueContext;
 
   final static int GB = 1024;
   final static String DEFAULT_RACK = "/default";
@@ -84,7 +82,7 @@ public class TestChildQueueOrder {
   private final ResourceCalculator resourceComparator =
     new DefaultResourceCalculator();
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     rmContext = TestUtils.getMockRMContext();
     conf = new YarnConfiguration();
@@ -103,6 +101,10 @@ public class TestChildQueueOrder {
         thenReturn(resourceComparator);
     when(csContext.getRMContext()).thenReturn(rmContext);
     when(csContext.getPreemptionManager()).thenReturn(new PreemptionManager());
+    when(csContext.getCapacitySchedulerQueueManager()).thenReturn(
+        new CapacitySchedulerQueueManager(csConf, rmContext.getNodeLabelManager(), null));
+
+    queueContext = new CapacitySchedulerQueueContext(csContext);
   }
 
   private FiCaSchedulerApp getMockApplication(int appId, String user) {
@@ -131,12 +133,12 @@ public class TestChildQueueOrder {
         try {
           throw new Exception();
         } catch (Exception e) {
-          LOG.info("FOOBAR q.assignContainers q=" + queue.getQueueName() + 
+          LOG.info("FOOBAR q.assignContainers q=" + queue.getQueuePath() +
               " alloc=" + allocation + " node=" + node.getNodeName());
         }
         final Resource allocatedResource = Resources.createResource(allocation);
-        if (queue instanceof ParentQueue) {
-          ((ParentQueue)queue).allocateResource(clusterResource, 
+        if (queue instanceof AbstractParentQueue) {
+          ((AbstractParentQueue)queue).allocateResource(clusterResource,
               allocatedResource, RMNodeLabelsManager.NO_LABEL);
         } else {
           FiCaSchedulerApp app1 = getMockApplication(0, "");
@@ -202,19 +204,20 @@ public class TestChildQueueOrder {
   private void setupSortedQueues(CapacitySchedulerConfiguration conf) {
 
     // Define queues
-    csConf.setQueues(CapacitySchedulerConfiguration.ROOT, new String[] {A, B, C, D});
+    final QueuePath root = new QueuePath(CapacitySchedulerConfiguration.ROOT);
+    csConf.setQueues(root, new String[] {A, B, C, D});
 
     final String Q_A = CapacitySchedulerConfiguration.ROOT + "." + A;
-    conf.setCapacity(Q_A, 25);
+    conf.setCapacity(new QueuePath(Q_A), 25);
 
     final String Q_B = CapacitySchedulerConfiguration.ROOT + "." + B;
-    conf.setCapacity(Q_B, 25);
+    conf.setCapacity(new QueuePath(Q_B), 25);
 
     final String Q_C = CapacitySchedulerConfiguration.ROOT + "." + C;
-    conf.setCapacity(Q_C, 25);
+    conf.setCapacity(new QueuePath(Q_C), 25);
 
     final String Q_D = CapacitySchedulerConfiguration.ROOT + "." + D;
-    conf.setCapacity(Q_D, 25);
+    conf.setCapacity(new QueuePath(Q_D), 25);
   }
 
   @Test
@@ -222,9 +225,10 @@ public class TestChildQueueOrder {
   public void testSortedQueues() throws Exception {
     // Setup queue configs
     setupSortedQueues(csConf);
-    Map<String, CSQueue> queues = new HashMap<String, CSQueue>();
-    CSQueue root = 
-        CapacitySchedulerQueueManager.parseQueue(csContext, csConf, null,
+    queueContext.reinitialize();
+    CSQueueStore queues = new CSQueueStore();
+    CSQueue root =
+        CapacitySchedulerQueueManager.parseQueue(queueContext, csConf, null,
           CapacitySchedulerConfiguration.ROOT, queues, queues, 
           TestUtils.spyHook);
 
@@ -264,7 +268,7 @@ public class TestChildQueueOrder {
     // Stub an App and its containerCompleted
     FiCaSchedulerApp app_0 = getMockApplication(0,user_0);
     doReturn(true).when(app_0).containerCompleted(any(RMContainer.class),
-        any(ContainerStatus.class), any(RMContainerEventType.class),
+        any(), any(RMContainerEventType.class),
         any(String.class));
 
     Priority priority = TestUtils.createMockPriority(1); 
@@ -440,7 +444,7 @@ public class TestChildQueueOrder {
         ((ParentQueue)root).getChildQueuesToPrint());
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
   }
 }

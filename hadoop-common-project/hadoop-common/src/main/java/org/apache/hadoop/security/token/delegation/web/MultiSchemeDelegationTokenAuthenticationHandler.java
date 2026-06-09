@@ -29,14 +29,15 @@ import javax.servlet.http.HttpServletResponse;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
+import org.apache.hadoop.security.authentication.server.AuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.AuthenticationHandlerUtil;
 import org.apache.hadoop.security.authentication.server.AuthenticationToken;
 import org.apache.hadoop.security.authentication.server.CompositeAuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.HttpConstants;
 import org.apache.hadoop.security.authentication.server.MultiSchemeAuthenticationHandler;
+import org.apache.hadoop.util.Preconditions;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Splitter;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
 
 /**
  * A {@link CompositeAuthenticationHandler} that supports multiple HTTP
@@ -52,7 +53,7 @@ import com.google.common.base.Splitter;
  * required to ensure that only schemes with strongest level of security should
  * be used for delegation token management.
  *
- * <p/>
+ * <p>
  * In addition to the wrapped {@link AuthenticationHandler} configuration
  * properties, this handler supports the following properties prefixed with the
  * type of the wrapped <code>AuthenticationHandler</code>:

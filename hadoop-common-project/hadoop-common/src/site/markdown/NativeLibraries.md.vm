@@ -47,7 +47,7 @@ Components
 
 The native hadoop library includes various components:
 
-* Compression Codecs (bzip2, lz4, snappy, zlib)
+* Compression Codecs (bzip2, lz4, zlib)
 * Native IO utilities for [HDFS Short-Circuit Local Reads](../hadoop-hdfs/ShortCircuitLocalReads.html) and [Centralized Cache Management in HDFS](../hadoop-hdfs/CentralizedCacheManagement.html)
 * CRC32 checksum implementation
 
@@ -104,7 +104,7 @@ The bin/hadoop script ensures that the native hadoop library is on the library p
 During runtime, check the hadoop log files for your MapReduce tasks.
 
 * If everything is all right, then: `DEBUG util.NativeCodeLoader - Trying to load the custom-built native-hadoop library...` `INFO util.NativeCodeLoader - Loaded the native-hadoop library`
-* If something goes wrong, then: `INFO util.NativeCodeLoader - Unable to load native-hadoop library for your platform... using builtin-java classes where applicable`
+* If something goes wrong, then: `WARN util.NativeCodeLoader - Unable to load native-hadoop library for your platform... using builtin-java classes where applicable`
 
 Check
 -----
@@ -117,7 +117,6 @@ NativeLibraryChecker is a tool to check whether native libraries are loaded corr
        Native library checking:
        hadoop: true /home/ozawa/hadoop/lib/native/libhadoop.so.1.0.0
        zlib:   true /lib/x86_64-linux-gnu/libz.so.1
-       snappy: true /usr/lib/libsnappy.so.1
        zstd: true /usr/lib/libzstd.so.1
        lz4:    true revision:99
        bzip2:  false
@@ -127,10 +126,10 @@ Native Shared Libraries
 
 You can load any native shared library using DistributedCache for distributing and symlinking the library files.
 
-This example shows you how to distribute a shared library, mylib.so, and load it from a MapReduce task.
+This example shows you how to distribute a shared library in Unix-like systems, mylib.so, and load it from a MapReduce task.
 
-1.  First copy the library to the HDFS: `bin/hadoop fs -copyFromLocal mylib.so.1 /libraries/mylib.so.1`
-2.  The job launching program should contain the following: `DistributedCache.createSymlink(conf);` `DistributedCache.addCacheFile("hdfs://host:port/libraries/mylib.so. 1#mylib.so", conf);`
-3.  The MapReduce task can contain: `System.loadLibrary("mylib.so");`
+1.  First copy the library to the HDFS: `bin/hadoop fs -copyFromLocal libmyexample.so.1 /libraries/libmyexample.so.1`
+2.  The job launching program should contain the following: `DistributedCache.createSymlink(conf);` `DistributedCache.addCacheFile("hdfs://host:port/libraries/libmyexample.so.1#libmyexample.so", conf);`
+3.  The MapReduce task can contain: `System.loadLibrary("myexample");`
 
 Note: If you downloaded or built the native hadoop library, you don’t need to use DistibutedCache to make the library available to your MapReduce tasks.

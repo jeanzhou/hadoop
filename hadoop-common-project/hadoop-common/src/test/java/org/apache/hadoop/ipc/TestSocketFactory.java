@@ -33,22 +33,21 @@ import java.util.Map;
 
 import javax.net.SocketFactory;
 
-import org.junit.Assert;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.net.SocksSocketFactory;
 import org.apache.hadoop.net.StandardSocketFactory;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * test StandardSocketFactory and SocksSocketFactory NetUtils
@@ -65,7 +64,7 @@ public class TestSocketFactory {
   private void startTestServer() throws Exception {
     // start simple tcp server.
     serverRunnable = new ServerRunnable();
-    serverThread = new Thread(serverRunnable);
+    serverThread = new SubjectInheritingThread(serverRunnable);
     serverThread.start();
     final long timeout = System.currentTimeMillis() + START_STOP_TIMEOUT_SEC * 1000;
     while (!serverRunnable.isReady()) {
@@ -79,7 +78,7 @@ public class TestSocketFactory {
     port = serverRunnable.getPort();
   }
 
-  @After
+  @AfterEach
   public void stopTestServer() throws InterruptedException {
     final Thread t = serverThread;
     if (t != null) {
@@ -111,10 +110,12 @@ public class TestSocketFactory {
         .getDefaultSocketFactory(conf);
     dummyCache.put(defaultSocketFactory, toBeCached2);
 
-    Assert
-        .assertEquals("The cache contains two elements", 2, dummyCache.size());
-    Assert.assertEquals("Equals of both socket factory shouldn't be same",
-        defaultSocketFactory.equals(dummySocketFactory), false);
+    assertThat(dummyCache.size())
+        .withFailMessage("The cache contains two elements")
+        .isEqualTo(2);
+    assertThat(defaultSocketFactory)
+        .withFailMessage("Equals of both socket factory shouldn't be same")
+        .isNotEqualTo(dummySocketFactory);
 
     assertSame(toBeCached2, dummyCache.remove(defaultSocketFactory));
     dummyCache.put(defaultSocketFactory, toBeCached2);
@@ -132,7 +133,8 @@ public class TestSocketFactory {
   /**
    * Test SocksSocketFactory.
    */
-  @Test (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testSocksSocketFactory() throws Exception {
     startTestServer();
     testSocketFactory(new SocksSocketFactory());
@@ -141,7 +143,8 @@ public class TestSocketFactory {
   /**
    * Test StandardSocketFactory.
    */
-  @Test (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testStandardSocketFactory() throws Exception {
     startTestServer();
     testSocketFactory(new StandardSocketFactory());
@@ -177,21 +180,21 @@ public class TestSocketFactory {
   /**
    * test proxy methods
    */
-  @Test (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testProxy() throws Exception {
     SocksSocketFactory templateWithoutProxy = new SocksSocketFactory();
     Proxy proxy = new Proxy(Type.SOCKS, InetSocketAddress.createUnresolved(
         "localhost", 0));
 
     SocksSocketFactory templateWithProxy = new SocksSocketFactory(proxy);
-    assertFalse(templateWithoutProxy.equals(templateWithProxy));
+    assertThat(templateWithoutProxy).isNotEqualTo(templateWithProxy);
 
     Configuration configuration = new Configuration();
     configuration.set("hadoop.socks.server", "localhost:0");
 
     templateWithoutProxy.setConf(configuration);
-    assertTrue(templateWithoutProxy.equals(templateWithProxy));
-
+    assertThat(templateWithoutProxy).isEqualTo(templateWithProxy);
   }
 
   private void checkSocket(Socket socket) throws Exception {
@@ -200,8 +203,7 @@ public class TestSocketFactory {
     DataOutputStream out = new DataOutputStream(socket.getOutputStream());
     out.writeBytes("test\n");
     String answer = input.readLine();
-    assertEquals("TEST", answer);
-
+    assertThat(answer).isEqualTo("TEST");
   }
 
   /**

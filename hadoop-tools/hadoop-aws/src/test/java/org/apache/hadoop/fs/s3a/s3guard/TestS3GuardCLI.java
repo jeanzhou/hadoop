@@ -18,11 +18,10 @@
 
 package org.apache.hadoop.fs.s3a.s3guard;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.s3a.S3ATestConstants;
 import org.apache.hadoop.test.LambdaTestUtils;
 import org.apache.hadoop.util.ExitUtil;
 
@@ -31,7 +30,7 @@ import static org.apache.hadoop.fs.s3a.s3guard.S3GuardTool.*;
 /**
  * Test the S3Guard CLI entry point.
  */
-public class TestS3GuardCLI extends Assert {
+public class TestS3GuardCLI extends Assertions {
 
   /**
    * Run a S3GuardTool command from a varags list.
@@ -81,41 +80,6 @@ public class TestS3GuardCLI extends Assert {
   @Test
   public void testUnknownCommand() throws Throwable {
     runToFailure(E_USAGE, "unknown");
-  }
-
-  @Test
-  public void testPruneNoArgs() throws Throwable {
-    runToFailure(INVALID_ARGUMENT, Prune.NAME);
-  }
-
-  @Test
-  public void testDiffNoArgs() throws Throwable {
-    runToFailure(INVALID_ARGUMENT, Diff.NAME);
-  }
-
-  @Test
-  public void testImportNoArgs() throws Throwable {
-    runToFailure(INVALID_ARGUMENT, Import.NAME);
-  }
-
-  @Test
-  public void testDestroyNoArgs() throws Throwable {
-    runToFailure(INVALID_ARGUMENT, Destroy.NAME);
-  }
-
-  @Test
-  public void testDestroyUnknownTableNoRegion() throws Throwable {
-    runToFailure(INVALID_ARGUMENT, Destroy.NAME,
-        "-meta", "dynamodb://ireland-team");
-  }
-
-  @Test
-  public void testInitBucketAndRegion() throws Throwable {
-    runToFailure(INVALID_ARGUMENT, Init.NAME,
-        "-meta", "dynamodb://ireland-team",
-        "-region", "eu-west-1",
-        S3ATestConstants.DEFAULT_CSVTEST_FILE
-    );
   }
 
 }

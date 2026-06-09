@@ -25,7 +25,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FutureDataInputStreamBuilder;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.Seekable;
 import org.apache.hadoop.io.LongWritable;
@@ -36,11 +36,16 @@ import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.io.compress.SplitCompressionInputStream;
 import org.apache.hadoop.io.compress.SplittableCompressionCodec;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.lib.input.CompressedSplitLineReader;
 import org.apache.hadoop.mapreduce.lib.input.SplitLineReader;
 import org.apache.hadoop.mapreduce.lib.input.UncompressedSplitLineReader;
+import org.apache.hadoop.util.functional.FutureIO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_SPLIT_END;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_SPLIT_START;
 
 /**
  * Treats keys as offset in file and value as line. 
@@ -105,8 +110,16 @@ public class LineRecordReader implements RecordReader<LongWritable, Text> {
     codec = compressionCodecs.getCodec(file);
 
     // open the file and seek to the start of the split
-    final FileSystem fs = file.getFileSystem(job);
-    fileIn = fs.open(file);
+    final FutureDataInputStreamBuilder builder =
+        file.getFileSystem(job).openFile(file);
+    // the start and end of the split may be used to build
+    // an input strategy.
+    builder.optLong(FS_OPTION_OPENFILE_SPLIT_START, start)
+        .optLong(FS_OPTION_OPENFILE_SPLIT_END, end);
+    FutureIO.propagateOptions(builder, job,
+        MRJobConfig.INPUT_FILE_OPTION_PREFIX,
+        MRJobConfig.INPUT_FILE_MANDATORY_PREFIX);
+    fileIn = FutureIO.awaitFuture(builder.build());
     if (isCompressedInput()) {
       decompressor = CodecPool.getDecompressor(codec);
       if (codec instanceof SplittableCompressionCodec) {
@@ -140,7 +153,12 @@ public class LineRecordReader implements RecordReader<LongWritable, Text> {
     // because we always (except the last split) read one extra line in
     // next() method.
     if (start != 0) {
-      start += in.readLine(new Text(), 0, maxBytesToConsume(start));
+      try {
+        start += in.readLine(new Text(), 0, maxBytesToConsume(start));
+      } catch (Exception e) {
+        close();
+        throw e;
+      }
     }
     this.pos = start;
   }
@@ -289,6 +307,8 @@ public class LineRecordReader implements RecordReader<LongWritable, Text> {
     try {
       if (in != null) {
         in.close();
+      } else if (fileIn != null) {
+        fileIn.close();
       }
     } finally {
       if (decompressor != null) {

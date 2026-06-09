@@ -28,7 +28,7 @@ import org.apache.avro.reflect.ReflectDatumWriter;
 import org.apache.avro.reflect.ReflectDatumReader;
 import org.apache.avro.io.DecoderFactory;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class AvroTestUtil {
 
@@ -41,7 +41,7 @@ public class AvroTestUtil {
 
     // check that schema matches expected
     Schema s = ReflectData.get().getSchema(type);
-    assertEquals(Schema.parse(schema), s);
+    assertEquals(new Schema.Parser().parse(schema), s);
 
     // check that value is serialized correctly
     ReflectDatumWriter<Object> writer = new ReflectDatumWriter<Object>(s);

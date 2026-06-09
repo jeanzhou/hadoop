@@ -20,10 +20,12 @@ package org.apache.hadoop.yarn.webapp.util;
 import static org.apache.hadoop.yarn.util.StringHelper.PATH_JOINER;
 
 import java.io.IOException;
+import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -46,12 +48,16 @@ import org.apache.hadoop.yarn.webapp.BadRequestException;
 import org.apache.hadoop.yarn.webapp.NotFoundException;
 import org.apache.http.NameValuePair;
 import org.apache.http.client.utils.URLEncodedUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.ws.rs.container.ContainerRequestContext;
 
 @Private
 @Evolving
 public class WebAppUtils {
+  private static final Logger LOG = LoggerFactory.getLogger(WebAppUtils.class);
   public static final String WEB_APP_TRUSTSTORE_PASSWORD_KEY =
       "ssl.server.truststore.password";
   public static final String WEB_APP_KEYSTORE_PASSWORD_KEY =
@@ -90,8 +96,58 @@ public class WebAppUtils {
     }
   }
 
+  /**
+   * Runs a certain function against the active RM. The function's first
+   * argument is expected to be a string which contains the address of
+   * the RM being tried.
+   * @param conf configuration.
+   * @param func throwing bi function.
+   * @param arg T arg.
+   * @param <T> Generic T.
+   * @param <R> Generic R.
+   * @throws Exception exception occurs.
+   * @return instance of Generic R.
+   */
+  public static <T, R> R execOnActiveRM(Configuration conf,
+      ThrowingBiFunction<String, T, R> func, T arg) throws Exception {
+    // If HA is not enabled we are running the function on the only RM that is available.
+    if (!HAUtil.isHAEnabled(conf)) {
+      String rmAddress = getRMWebAppURLWithScheme(conf, 0);
+      return func.apply(rmAddress, arg);
+    }
+
+    // In HA mode we can find the active RM if user has admin permissions to check service states.
+    // Otherwise, activeRMId will be null.
+    List<String> rmIds = (List<String>) HAUtil.getRMHAIds(conf);
+    String activeRMId = RMHAUtils.findActiveRMHAId(conf);
+    if (activeRMId != null) {
+      int activeRMIndex = rmIds.indexOf(activeRMId);
+      String rmAddress = getRMWebAppURLWithScheme(conf, activeRMIndex);
+      return func.apply(rmAddress, arg);
+    }
+
+    // If user does not have the necessary permissions we have to iterate through the RMs
+    // to find the active one.
+    for (int i = 0; i < rmIds.size(); i++) {
+      try {
+        String rmAddress = getRMWebAppURLWithScheme(conf, i);
+        return func.apply(rmAddress, arg);
+      } catch (Exception e) {
+        // Log exception and try next RM if there are any.
+        LOG.trace("Exception while connecting to RM", e);
+      }
+    }
+    throw new ConnectException("No active RM available to execute this command");
+  }
+
+  /** A BiFunction which throws on Exception. */
+  @FunctionalInterface
+  public interface ThrowingBiFunction<T, U, R> {
+    R apply(T t, U u) throws Exception;
+  }
+
   public static String getRMWebAppURLWithoutScheme(Configuration conf,
-      boolean isHAEnabled)  {
+      boolean isHAEnabled, int haIdIndex)  {
     YarnConfiguration yarnConfig = new YarnConfiguration(conf);
     // set RM_ID if we have not configure it.
     if (isHAEnabled) {
@@ -99,7 +155,7 @@ public class WebAppUtils {
       if (rmId == null || rmId.isEmpty()) {
         List<String> rmIds = new ArrayList<>(HAUtil.getRMHAIds(conf));
         if (rmIds != null && !rmIds.isEmpty()) {
-          yarnConfig.set(YarnConfiguration.RM_HA_ID, rmIds.get(0));
+          yarnConfig.set(YarnConfiguration.RM_HA_ID, rmIds.get(haIdIndex));
         }
       }
     }
@@ -120,13 +176,19 @@ public class WebAppUtils {
     }
   }
 
+  public static String getRMWebAppURLWithScheme(Configuration conf,
+      int haIdIndex) {
+    return getHttpSchemePrefix(conf) + getRMWebAppURLWithoutScheme(
+        conf, HAUtil.isHAEnabled(conf), haIdIndex);
+  }
+
   public static String getRMWebAppURLWithScheme(Configuration conf) {
     return getHttpSchemePrefix(conf) + getRMWebAppURLWithoutScheme(
-        conf, HAUtil.isHAEnabled(conf));
+        conf, HAUtil.isHAEnabled(conf), 0);
   }
 
   public static String getRMWebAppURLWithoutScheme(Configuration conf) {
-    return getRMWebAppURLWithoutScheme(conf, false);
+    return getRMWebAppURLWithoutScheme(conf, false, 0);
   }
 
   public static String getRouterWebAppURLWithScheme(Configuration conf) {
@@ -140,6 +202,16 @@ public class WebAppUtils {
     } else {
       return conf.get(YarnConfiguration.ROUTER_WEBAPP_ADDRESS,
           YarnConfiguration.DEFAULT_ROUTER_WEBAPP_ADDRESS);
+    }
+  }
+
+  public static String getGPGWebAppURLWithoutScheme(Configuration conf) {
+    if (YarnConfiguration.useHttps(conf)) {
+      return conf.get(YarnConfiguration.GPG_WEBAPP_HTTPS_ADDRESS,
+          YarnConfiguration.DEFAULT_GPG_WEBAPP_HTTPS_ADDRESS);
+    } else {
+      return conf.get(YarnConfiguration.GPG_WEBAPP_ADDRESS,
+          YarnConfiguration.DEFAULT_GPG_WEBAPP_ADDRESS);
     }
   }
 
@@ -356,7 +428,7 @@ public class WebAppUtils {
    * if url has scheme then it will be returned as it is else it will return
    * url with scheme.
    * @param schemePrefix eg. http:// or https://
-   * @param url
+   * @param url url.
    * @return url with scheme
    */
   public static String getURLWithScheme(String schemePrefix, String url) {
@@ -395,7 +467,8 @@ public class WebAppUtils {
   /**
    * Choose which scheme (HTTP or HTTPS) to use when generating a URL based on
    * the configuration.
-   * 
+   *
+   * @param conf configuration.
    * @return the scheme (HTTP / HTTPS)
    */
   public static String getHttpSchemePrefix(Configuration conf) {
@@ -405,6 +478,8 @@ public class WebAppUtils {
   /**
    * Load the SSL keystore / truststore into the HttpServer builder.
    * @param builder the HttpServer2.Builder to populate with ssl config
+   * @return HttpServer2.Builder instance (passed in as the first parameter)
+   *         after loading SSL stores
    */
   public static HttpServer2.Builder loadSslConfiguration(
       HttpServer2.Builder builder) {
@@ -439,7 +514,9 @@ public class WebAppUtils {
             getPassword(sslConf, WEB_APP_TRUSTSTORE_PASSWORD_KEY),
             sslConf.get("ssl.server.truststore.type", "jks"))
         .excludeCiphers(
-            sslConf.get("ssl.server.exclude.cipher.list"));
+            sslConf.get("ssl.server.exclude.cipher.list"))
+        .includeCiphers(
+            sslConf.get("ssl.server.include.cipher.list"));
   }
 
   /**
@@ -540,6 +617,20 @@ public class WebAppUtils {
       List<NameValuePair> params = URLEncodedUtils.parse(queryString,
           encoding);
       return params;
+    }
+    return null;
+  }
+
+  /**
+   * Get a query string.
+   * @param request ContainerRequestContext with the request details
+   * @return the query parameter string
+   */
+  public static List<NameValuePair> getURLEncodedQueryParam(
+      ContainerRequestContext request) {
+    String queryString = request.getUriInfo().getPath();
+    if (queryString != null && !queryString.isEmpty()) {
+      return URLEncodedUtils.parse(queryString, StandardCharsets.ISO_8859_1);
     }
     return null;
   }

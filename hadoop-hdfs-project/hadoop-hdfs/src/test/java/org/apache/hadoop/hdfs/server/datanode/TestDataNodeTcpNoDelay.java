@@ -18,11 +18,11 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_RPC_SOCKET_FACTORY_CLASS_DEFAULT_KEY;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.Path;
@@ -34,9 +34,9 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.net.StandardSocketFactory;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import javax.net.SocketFactory;
 import java.io.IOException;
@@ -55,16 +55,16 @@ import java.util.List;
  * Checks that used sockets have TCP_NODELAY set when configured.
  */
 public class TestDataNodeTcpNoDelay {
-  private static final Log LOG =
-      LogFactory.getLog(TestDataNodeTcpNoDelay.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDataNodeTcpNoDelay.class);
   private static Configuration baseConf;
 
-  @BeforeClass
+  @BeforeAll
   public static void setUpBeforeClass() throws Exception {
     baseConf = new HdfsConfiguration();
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDownAfterClass() throws Exception {
 
   }

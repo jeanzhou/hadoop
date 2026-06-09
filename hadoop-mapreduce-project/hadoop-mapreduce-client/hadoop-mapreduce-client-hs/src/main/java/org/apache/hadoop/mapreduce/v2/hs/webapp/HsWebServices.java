@@ -19,9 +19,15 @@
 package org.apache.hadoop.mapreduce.v2.hs.webapp;
 
 import java.io.IOException;
+import java.util.Set;
 
+import javax.annotation.Nullable;
+import javax.inject.Named;
+import javax.inject.Singleton;
+import javax.inject.Inject;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
@@ -30,12 +36,16 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 import javax.ws.rs.core.UriInfo;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.mapreduce.JobACL;
+import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.v2.api.records.AMInfo;
 import org.apache.hadoop.mapreduce.v2.api.records.JobState;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskId;
@@ -48,6 +58,7 @@ import org.apache.hadoop.mapreduce.v2.app.webapp.dao.ConfInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobCounterInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobTaskAttemptCounterInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobTaskCounterInfo;
+import org.apache.hadoop.mapreduce.v2.app.webapp.dao.MapTaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.ReduceTaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskAttemptsInfo;
@@ -61,28 +72,47 @@ import org.apache.hadoop.mapreduce.v2.hs.webapp.dao.JobInfo;
 import org.apache.hadoop.mapreduce.v2.hs.webapp.dao.JobsInfo;
 import org.apache.hadoop.mapreduce.v2.util.MRApps;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+import org.apache.hadoop.yarn.logaggregation.ExtendedLogMetaRequest;
+import org.apache.hadoop.yarn.server.webapp.WrappedLogMetaRequest;
+import org.apache.hadoop.yarn.server.webapp.YarnWebServiceParams;
+import org.apache.hadoop.yarn.server.webapp.LogServlet;
+import org.apache.hadoop.yarn.server.webapp.WebServices;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
 import org.apache.hadoop.yarn.webapp.NotFoundException;
 import org.apache.hadoop.yarn.webapp.WebApp;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.inject.Inject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.classification.VisibleForTesting;
 
+@Singleton
 @Path("/ws/v1/history")
-public class HsWebServices {
+public class HsWebServices extends WebServices {
+  private static final Logger LOG = LoggerFactory.getLogger(HsWebServices.class);
   private final HistoryContext ctx;
   private WebApp webapp;
+  private LogServlet logServlet;
+  private boolean mrAclsEnabled;
 
-  private @Context HttpServletResponse response;
   @Context
-  UriInfo uriInfo;
+  private HttpServletResponse response;
+
+  @Context
+  private UriInfo uriInfo;
 
   @Inject
-  public HsWebServices(final HistoryContext ctx, final Configuration conf,
-      final WebApp webapp) {
+  public HsWebServices(
+      final @Named("ctx") HistoryContext ctx,
+      final @Named("conf") Configuration conf,
+      final @Named("hsWebApp") WebApp webapp,
+      final @Named("appClient") @Nullable ApplicationClientProtocol appBaseProto) {
+    super(appBaseProto);
     this.ctx = ctx;
     this.webapp = webapp;
+    this.logServlet = new LogServlet(conf, this);
+    this.mrAclsEnabled = conf.getBoolean(MRConfig.MR_ACLS_ENABLED, false);
   }
 
   private boolean hasAccess(Job job, HttpServletRequest request) {
@@ -97,6 +127,25 @@ public class HsWebServices {
   private void checkAccess(Job job, HttpServletRequest request) {
     if (!hasAccess(job, request)) {
       throw new WebApplicationException(Status.UNAUTHORIZED);
+    }
+  }
+  private void checkAccess(String containerIdStr, HttpServletRequest hsr) {
+    // Apply MR ACLs only if the container belongs to a MapReduce job.
+    // For non-MapReduce jobs, no corresponding Job will be found,
+    // so ACLs are not enforced.
+    if (mrAclsEnabled && isMRJobContainer(containerIdStr)) {
+      Job job = AMWebServices.getJobFromContainerIdString(containerIdStr, ctx);
+      checkAccess(job, hsr);
+    }
+  }
+
+  private boolean isMRJobContainer(String containerIdStr) {
+    try {
+      AMWebServices.getJobFromContainerIdString(containerIdStr, ctx);
+      return true;
+    } catch (NotFoundException e) {
+      LOG.trace("Container {} does not belong to a MapReduce job", containerIdStr);
+      return false;
     }
   }
 
@@ -361,9 +410,9 @@ public class HsWebServices {
     for (TaskAttempt ta : task.getAttempts().values()) {
       if (ta != null) {
         if (task.getType() == TaskType.REDUCE) {
-          attempts.add(new ReduceTaskAttemptInfo(ta, task.getType()));
+          attempts.add(new ReduceTaskAttemptInfo(ta));
         } else {
-          attempts.add(new TaskAttemptInfo(ta, task.getType(), false));
+          attempts.add(new MapTaskAttemptInfo(ta, false));
         }
       }
     }
@@ -385,9 +434,9 @@ public class HsWebServices {
     TaskAttempt ta = AMWebServices.getTaskAttemptFromTaskAttemptString(attId,
         task);
     if (task.getType() == TaskType.REDUCE) {
-      return new ReduceTaskAttemptInfo(ta, task.getType());
+      return new ReduceTaskAttemptInfo(ta);
     } else {
-      return new TaskAttemptInfo(ta, task.getType(), false);
+      return new MapTaskAttemptInfo(ta, false);
     }
   }
 
@@ -408,4 +457,127 @@ public class HsWebServices {
     return new JobTaskAttemptCounterInfo(ta);
   }
 
+  /**
+   * Returns the user qualified path name of the remote log directory for
+   * each pre-configured log aggregation file controller.
+   *
+   * @param req                HttpServletRequest
+   * @return Path names grouped by file controller name
+   */
+  @GET
+  @Path("/remote-log-dir")
+  @Produces({ MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + ";" + JettyUtils.UTF_8 })
+  public Response getRemoteLogDirPath(@Context HttpServletRequest req,
+      @QueryParam(YarnWebServiceParams.REMOTE_USER) String user,
+      @QueryParam(YarnWebServiceParams.APP_ID) String appIdStr)
+      throws IOException {
+    init();
+    return logServlet.getRemoteLogDirPath(user, appIdStr);
+  }
+
+  @GET
+  @Path("/extended-log-query")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @InterfaceAudience.Public
+  @InterfaceStability.Unstable
+  public Response getAggregatedLogsMeta(@Context HttpServletRequest hsr,
+      @QueryParam(YarnWebServiceParams.CONTAINER_LOG_FILE_NAME) String fileName,
+      @QueryParam(YarnWebServiceParams.FILESIZE) Set<String> fileSize,
+      @QueryParam(YarnWebServiceParams.MODIFICATION_TIME) Set<String>
+                                              modificationTime,
+      @QueryParam(YarnWebServiceParams.APP_ID) String appIdStr,
+      @QueryParam(YarnWebServiceParams.CONTAINER_ID) String containerIdStr,
+      @QueryParam(YarnWebServiceParams.NM_ID) String nmId) throws IOException {
+    init();
+    ExtendedLogMetaRequest.ExtendedLogMetaRequestBuilder logsRequest =
+        new ExtendedLogMetaRequest.ExtendedLogMetaRequestBuilder();
+    logsRequest.setAppId(appIdStr);
+    logsRequest.setFileName(fileName);
+    logsRequest.setContainerId(containerIdStr);
+    logsRequest.setFileSize(fileSize);
+    logsRequest.setModificationTime(modificationTime);
+    logsRequest.setNodeId(nmId);
+    return logServlet.getContainerLogsInfo(hsr, logsRequest);
+  }
+
+  @GET
+  @Path("/aggregatedlogs")
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @InterfaceAudience.Public
+  @InterfaceStability.Unstable
+  public Response getAggregatedLogsMeta(@Context HttpServletRequest hsr,
+      @QueryParam(YarnWebServiceParams.APP_ID) String appIdStr,
+      @QueryParam(YarnWebServiceParams.APPATTEMPT_ID) String appAttemptIdStr,
+      @QueryParam(YarnWebServiceParams.CONTAINER_ID) String containerIdStr,
+      @QueryParam(YarnWebServiceParams.NM_ID) String nmId,
+      @QueryParam(YarnWebServiceParams.REDIRECTED_FROM_NODE)
+      @DefaultValue("false") boolean redirectedFromNode,
+      @QueryParam(YarnWebServiceParams.MANUAL_REDIRECTION)
+      @DefaultValue("false") boolean manualRedirection) {
+    init();
+    return logServlet.getLogsInfo(hsr, appIdStr, appAttemptIdStr,
+        containerIdStr, nmId, redirectedFromNode, manualRedirection);
+  }
+
+  @GET
+  @Path("/containers/{containerid}/logs")
+  @Produces({ MediaType.APPLICATION_JSON + ";" + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + ";" + JettyUtils.UTF_8})
+  @InterfaceAudience.Public
+  @InterfaceStability.Unstable
+  public Response getContainerLogs(@Context HttpServletRequest hsr,
+      @PathParam(YarnWebServiceParams.CONTAINER_ID) String containerIdStr,
+      @QueryParam(YarnWebServiceParams.NM_ID) String nmId,
+      @QueryParam(YarnWebServiceParams.REDIRECTED_FROM_NODE)
+      @DefaultValue("false") boolean redirectedFromNode,
+      @QueryParam(YarnWebServiceParams.MANUAL_REDIRECTION)
+      @DefaultValue("false") boolean manualRedirection) {
+    init();
+    checkAccess(containerIdStr, hsr);
+    WrappedLogMetaRequest.Builder logMetaRequestBuilder =
+        LogServlet.createRequestFromContainerId(containerIdStr);
+
+    return logServlet.getContainerLogsInfo(hsr, logMetaRequestBuilder, nmId,
+        redirectedFromNode, null, manualRedirection);
+  }
+
+  @GET
+  @Path("/containerlogs/{containerid}/{filename}")
+  @Produces({ MediaType.TEXT_PLAIN + "; " + JettyUtils.UTF_8 })
+  @InterfaceAudience.Public
+  @InterfaceStability.Unstable
+  public Response getContainerLogFile(@Context HttpServletRequest req,
+      @PathParam(YarnWebServiceParams.CONTAINER_ID) String containerIdStr,
+      @PathParam(YarnWebServiceParams.CONTAINER_LOG_FILE_NAME)
+          String filename,
+      @QueryParam(YarnWebServiceParams.RESPONSE_CONTENT_FORMAT)
+          String format,
+      @QueryParam(YarnWebServiceParams.RESPONSE_CONTENT_SIZE)
+          String size,
+      @QueryParam(YarnWebServiceParams.NM_ID) String nmId,
+      @QueryParam(YarnWebServiceParams.REDIRECTED_FROM_NODE)
+      @DefaultValue("false") boolean redirectedFromNode,
+      @QueryParam(YarnWebServiceParams.MANUAL_REDIRECTION)
+      @DefaultValue("false") boolean manualRedirection) {
+    init();
+    checkAccess(containerIdStr, req);
+    return logServlet.getLogFile(req, containerIdStr, filename, format, size,
+        nmId, redirectedFromNode, null, manualRedirection);
+  }
+
+  @VisibleForTesting
+  LogServlet getLogServlet() {
+    return this.logServlet;
+  }
+
+  @VisibleForTesting
+  public void setLogServlet(LogServlet logServlet) {
+    this.logServlet = logServlet;
+  }
+
+  @VisibleForTesting
+  public void setHttpServletResponse(HttpServletResponse resp) {
+    this.response = resp;
+  }
 }

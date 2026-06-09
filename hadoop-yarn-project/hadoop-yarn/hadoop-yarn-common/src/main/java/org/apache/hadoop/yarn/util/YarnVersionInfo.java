@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.util;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.util.VersionInfo;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -30,7 +30,8 @@ import org.apache.hadoop.classification.InterfaceStability;
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 public class YarnVersionInfo extends VersionInfo {
-  private static final Log LOG = LogFactory.getLog(YarnVersionInfo.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(YarnVersionInfo.class);
 
   private static YarnVersionInfo YARN_VERSION_INFO = new YarnVersionInfo();
 
@@ -79,6 +80,8 @@ public class YarnVersionInfo extends VersionInfo {
   
   /**
    * Get the subversion URL for the root YARN directory.
+   *
+   * @return URL for the root YARN directory.
    */
   public static String getUrl() {
     return YARN_VERSION_INFO._getUrl();
@@ -87,21 +90,25 @@ public class YarnVersionInfo extends VersionInfo {
   /**
    * Get the checksum of the source files from which YARN was
    * built.
-   **/
+   *
+   * @return srcChecksum.
+   */
   public static String getSrcChecksum() {
     return YARN_VERSION_INFO._getSrcChecksum();
   }
 
   /**
    * Returns the buildVersion which includes version, 
-   * revision, user and date. 
+   * revision, user and date.
+   *
+   * @return buildVersion.
    */
   public static String getBuildVersion(){
     return YARN_VERSION_INFO._getBuildVersion();
   }
   
   public static void main(String[] args) {
-    LOG.debug("version: "+ getVersion());
+    LOG.debug("version: {}", getVersion());
     System.out.println("YARN " + getVersion());
     System.out.println("Subversion " + getUrl() + " -r " + getRevision());
     System.out.println("Compiled by " + getUser() + " on " + getDate());

@@ -20,8 +20,9 @@ package org.apache.hadoop.hdfs.nfs.nfs3;
 import java.io.IOException;
 import java.util.EnumSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import io.netty.channel.Channel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.hdfs.DFSClient;
@@ -43,15 +44,14 @@ import org.apache.hadoop.nfs.nfs3.response.WccData;
 import org.apache.hadoop.oncrpc.XDR;
 import org.apache.hadoop.oncrpc.security.VerifierNone;
 import org.apache.hadoop.security.IdMappingServiceProvider;
-import org.jboss.netty.channel.Channel;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Manage the writes and responds asynchronously.
  */
 public class WriteManager {
-  public static final Log LOG = LogFactory.getLog(WriteManager.class);
+  public static final Logger LOG = LoggerFactory.getLogger(WriteManager.class);
 
   private final NfsConfiguration config;
   private final IdMappingServiceProvider iug;

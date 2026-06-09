@@ -27,7 +27,7 @@ import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Test helper for MemoryRMStateStore will make sure the event.
@@ -105,6 +105,7 @@ public class MockMemoryRMStateStore extends MemoryRMStateStore {
         oldAppSubCtxt.getAMContainerResourceRequests());
     context.setLogAggregationContext(oldAppSubCtxt.getLogAggregationContext());
     context.setApplicationType(oldAppSubCtxt.getApplicationType());
+    context.setNodeLabelExpression(oldAppSubCtxt.getNodeLabelExpression());
     this.appSubCtxtCopy.put(oldAppSubCtxt.getApplicationId(), context);
   }
 

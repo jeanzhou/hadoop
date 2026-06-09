@@ -18,7 +18,8 @@
 
 package org.apache.hadoop.yarn.service;
 
-import com.google.common.cache.LoadingCache;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.security.client.ClientToAMTokenSecretManager;
 import org.apache.hadoop.yarn.service.api.records.Service;
@@ -42,8 +43,21 @@ public class ServiceContext {
   public String principal;
   // AM keytab location
   public String keytab;
+  private ServiceManager serviceManager;
 
   public ServiceContext() {
 
+  }
+
+  public ServiceManager getServiceManager() {
+    return serviceManager;
+  }
+
+  void setServiceManager(ServiceManager serviceManager) {
+    this.serviceManager = Preconditions.checkNotNull(serviceManager);
+  }
+
+  public Service getService() {
+    return service;
   }
 }

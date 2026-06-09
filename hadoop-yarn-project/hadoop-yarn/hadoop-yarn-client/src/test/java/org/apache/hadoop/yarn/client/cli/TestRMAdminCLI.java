@@ -18,14 +18,14 @@
 
 package org.apache.hadoop.yarn.client.cli;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.argThat;
-import static org.mockito.Matchers.eq;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -38,6 +38,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
@@ -76,17 +77,16 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceReque
 import org.apache.hadoop.yarn.util.Records;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatcher;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Charsets;
-import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 
 public class TestRMAdminCLI {
 
@@ -100,7 +100,7 @@ public class TestRMAdminCLI {
   private static final String HOST_B = "1.2.3.2";
   private static File dest;
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     ResourceUtils.resetResourceTypes();
     Configuration yarnConf = new YarnConfiguration();
@@ -113,7 +113,7 @@ public class TestRMAdminCLI {
     ResourceUtils.getResourceTypes();
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     if (dest.exists()) {
       dest.delete();
@@ -121,7 +121,7 @@ public class TestRMAdminCLI {
   }
 
   @SuppressWarnings("static-access")
-  @Before
+  @BeforeEach
   public void configure() throws IOException, YarnException {
     remoteAdminServiceAccessed = false;
     admin = mock(ResourceManagerAdministrationProtocol.class);
@@ -275,12 +275,10 @@ public class TestRMAdminCLI {
     NodeId nodeId = NodeId.fromString(nodeIdStr);
     Resource expectedResource = Resources.createResource(memSize, cores);
     ResourceOption resource = resourceMap.get(nodeId);
-    assertNotNull("resource for " + nodeIdStr + " shouldn't be null.",
-        resource);
-    assertEquals("resource value for " + nodeIdStr + " is not as expected.",
-        ResourceOption.newInstance(expectedResource,
-            ResourceOption.OVER_COMMIT_TIMEOUT_MILLIS_DEFAULT),
-        resource);
+    assertNotNull(resource, "resource for " + nodeIdStr + " shouldn't be null.");
+    assertEquals(ResourceOption.newInstance(expectedResource,
+        ResourceOption.OVER_COMMIT_TIMEOUT_MILLIS_DEFAULT),
+        resource, "resource value for " + nodeIdStr + " is not as expected.");
   }
 
   @Test
@@ -301,10 +299,9 @@ public class TestRMAdminCLI {
     NodeId nodeId = NodeId.fromString(nodeIdStr);
     Resource expectedResource = Resources.createResource(memSize, cores);
     ResourceOption resource = resourceMap.get(nodeId);
-    assertNotNull("resource for " + nodeIdStr + " shouldn't be null.",
-        resource);
-    assertEquals("resource value for " + nodeIdStr + " is not as expected.",
-        ResourceOption.newInstance(expectedResource, timeout), resource);
+    assertNotNull(resource, "resource for " + nodeIdStr + " shouldn't be null.");
+    assertEquals(ResourceOption.newInstance(expectedResource, timeout), resource,
+        "resource value for " + nodeIdStr + " is not as expected.");
   }
 
   @Test
@@ -325,7 +322,7 @@ public class TestRMAdminCLI {
   public void testUpdateNodeResourceTypes() throws Exception {
     String nodeIdStr = "0.0.0.0:0";
     String resourceTypes =
-        "memory-mb=1024Mi,vcores=1,resource1=3Gi,resource2=2m";
+        "memory-mb=1Gi,vcores=1,resource1=3Gi,resource2=2m";
     String[] args = {"-updateNodeResource", nodeIdStr, resourceTypes};
     assertEquals(0, rmAdminCLI.run(args));
     ArgumentCaptor<UpdateNodeResourceRequest> argument =
@@ -342,11 +339,15 @@ public class TestRMAdminCLI {
         ResourceInformation.newInstance("resource2", "m", 2));
 
     ResourceOption resource = resourceMap.get(nodeId);
-    assertNotNull("resource for " + nodeIdStr + " shouldn't be null.",
-        resource);
-    assertEquals("resource value for " + nodeIdStr + " is not as expected.",
-        ResourceOption.newInstance(expectedResource,
-            ResourceOption.OVER_COMMIT_TIMEOUT_MILLIS_DEFAULT), resource);
+    // Ensure memory-mb has been converted to "Mi"
+    assertEquals(1024,
+        resource.getResource().getResourceInformation("memory-mb").getValue());
+    assertEquals("Mi",
+        resource.getResource().getResourceInformation("memory-mb").getUnits());
+    assertNotNull(resource, "resource for " + nodeIdStr + " shouldn't be null.");
+    assertEquals(ResourceOption.newInstance(expectedResource,
+        ResourceOption.OVER_COMMIT_TIMEOUT_MILLIS_DEFAULT), resource,
+        "resource value for " + nodeIdStr + " is not as expected.");
   }
 
   @Test
@@ -373,10 +374,9 @@ public class TestRMAdminCLI {
         ResourceInformation.newInstance("resource2", "m", 2));
 
     ResourceOption resource = resourceMap.get(nodeId);
-    assertNotNull("resource for " + nodeIdStr + " shouldn't be null.",
-        resource);
-    assertEquals("resource value for " + nodeIdStr + " is not as expected.",
-        ResourceOption.newInstance(expectedResource, timeout), resource);
+    assertNotNull(resource, "resource for " + nodeIdStr + " shouldn't be null.");
+    assertEquals(ResourceOption.newInstance(expectedResource, timeout), resource,
+        "resource value for " + nodeIdStr + " is not as expected.");
   }
 
   @Test
@@ -575,12 +575,9 @@ public class TestRMAdminCLI {
       String[] args = { "-getGroups", "admin" };
       assertEquals(0, rmAdminCLI.run(args));
       verify(admin).getGroupsForUser(eq("admin"));
-      verify(out).println(argThat(new ArgumentMatcher<StringBuilder>() {
-        @Override
-        public boolean matches(Object argument) {
-          return ("" + argument).equals("admin : group1 group2");
-        }
-      }));
+      verify(out).println(argThat(
+          (ArgumentMatcher<StringBuilder>) arg ->
+              ("" + arg).equals("admin : group1 group2")));
     } finally {
       System.setOut(origOut);
     }
@@ -701,7 +698,7 @@ public class TestRMAdminCLI {
               "<\"label1(exclusive=true),label2(exclusive=false),label3\">] " +
               "[-removeFromClusterNodeLabels <label1,label2,label3>] " +
               "[-replaceLabelsOnNode " +
-              "<\"node1[:port]=label1,label2 node2[:port]=label1\"> " +
+              "<\"node1[:port]=label1 node2[:port]=label2\"> " +
               "[-failOnUnknownNodes]] " +
               "[-directlyAccessNodeLabelStore] [-refreshClusterMaxPriority] " +
               "[-updateNodeResource [NodeID] [MemSize] [vCores] "
@@ -775,11 +772,6 @@ public class TestRMAdminCLI {
           "Usage: yarn rmadmin [-getServiceState <serviceId>]", dataErr, 0);
       testError(new String[] { "-help", "-checkHealth" },
           "Usage: yarn rmadmin [-checkHealth <serviceId>]", dataErr, 0);
-      testError(new String[] { "-help", "-failover" },
-          "Usage: yarn rmadmin " +
-              "[-failover [--forcefence] [--forceactive] " +
-              "<serviceId> <serviceId>]",
-          dataErr, 0);
 
       testError(new String[] { "-help", "-badParameter" },
           "Usage: yarn rmadmin", dataErr, 0);
@@ -798,7 +790,7 @@ public class TestRMAdminCLI {
               + " [username]] [-addToClusterNodeLabels <\"label1(exclusive=true),"
                   + "label2(exclusive=false),label3\">]"
               + " [-removeFromClusterNodeLabels <label1,label2,label3>] [-replaceLabelsOnNode "
-              + "<\"node1[:port]=label1,label2 node2[:port]=label1\"> "
+              + "<\"node1[:port]=label1 node2[:port]=label2\"> "
               + "[-failOnUnknownNodes]] [-directlyAccessNodeLabelStore] "
               + "[-refreshClusterMaxPriority] "
               + "[-updateNodeResource [NodeID] [MemSize] [vCores] "
@@ -810,9 +802,9 @@ public class TestRMAdminCLI {
               + "[-getServiceState <serviceId>] [-getAllServiceState] "
               + "[-checkHealth <serviceId>] [-help [cmd]]";
       String actualHelpMsg = dataOut.toString();
-      assertTrue(String.format("Help messages: %n " + actualHelpMsg + " %n doesn't include expected " +
-          "messages: %n" + expectedHelpMsg), actualHelpMsg.contains(expectedHelpMsg
-              ));
+      assertTrue(actualHelpMsg.contains(expectedHelpMsg),
+          String.format("Help messages: %n " + actualHelpMsg + " %n doesn't include expected " +
+          "messages: %n" + expectedHelpMsg));
     } finally {
       System.setOut(oldOutPrintStream);
       System.setErr(oldErrPrintStream);
@@ -1042,18 +1034,18 @@ public class TestRMAdminCLI {
 
     args = new String[] { "-replaceLabelsOnNode", "node1= node2=",
         "-directlyAccessNodeLabelStore" };
-    assertTrue("Labels should get replaced even '=' is used ",
-        0 == rmAdminCLI.run(args));
+    assertTrue(0 == rmAdminCLI.run(args),
+        "Labels should get replaced even '=' is used ");
   }
 
   private void testError(String[] args, String template,
       ByteArrayOutputStream data, int resultCode) throws Exception {
     int actualResultCode = rmAdminCLI.run(args);
-    assertEquals("Expected result code: " + resultCode + 
-        ", actual result code is: " + actualResultCode, resultCode, actualResultCode);
-    assertTrue(String.format("Expected error message: %n" + template + 
-        " is not included in messages: %n" + data.toString()), 
-        data.toString().contains(template));
+    assertEquals(resultCode, actualResultCode, "Expected result code: " + resultCode +
+        ", actual result code is: " + actualResultCode);
+    assertTrue(data.toString().contains(template),
+        String.format("Expected error message: %n" + template +
+        " is not included in messages: %n" + data.toString()));
     data.reset();
   }
 
@@ -1062,9 +1054,9 @@ public class TestRMAdminCLI {
     ByteArrayOutputStream errOutBytes = new ByteArrayOutputStream();
     rmAdminCLIWithHAEnabled.setErrOut(new PrintStream(errOutBytes));
     try {
-      String[] args = { "-failover" };
+      String[] args = {"-transitionToActive"};
       assertEquals(-1, rmAdminCLIWithHAEnabled.run(args));
-      String errOut = new String(errOutBytes.toByteArray(), Charsets.UTF_8);
+      String errOut = new String(errOutBytes.toByteArray(), StandardCharsets.UTF_8);
       errOutBytes.reset();
       assertTrue(errOut.contains("Usage: rmadmin"));
     } finally {
@@ -1072,4 +1064,57 @@ public class TestRMAdminCLI {
     }
   }
 
+  @Test
+  public void testNoUnsupportedHACommandsInHelp() throws Exception {
+    ByteArrayOutputStream dataErr = new ByteArrayOutputStream();
+    System.setErr(new PrintStream(dataErr));
+    String[] args = {};
+    assertEquals(-1, rmAdminCLIWithHAEnabled.run(args));
+    String errOut = dataErr.toString();
+    assertFalse(errOut.contains("-transitionToObserver"));
+    dataErr.reset();
+    String[] args1 = {"-transitionToObserver"};
+    assertEquals(-1, rmAdminCLIWithHAEnabled.run(args1));
+    errOut = dataErr.toString();
+    assertTrue(errOut.contains("transitionToObserver: Unknown command"));
+    dataErr.reset();
+    args1[0] = "-failover";
+    assertEquals(-1, rmAdminCLIWithHAEnabled.run(args1));
+    errOut = dataErr.toString();
+    assertTrue(errOut.contains("failover: Unknown command"));
+    dataErr.reset();
+    String[] args2 = {"-help", "-transitionToObserver"};
+    assertEquals(0, rmAdminCLIWithHAEnabled.run(args2));
+    errOut = dataErr.toString();
+    assertFalse(errOut.contains("-transitionToObserver"));
+    dataErr.reset();
+    args2[1] = "-failover";
+    assertEquals(0, rmAdminCLIWithHAEnabled.run(args2));
+    errOut = dataErr.toString();
+    assertFalse(errOut.contains("-failover"));
+    dataErr.reset();
+  }
+
+  @Test
+  public void testParseSubClusterId() throws Exception {
+    rmAdminCLI.getConf().setBoolean(YarnConfiguration.FEDERATION_ENABLED, true);
+
+    // replaceLabelsOnNode
+    String[] replaceLabelsOnNodeArgs = {"-replaceLabelsOnNode",
+        "node1:8000,x node2:8000=y node3,x node4=Y", "-subClusterId", "SC-1"};
+    assertEquals(0, rmAdminCLI.run(replaceLabelsOnNodeArgs));
+
+    String[] refreshQueuesArgs = {"-refreshQueues", "-subClusterId", "SC-1"};
+    assertEquals(0, rmAdminCLI.run(refreshQueuesArgs));
+
+    String[] refreshNodesResourcesArgs = {"-refreshNodesResources", "-subClusterId", "SC-1"};
+    assertEquals(0, rmAdminCLI.run(refreshNodesResourcesArgs));
+
+    String nodeIdStr = "0.0.0.0:0";
+    String resourceTypes = "memory-mb=1024Mi,vcores=1,resource2";
+    String[] updateNodeResourceArgs = {"-updateNodeResource", nodeIdStr,
+        resourceTypes, "-subClusterId", "SC-1"};
+    rmAdminCLI.parseSubClusterId(updateNodeResourceArgs, false);
+    assertEquals(-1, rmAdminCLI.run(updateNodeResourceArgs));
+  }
 }

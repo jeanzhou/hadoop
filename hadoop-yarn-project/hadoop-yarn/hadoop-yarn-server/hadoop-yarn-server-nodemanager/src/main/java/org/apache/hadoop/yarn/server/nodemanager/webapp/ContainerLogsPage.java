@@ -28,7 +28,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -151,9 +151,7 @@ public class ContainerLogsPage extends NMView {
                 printAggregatedLogFileDirectory(html, containersLogMeta);
               }
             } catch (Exception ex) {
-              if (LOG.isDebugEnabled()) {
-                LOG.debug(ex.getMessage());
-              }
+              LOG.debug("{}", ex);
             }
           }
         } else {
@@ -216,7 +214,7 @@ public class ContainerLogsPage extends NMView {
           
           IOUtils.skipFully(logByteStream, start);
           InputStreamReader reader =
-              new InputStreamReader(logByteStream, Charset.forName("UTF-8"));
+              new InputStreamReader(logByteStream, StandardCharsets.UTF_8);
           int bufferSize = 65536;
           char[] cbuf = new char[bufferSize];
 

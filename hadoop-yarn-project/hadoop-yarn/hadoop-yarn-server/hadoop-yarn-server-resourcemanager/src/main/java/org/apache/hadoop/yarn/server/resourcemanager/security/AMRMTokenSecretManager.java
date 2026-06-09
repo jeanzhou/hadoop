@@ -24,12 +24,14 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.math.NumberUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
@@ -44,7 +46,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMSta
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
 import org.apache.hadoop.yarn.server.security.MasterKeyData;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * AMRM-tokens are per ApplicationAttempt. If users redistribute their
@@ -56,8 +58,8 @@ import com.google.common.annotations.VisibleForTesting;
 public class AMRMTokenSecretManager extends
     SecretManager<AMRMTokenIdentifier> {
 
-  private static final Log LOG = LogFactory
-    .getLog(AMRMTokenSecretManager.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(AMRMTokenSecretManager.class);
 
   private int serialNo = new SecureRandom().nextInt();
   private MasterKeyData nextMasterKey;
@@ -76,7 +78,9 @@ public class AMRMTokenSecretManager extends
       new HashSet<ApplicationAttemptId>();
 
   /**
-   * Create an {@link AMRMTokenSecretManager}
+   * Create an {@link AMRMTokenSecretManager}.
+   * @param conf configuration.
+   * @param rmContext rm context.
    */
   public AMRMTokenSecretManager(Configuration conf, RMContext rmContext) {
     this.rmContext = rmContext;
@@ -88,11 +92,18 @@ public class AMRMTokenSecretManager extends
             YarnConfiguration.DEFAULT_RM_AMRM_TOKEN_MASTER_KEY_ROLLING_INTERVAL_SECS) * 1000;
     // Adding delay = 1.5 * expiry interval makes sure that all active AMs get
     // the updated shared-key.
-    this.activationDelay =
-        (long) (conf.getLong(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS,
-            YarnConfiguration.DEFAULT_RM_AM_EXPIRY_INTERVAL_MS) * 1.5);
-    LOG.info("AMRMTokenKeyRollingInterval: " + this.rollingInterval
-        + "ms and AMRMTokenKeyActivationDelay: " + this.activationDelay + " ms");
+    String rmAmExpiryIntervalMS = conf.get(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS);
+    if (NumberUtils.isDigits(rmAmExpiryIntervalMS)) {
+      this.activationDelay = (long) (conf.getLong(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS,
+          YarnConfiguration.DEFAULT_RM_AM_EXPIRY_INTERVAL_MS) * 1.5);
+    } else {
+      this.activationDelay =
+          (long) (conf.getTimeDuration(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS,
+          YarnConfiguration.DEFAULT_RM_AM_EXPIRY_INTERVAL_MS, TimeUnit.MILLISECONDS) * 1.5);
+    }
+
+    LOG.info("AMRMTokenKeyRollingInterval: {} ms and AMRMTokenKeyActivationDelay: {} ms",
+        this.rollingInterval, this.activationDelay);
     if (rollingInterval <= activationDelay * 2) {
       throw new IllegalArgumentException(
           YarnConfiguration.RM_AMRM_TOKEN_MASTER_KEY_ROLLING_INTERVAL_SECS
@@ -219,6 +230,8 @@ public class AMRMTokenSecretManager extends
 
   /**
    * Populate persisted password of AMRMToken back to AMRMTokenSecretManager.
+   * @param token AMRMTokenIdentifier.
+   * @throws IOException an I/O exception has occurred.
    */
   public void addPersistedPassword(Token<AMRMTokenIdentifier> token)
       throws IOException {
@@ -243,9 +256,7 @@ public class AMRMTokenSecretManager extends
     try {
       ApplicationAttemptId applicationAttemptId =
           identifier.getApplicationAttemptId();
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Trying to retrieve password for " + applicationAttemptId);
-      }
+      LOG.debug("Trying to retrieve password for {}", applicationAttemptId);
       if (!appAttemptSet.contains(applicationAttemptId)) {
         throw new InvalidToken(applicationAttemptId
             + " not found in AMRMTokenSecretManager.");
@@ -313,17 +324,16 @@ public class AMRMTokenSecretManager extends
   }
 
   public void recover(RMState state) {
-    if (state.getAMRMTokenSecretManagerState() != null) {
+    AMRMTokenSecretManagerState tokenState = getTokenState(state);
+    if (tokenState != null) {
       // recover the current master key
-      MasterKey currentKey =
-          state.getAMRMTokenSecretManagerState().getCurrentMasterKey();
+      MasterKey currentKey = tokenState.getCurrentMasterKey();
       this.currentMasterKey =
           new MasterKeyData(currentKey, createSecretKey(currentKey.getBytes()
             .array()));
 
       // recover the next master key if not null
-      MasterKey nextKey =
-          state.getAMRMTokenSecretManagerState().getNextMasterKey();
+      MasterKey nextKey = tokenState.getNextMasterKey();
       if (nextKey != null) {
         this.nextMasterKey =
             new MasterKeyData(nextKey, createSecretKey(nextKey.getBytes()
@@ -331,5 +341,32 @@ public class AMRMTokenSecretManager extends
         this.timer.schedule(new NextKeyActivator(), this.activationDelay);
       }
     }
+  }
+
+  private AMRMTokenSecretManagerState getTokenState(RMState state) {
+    AMRMTokenSecretManagerState result = state.getAMRMTokenSecretManagerState();
+    return result == null ? null : validateAndUpdateState(result);
+  }
+
+  private AMRMTokenSecretManagerState validateAndUpdateState(AMRMTokenSecretManagerState state) {
+    MasterKey currentKey = state.getCurrentMasterKey();
+    MasterKey nextKey = state.getNextMasterKey();
+    boolean updateRequired = false;
+    if (!validateMasterKey(currentKey)) {
+      state.setCurrentMasterKey(createNewMasterKey().getMasterKey());
+      updateRequired = true;
+    }
+    if (!validateMasterKey(nextKey)) {
+      state.setNextMasterKey(createNewMasterKey().getMasterKey());
+      updateRequired = true;
+    }
+    if (updateRequired) {
+      rmContext.getStateStore().storeOrUpdateAMRMTokenSecretManager(state, true);
+    }
+    return state;
+  }
+
+  private boolean validateMasterKey(MasterKey masterKey) {
+    return masterKey == null || validateSecretKeyLength(masterKey.getBytes().array());
   }
 }

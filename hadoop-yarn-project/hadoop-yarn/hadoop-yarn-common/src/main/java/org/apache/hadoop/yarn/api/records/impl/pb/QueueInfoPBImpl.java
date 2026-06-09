@@ -41,7 +41,7 @@ import org.apache.hadoop.yarn.proto.YarnProtos.QueueInfoProtoOrBuilder;
 import org.apache.hadoop.yarn.proto.YarnProtos.QueueStateProto;
 import org.apache.hadoop.yarn.proto.YarnProtos.QueueStatisticsProto;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
 @Private
 @Unstable
@@ -102,6 +102,12 @@ public class QueueInfoPBImpl extends QueueInfo {
   }
 
   @Override
+  public String getQueuePath() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasQueuePath()) ? p.getQueuePath() : null;
+  }
+
+  @Override
   public QueueState getQueueState() {
     QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
     if (!p.hasState()) {
@@ -122,6 +128,30 @@ public class QueueInfoPBImpl extends QueueInfo {
   public void setCapacity(float capacity) {
     maybeInitBuilder();
     builder.setCapacity(capacity);
+  }
+
+  @Override
+  public float getWeight() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasWeight()) ? p.getWeight() : -1;
+  }
+
+  @Override
+  public void setWeight(float weight) {
+    maybeInitBuilder();
+    builder.setWeight(weight);
+  }
+
+  @Override
+  public int getMaxParallelApps() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasMaxParallelApps()) ? p.getMaxParallelApps() : -1;
+  }
+
+  @Override
+  public void setMaxParallelApps(int weight) {
+    maybeInitBuilder();
+    builder.setMaxParallelApps(weight);
   }
 
   @Override
@@ -152,6 +182,16 @@ public class QueueInfoPBImpl extends QueueInfo {
       return;
     }
     builder.setQueueName(queueName);
+  }
+
+  @Override
+  public void setQueuePath(String queuePath) {
+    maybeInitBuilder();
+    if (queuePath == null) {
+      builder.clearQueuePath();
+      return;
+    }
+    builder.setQueuePath(queuePath);
   }
 
   @Override
@@ -512,5 +552,137 @@ public class QueueInfoPBImpl extends QueueInfo {
       boolean intraQueuePreemptionDisabled) {
     maybeInitBuilder();
     builder.setIntraQueuePreemptionDisabled(intraQueuePreemptionDisabled);
+  }
+
+  @Override
+  public String getSchedulerType() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasSchedulerType()) ? p.getSchedulerType() : null;
+  }
+
+  @Override
+  public void setSchedulerType(String schedulerType) {
+    maybeInitBuilder();
+    builder.setSchedulerType(schedulerType);
+  }
+
+  @Override
+  public int getMinResourceVCore() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasMinResourceVCore()) ? p.getMinResourceVCore() : 0;
+  }
+
+  @Override
+  public void setMinResourceVCore(int vCore) {
+    maybeInitBuilder();
+    builder.setMinResourceVCore(vCore);
+  }
+
+  @Override
+  public long getMinResourceMemory() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasMaxResourceVCore()) ? p.getMaxResourceVCore() : 0;
+  }
+
+  @Override
+  public void setMinResourceMemory(long memory) {
+    maybeInitBuilder();
+    builder.setMinResourceMemory(memory);
+  }
+
+  @Override
+  public int getMaxResourceVCore() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasMaxResourceVCore()) ? p.getMaxResourceVCore() : 0;
+  }
+
+  @Override
+  public void setMaxResourceVCore(int vCore) {
+    maybeInitBuilder();
+    builder.setMinResourceVCore(vCore);
+  }
+
+  @Override
+  public long getMaxResourceMemory() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasMaxResourceMemory()) ? p.getMaxResourceMemory() : 0;
+  }
+
+  @Override
+  public void setMaxResourceMemory(long memory) {
+    maybeInitBuilder();
+    builder.setMaxResourceMemory(memory);
+  }
+
+  @Override
+  public int getReservedResourceVCore() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasReservedResourceVCore()) ? p.getReservedResourceVCore() : 0;
+  }
+
+  @Override
+  public void setReservedResourceVCore(int vCore) {
+    maybeInitBuilder();
+    builder.setReservedResourceVCore(vCore);
+  }
+
+  @Override
+  public long getReservedResourceMemory() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasReservedResourceMemory()) ? p.getReservedResourceMemory() : 0;
+  }
+
+  @Override
+  public void setReservedResourceMemory(long memory) {
+    maybeInitBuilder();
+    builder.setReservedResourceMemory(memory);
+  }
+
+  @Override
+  public int getSteadyFairShareVCore() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasSteadyFairShareVCore()) ? p.getSteadyFairShareVCore() : 0;
+  }
+
+  @Override
+  public void setSteadyFairShareVCore(int vCore) {
+    maybeInitBuilder();
+    builder.setSteadyFairShareVCore(vCore);
+  }
+
+  @Override
+  public long getSteadyFairShareMemory() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasSteadyFairShareMemory()) ? p.getSteadyFairShareMemory() : 0;
+  }
+
+  @Override
+  public void setSteadyFairShareMemory(long memory) {
+    maybeInitBuilder();
+    builder.setSteadyFairShareMemory(memory);
+  }
+
+  @Override
+  public String getSubClusterId() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasSubClusterId()) ? p.getSubClusterId() : null;
+  }
+
+  @Override
+  public void setSubClusterId(String subClusterId) {
+    maybeInitBuilder();
+    builder.setSubClusterId(subClusterId);
+  }
+
+  @Override
+  public int getMaxRunningApp() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasMaxRunningApp()) ? p.getMaxRunningApp() : 0;
+  }
+
+  @Override
+  public void setMaxRunningApp(int maxRunningApp) {
+    maybeInitBuilder();
+    builder.setMaxRunningApp(maxRunningApp);
   }
 }

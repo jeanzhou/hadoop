@@ -155,7 +155,7 @@ public class ContainerMetrics implements MetricsSource {
         .newQuantiles(PMEM_USAGE_QUANTILES_NAME, "Physical memory quantiles",
             "Usage", "MBs", 1);
     ContainerMetricsQuantiles memEstimator =
-        new ContainerMetricsQuantiles(MutableQuantiles.quantiles);
+        new ContainerMetricsQuantiles(MutableQuantiles.QUANTILES);
     pMemMBQuantiles.setEstimator(memEstimator);
 
     this.cpuCoreUsagePercent = registry.newStat(
@@ -166,7 +166,7 @@ public class ContainerMetrics implements MetricsSource {
             "Physical Cpu core percent usage quantiles", "Usage", "Percents",
             1);
     ContainerMetricsQuantiles cpuEstimator =
-        new ContainerMetricsQuantiles(MutableQuantiles.quantiles);
+        new ContainerMetricsQuantiles(MutableQuantiles.QUANTILES);
     cpuCoreUsagePercentQuantiles.setEstimator(cpuEstimator);
     this.milliVcoresUsed = registry.newStat(
         VCORE_USAGE_METRIC_NAME, "1000 times Vcore usage", "Usage",
@@ -242,14 +242,18 @@ public class ContainerMetrics implements MetricsSource {
     }
   }
 
-  public synchronized void finished() {
+  public synchronized void finished(boolean unregisterWithoutDelay) {
     if (!finished) {
       this.finished = true;
       if (timer != null) {
         timer.cancel();
         timer = null;
       }
-      scheduleTimerTaskForUnregistration();
+      if (!unregisterWithoutDelay) {
+        scheduleTimerTaskForUnregistration();
+      } else {
+        ContainerMetrics.unregisterContainerMetrics(ContainerMetrics.this);
+      }
       this.pMemMBQuantiles.stop();
       this.cpuCoreUsagePercentQuantiles.stop();
     }
@@ -274,7 +278,7 @@ public class ContainerMetrics implements MetricsSource {
   }
 
   public void recordProcessId(String processId) {
-    registry.tag(PROCESSID_INFO, processId);
+    registry.tag(PROCESSID_INFO, processId, true);
   }
 
   public void recordResourceLimit(int vmemLimit, int pmemLimit, int cpuVcores) {

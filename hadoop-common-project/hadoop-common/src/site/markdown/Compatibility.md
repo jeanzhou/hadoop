@@ -187,7 +187,7 @@ existing documentation and tests and/or adding new documentation or tests.
 
 #### Java Binary compatibility for end-user applications i.e. Apache Hadoop ABI
 
-Apache Hadoop revisions SHOUD retain binary compatability such that end-user
+Apache Hadoop revisions SHOULD retain binary compatability such that end-user
 applications continue to work without any modifications. Minor Apache Hadoop
 revisions within the same major revision MUST retain compatibility such that
 existing MapReduce applications (e.g. end-user applications and projects such
@@ -201,8 +201,7 @@ release as the original build target.
 For MapReduce applications in particular, i.e. applications using the
 org.apache.hadoop.mapred and/or org.apache.hadoop.mapreduce APIs, the developer
 community SHALL support binary compatibility across major releases. The
-MapReduce APIs SHALL be supported compatibly across major releases. See
-[Compatibility for MapReduce applications between hadoop-1.x and hadoop-2.x](../../hadoop-mapreduce-client/hadoop-mapreduce-client-core/MapReduce_Compatibility_Hadoop1_Hadoop2.html) for more details.
+MapReduce APIs SHALL be supported compatibly across major releases.
 
 Some applications may be affected by changes to disk layouts or other internal
 changes. See the sections that follow for policies on how incompatible
@@ -477,19 +476,12 @@ rolled back to the older layout.
 
 ##### AWS S3A Guard Metadata
 
-For each operation in the Hadoop S3 client (s3a) that reads or modifies
-file metadata, a shadow copy of that file metadata is stored in a separate
-metadata store, which offers HDFS-like consistency for the metadata, and may
-also provide faster lookups for things like file status or directory listings.
-S3A guard tables are created with a version marker which indicates
-compatibility.
+The S3Guard metastore used to store metadata in DynamoDB tables;
+as such it had to maintain a compatibility strategy.
+Now that S3Guard is removed, the tables are not needed.
 
-###### Policy
-
-The S3A guard metadata schema SHALL be considered
-[Private](./InterfaceClassification.html#Private) and
-[Unstable](./InterfaceClassification.html#Unstable). Any incompatible change
-to the schema MUST result in the version number of the schema being incremented.
+Applications configured to use an S3A metadata store other than
+the "null" store will fail.
 
 ##### YARN Resource Manager State Store
 
@@ -772,7 +764,6 @@ References
 Here are some relevant JIRAs and pages related to the topic:
 
 * The evolution of this document - [HADOOP-9517](https://issues.apache.org/jira/browse/HADOOP-9517)
-* Binary compatibility for MapReduce end-user applications between hadoop-1.x and hadoop-2.x - [MapReduce Compatibility between hadoop-1.x and hadoop-2.x](../../hadoop-mapreduce-client/hadoop-mapreduce-client-core/MapReduce_Compatibility_Hadoop1_Hadoop2.html)
 * Annotations for interfaces as per interface classification schedule - [HADOOP-7391](https://issues.apache.org/jira/browse/HADOOP-7391) [Hadoop Interface Classification](./InterfaceClassification.html)
 * Compatibility for Hadoop 1.x releases - [HADOOP-5071](https://issues.apache.org/jira/browse/HADOOP-5071)
 * The [Hadoop Roadmap](http://wiki.apache.org/hadoop/Roadmap) page that captures other release policies

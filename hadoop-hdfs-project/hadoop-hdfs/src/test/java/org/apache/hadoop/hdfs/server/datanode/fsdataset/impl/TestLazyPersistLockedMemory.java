@@ -19,17 +19,18 @@
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSOutputStream;
 import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.EnumSet;
@@ -39,8 +40,7 @@ import static org.apache.hadoop.fs.CreateFlag.CREATE;
 import static org.apache.hadoop.fs.CreateFlag.LAZY_PERSIST;
 import static org.apache.hadoop.fs.StorageType.DEFAULT;
 import static org.apache.hadoop.fs.StorageType.RAM_DISK;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Verify that locked memory is used correctly when writing to replicas in
@@ -76,7 +76,7 @@ public class TestLazyPersistLockedMemory extends LazyPersistTestCase {
     Path path = new Path("/" + METHOD_NAME + ".dat");
     makeTestFile(path, BLOCK_SIZE, true);
     ensureFileReplicasOnStorageType(path, RAM_DISK);
-    assertThat(fsd.getCacheUsed(), is((long) BLOCK_SIZE));
+    assertThat(fsd.getCacheUsed()).isEqualTo((long) BLOCK_SIZE);
   }
 
   @Test
@@ -90,7 +90,7 @@ public class TestLazyPersistLockedMemory extends LazyPersistTestCase {
     Path path = new Path("/" + METHOD_NAME + ".dat");
     makeTestFile(path, BLOCK_SIZE, true);
     ensureFileReplicasOnStorageType(path, RAM_DISK);
-    assertThat(fsd.getCacheUsed(), is((long) BLOCK_SIZE));
+    assertThat(fsd.getCacheUsed()).isEqualTo((long) BLOCK_SIZE);
 
     // Delete the file and ensure that the locked memory is released.
     fs.delete(path, false);
@@ -113,7 +113,7 @@ public class TestLazyPersistLockedMemory extends LazyPersistTestCase {
 
     Path path1 = new Path("/" + METHOD_NAME + ".01.dat");
     makeTestFile(path1, BLOCK_SIZE, true);
-    assertThat(fsd.getCacheUsed(), is((long) BLOCK_SIZE));
+    assertThat(fsd.getCacheUsed()).isEqualTo((long) BLOCK_SIZE);
 
     // Wait until the replica is written to persistent storage.
     waitForMetric("RamDiskBlocksLazyPersisted", 1);
@@ -137,7 +137,7 @@ public class TestLazyPersistLockedMemory extends LazyPersistTestCase {
 
     Path path = new Path("/" + METHOD_NAME + ".dat");
     makeTestFile(path, 1, true);
-    assertThat(fsd.getCacheUsed(), is(osPageSize));
+    assertThat(fsd.getCacheUsed()).isEqualTo(osPageSize);
 
     // Delete the file and ensure locked RAM usage goes to zero.
     fs.delete(path, false);
@@ -175,6 +175,8 @@ public class TestLazyPersistLockedMemory extends LazyPersistTestCase {
 
     // Delete the file and ensure locked RAM goes to zero.
     fs.delete(path, false);
+    BlockManagerTestUtil.waitForMarkedDeleteQueueIsEmpty(
+        cluster.getNamesystem(0).getBlockManager());
     DataNodeTestUtils.triggerBlockReport(cluster.getDataNodes().get(0));
     waitForLockedBytesUsed(fsd, 0);
   }

@@ -23,9 +23,10 @@ import java.io.DataInput;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.security.DigestInputStream;
 import java.security.DigestOutputStream;
 import java.security.MessageDigest;
@@ -37,7 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
-import org.apache.commons.logging.Log;
+import org.slf4j.Logger;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -74,8 +75,8 @@ import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.util.StringUtils;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * Contains inner classes for reading or writing the on-disk format for
@@ -181,7 +182,7 @@ import com.google.common.base.Preconditions;
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
 public class FSImageFormat {
-  private static final Log LOG = FSImage.LOG;
+  private static final Logger LOG = FSImage.LOG;
 
   // Static-only class
   private FSImageFormat() {}
@@ -215,9 +216,9 @@ public class FSImageFormat {
         throws IOException {
       Preconditions.checkState(impl == null, "Image already loaded!");
 
-      FileInputStream is = null;
+      InputStream is = null;
       try {
-        is = new FileInputStream(file);
+        is = Files.newInputStream(file.toPath());
         byte[] magic = new byte[FSImageUtil.MAGIC_HEADER.length];
         IOUtils.readFully(is, magic, 0, magic.length);
         if (Arrays.equals(magic, FSImageUtil.MAGIC_HEADER)) {
@@ -231,7 +232,7 @@ public class FSImageFormat {
           loader.load(file);
         }
       } finally {
-        IOUtils.cleanup(LOG, is);
+        IOUtils.cleanupWithLogger(LOG, is);
       }
     }
   }
@@ -241,6 +242,7 @@ public class FSImageFormat {
    * the layout version.
    */
   public static LoaderDelegator newLoader(Configuration conf, FSNamesystem fsn) {
+
     return new LoaderDelegator(conf, fsn);
   }
 
@@ -318,7 +320,7 @@ public class FSImageFormat {
       //
       MessageDigest digester = MD5Hash.getDigester();
       DigestInputStream fin = new DigestInputStream(
-           new FileInputStream(curFile), digester);
+          Files.newInputStream(curFile.toPath()), digester);
 
       DataInputStream in = new DataInputStream(fin);
       try {
@@ -796,7 +798,7 @@ public class FSImageFormat {
       if (underConstruction) {
         file.toUnderConstruction(clientName, clientMachine);
       }
-      return fileDiffs == null ? file : new INodeFile(file, fileDiffs);
+      return fileDiffs == null ? file : file.loadSnapshotFeature(fileDiffs);
     } else if (numBlocks == -1) {
       //directory
       

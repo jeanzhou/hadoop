@@ -58,14 +58,19 @@ import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerReport;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
+import org.apache.hadoop.yarn.api.records.NodeAttributeKey;
+import org.apache.hadoop.yarn.api.records.NodeAttributeInfo;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.NodeToAttributeValue;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueUserACLInfo;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceTypeInfo;
+import org.apache.hadoop.yarn.api.records.ShellContainerCommand;
 import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
@@ -79,7 +84,7 @@ import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 public class ResourceMgrDelegate extends YarnClient {
   private static final Logger LOG =
@@ -395,6 +400,12 @@ public class ResourceMgrDelegate extends YarnClient {
   }
 
   @Override
+  public org.apache.hadoop.yarn.api.records.QueueInfo getQueueInfo(
+      String queueName, String subClusterId) throws YarnException, IOException {
+    return client.getQueueInfo(queueName, subClusterId);
+  }
+
+  @Override
   public List<org.apache.hadoop.yarn.api.records.QueueInfo> getAllQueues()
       throws YarnException, IOException {
     return client.getAllQueues();
@@ -537,5 +548,29 @@ public class ResourceMgrDelegate extends YarnClient {
   public List<ResourceTypeInfo> getResourceTypeInfo()
       throws YarnException, IOException {
     return client.getResourceTypeInfo();
+  }
+
+  @Override
+  public Set<NodeAttributeInfo> getClusterAttributes()
+      throws YarnException, IOException {
+    return client.getClusterAttributes();
+  }
+
+  @Override
+  public Map<NodeAttributeKey, List<NodeToAttributeValue>> getAttributesToNodes(
+      Set<NodeAttributeKey> attributes) throws YarnException, IOException {
+    return client.getAttributesToNodes(attributes);
+  }
+
+  @Override
+  public Map<String, Set<NodeAttribute>> getNodeToAttributes(
+      Set<String> hostNames) throws YarnException, IOException {
+    return client.getNodeToAttributes(hostNames);
+  }
+
+  @Override
+  public void shellToContainer(ContainerId containerId,
+      ShellContainerCommand command) throws IOException {
+    throw new IOException("Operation is not supported.");
   }
 }

@@ -24,6 +24,7 @@ import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.fs.permission.FsAction;
+import org.apache.hadoop.hdfs.protocol.AlreadyBeingCreatedException;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
@@ -37,8 +38,9 @@ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem.RecoverLeaseOp;
 import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Helper class to perform truncate operation.
@@ -70,7 +72,7 @@ final class FSDirTruncateOp {
       final String clientMachine, final long mtime,
       final BlocksMapUpdateInfo toRemoveBlocks, final FSPermissionChecker pc)
       throws IOException, UnresolvedLinkException {
-    assert fsn.hasWriteLock();
+    assert fsn.hasWriteLock(RwLockMode.GLOBAL);
 
     FSDirectory fsd = fsn.getFSDirectory();
     final String src;
@@ -111,6 +113,10 @@ final class FSDirTruncateOp {
               + truncatedBlock.getNumBytes();
           if (newLength == truncateLength) {
             return new TruncateResult(false, fsd.getAuditFileInfo(iip));
+          } else {
+            throw new AlreadyBeingCreatedException(
+                RecoverLeaseOp.TRUNCATE_FILE.getExceptionMessage(src,
+                    clientName, clientMachine, src + " is being truncated."));
           }
         }
       }
@@ -170,7 +176,7 @@ final class FSDirTruncateOp {
       final long newLength, final long mtime, final Block truncateBlock)
       throws UnresolvedLinkException, QuotaExceededException,
       SnapshotAccessControlException, IOException {
-    assert fsn.hasWriteLock();
+    assert fsn.hasWriteLock(RwLockMode.GLOBAL);
 
     FSDirectory fsd = fsn.getFSDirectory();
     INodeFile file = iip.getLastINode().asFile();
@@ -214,7 +220,7 @@ final class FSDirTruncateOp {
   static Block prepareFileForTruncate(FSNamesystem fsn, INodesInPath iip,
       String leaseHolder, String clientMachine, long lastBlockDelta,
       Block newBlock) throws IOException {
-    assert fsn.hasWriteLock();
+    assert fsn.hasWriteLock(RwLockMode.GLOBAL);
 
     INodeFile file = iip.getLastINode().asFile();
     assert !file.isStriped();
@@ -262,7 +268,11 @@ final class FSDirTruncateOp {
       uc.setTruncateBlock(new BlockInfoContiguous(oldBlock,
           oldBlock.getReplication()));
       uc.getTruncateBlock().setNumBytes(oldBlock.getNumBytes() - lastBlockDelta);
-      uc.getTruncateBlock().setGenerationStamp(newBlock.getGenerationStamp());
+      final long newGenerationStamp = newBlock.getGenerationStamp();
+      uc.getTruncateBlock().setGenerationStamp(newGenerationStamp);
+      // Update global generation stamp in Standby NameNode
+      blockManager.getBlockIdManager().setGenerationStampIfGreater(
+          newGenerationStamp);
       truncatedBlockUC = oldBlock;
 
       NameNode.stateChangeLog.debug("BLOCK* prepareFileForTruncate: " +
@@ -294,7 +304,7 @@ final class FSDirTruncateOp {
   private static boolean unprotectedTruncate(FSNamesystem fsn,
       INodesInPath iip, long newLength, BlocksMapUpdateInfo collectedBlocks,
       long mtime, QuotaCounts delta) throws IOException {
-    assert fsn.hasWriteLock();
+    assert fsn.hasWriteLock(RwLockMode.GLOBAL);
 
     INodeFile file = iip.getLastINode().asFile();
     int latestSnapshot = iip.getLatestSnapshotId();

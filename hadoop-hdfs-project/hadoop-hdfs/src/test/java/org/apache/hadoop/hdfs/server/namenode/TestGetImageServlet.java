@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 
@@ -32,8 +32,7 @@ import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.util.KerberosName;
 import org.apache.hadoop.security.authorize.AccessControlList;
-import org.junit.Test;
-import org.mockito.ArgumentMatcher;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 public class TestGetImageServlet {
@@ -73,12 +72,8 @@ public class TestGetImageServlet {
         "hdfs/host2@TEST-REALM.COM", conf));
     
     // Mark atm as an admin.
-    Mockito.when(acls.isUserAllowed(Mockito.argThat(new ArgumentMatcher<UserGroupInformation>() {
-      @Override
-      public boolean matches(Object argument) {
-        return ((UserGroupInformation) argument).getShortUserName().equals("atm");
-      }
-    }))).thenReturn(true);
+    Mockito.when(acls.isUserAllowed(Mockito.argThat(
+        ugi -> ugi.getShortUserName().equals("atm")))).thenReturn(true);
     
     // Make sure that NN2 is still considered a valid requestor.
     assertTrue(ImageServlet.isValidRequestor(context,

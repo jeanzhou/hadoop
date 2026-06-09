@@ -17,14 +17,16 @@
  */
 package org.apache.hadoop.fs;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
 public class TestContentSummary {
@@ -33,12 +35,12 @@ public class TestContentSummary {
   @Test
   public void testConstructorEmpty() {
     ContentSummary contentSummary = new ContentSummary.Builder().build();
-    assertEquals("getLength", 0, contentSummary.getLength());
-    assertEquals("getFileCount", 0, contentSummary.getFileCount());
-    assertEquals("getDirectoryCount", 0, contentSummary.getDirectoryCount());
-    assertEquals("getQuota", -1, contentSummary.getQuota());
-    assertEquals("getSpaceConsumed", 0, contentSummary.getSpaceConsumed());
-    assertEquals("getSpaceQuota", -1, contentSummary.getSpaceQuota());
+    assertEquals(0, contentSummary.getLength(), "getLength");
+    assertEquals(0, contentSummary.getFileCount(), "getFileCount");
+    assertEquals(0, contentSummary.getDirectoryCount(), "getDirectoryCount");
+    assertEquals(-1, contentSummary.getQuota(), "getQuota");
+    assertEquals(0, contentSummary.getSpaceConsumed(), "getSpaceConsumed");
+    assertEquals(-1, contentSummary.getSpaceQuota(), "getSpaceQuota");
   }
 
   // check the full constructor with quota information
@@ -54,14 +56,13 @@ public class TestContentSummary {
     ContentSummary contentSummary = new ContentSummary.Builder().length(length).
         fileCount(fileCount).directoryCount(directoryCount).quota(quota).
         spaceConsumed(spaceConsumed).spaceQuota(spaceQuota).build();
-    assertEquals("getLength", length, contentSummary.getLength());
-    assertEquals("getFileCount", fileCount, contentSummary.getFileCount());
-    assertEquals("getDirectoryCount", directoryCount,
-        contentSummary.getDirectoryCount());
-    assertEquals("getQuota", quota, contentSummary.getQuota());
-    assertEquals("getSpaceConsumed", spaceConsumed,
-        contentSummary.getSpaceConsumed());
-    assertEquals("getSpaceQuota", spaceQuota, contentSummary.getSpaceQuota());
+    assertEquals(length, contentSummary.getLength(), "getLength");
+    assertEquals(fileCount, contentSummary.getFileCount(), "getFileCount");
+    assertEquals(directoryCount, contentSummary.getDirectoryCount(), "getDirectoryCount");
+    assertEquals(quota, contentSummary.getQuota(), "getQuota");
+    assertEquals(spaceConsumed,
+        contentSummary.getSpaceConsumed(), "getSpaceConsumed");
+    assertEquals(spaceQuota, contentSummary.getSpaceQuota(), "getSpaceQuota");
   }
 
   // check the constructor with quota information
@@ -74,13 +75,13 @@ public class TestContentSummary {
     ContentSummary contentSummary = new ContentSummary.Builder().length(length).
         fileCount(fileCount).directoryCount(directoryCount).
         spaceConsumed(length).build();
-    assertEquals("getLength", length, contentSummary.getLength());
-    assertEquals("getFileCount", fileCount, contentSummary.getFileCount());
-    assertEquals("getDirectoryCount", directoryCount,
-        contentSummary.getDirectoryCount());
-    assertEquals("getQuota", -1, contentSummary.getQuota());
-    assertEquals("getSpaceConsumed", length, contentSummary.getSpaceConsumed());
-    assertEquals("getSpaceQuota", -1, contentSummary.getSpaceQuota());
+    assertEquals(length, contentSummary.getLength(), "getLength");
+    assertEquals(fileCount, contentSummary.getFileCount(), "getFileCount");
+    assertEquals(directoryCount,
+        contentSummary.getDirectoryCount(), "getDirectoryCount");
+    assertEquals(-1, contentSummary.getQuota(), "getQuota");
+    assertEquals(length, contentSummary.getSpaceConsumed(), "getSpaceConsumed");
+    assertEquals(-1, contentSummary.getSpaceQuota(), "getSpaceQuota");
   }
 
   // check the write method
@@ -127,14 +128,12 @@ public class TestContentSummary {
         .thenReturn(spaceQuota);
 
     contentSummary.readFields(in);
-    assertEquals("getLength", length, contentSummary.getLength());
-    assertEquals("getFileCount", fileCount, contentSummary.getFileCount());
-    assertEquals("getDirectoryCount", directoryCount,
-        contentSummary.getDirectoryCount());
-    assertEquals("getQuota", quota, contentSummary.getQuota());
-    assertEquals("getSpaceConsumed", spaceConsumed,
-        contentSummary.getSpaceConsumed());
-    assertEquals("getSpaceQuota", spaceQuota, contentSummary.getSpaceQuota());
+    assertEquals(length, contentSummary.getLength(), "getLength");
+    assertEquals(fileCount, contentSummary.getFileCount(), "getFileCount");
+    assertEquals(directoryCount, contentSummary.getDirectoryCount(), "getDirectoryCount");
+    assertEquals(quota, contentSummary.getQuota(), "getQuota");
+    assertEquals(spaceConsumed, contentSummary.getSpaceConsumed(), "getSpaceConsumed");
+    assertEquals(spaceQuota, contentSummary.getSpaceQuota(), "getSpaceQuota");
   }
 
   // check the header with quotas
@@ -252,5 +251,41 @@ public class TestContentSummary {
         spaceConsumed(spaceConsumed).spaceQuota(spaceQuota).build();
     String expected = "      32.6 K      211.9 M              8.0 E ";
     assertEquals(expected, contentSummary.toString(false, true));
+  }
+
+  // check the toSnapshot method with human readable.
+  @Test
+  public void testToSnapshotHumanReadable() {
+    long snapshotLength = Long.MAX_VALUE;
+    long snapshotFileCount = 222222222;
+    long snapshotDirectoryCount = 33333;
+    long snapshotSpaceConsumed = 222256578;
+
+    ContentSummary contentSummary = new ContentSummary.Builder()
+        .snapshotLength(snapshotLength).snapshotFileCount(snapshotFileCount)
+        .snapshotDirectoryCount(snapshotDirectoryCount)
+        .snapshotSpaceConsumed(snapshotSpaceConsumed).build();
+    String expected =
+        "             8.0 E                  211.9 M                   32.6 K "
+            + "                     212.0 M ";
+    assertEquals(expected, contentSummary.toSnapshot(true));
+  }
+
+  // check the toSnapshot method with human readable disabled.
+  @Test
+  public void testToSnapshotNotHumanReadable() {
+    long snapshotLength = 1111;
+    long snapshotFileCount = 2222;
+    long snapshotDirectoryCount = 3333;
+    long snapshotSpaceConsumed = 4444;
+
+    ContentSummary contentSummary = new ContentSummary.Builder()
+        .snapshotLength(snapshotLength).snapshotFileCount(snapshotFileCount)
+        .snapshotDirectoryCount(snapshotDirectoryCount)
+        .snapshotSpaceConsumed(snapshotSpaceConsumed).build();
+    String expected =
+        "              1111                     2222                     3333 "
+            + "                        4444 ";
+    assertEquals(expected, contentSummary.toSnapshot(false));
   }
 }

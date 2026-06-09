@@ -29,7 +29,6 @@ import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
 import java.util.*;
 
-import com.google.common.collect.Lists;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.HelpFormatter;
@@ -38,8 +37,8 @@ import org.apache.commons.cli.OptionBuilder;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
@@ -63,6 +62,7 @@ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
 import org.apache.hadoop.hdfs.util.Canceler;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.io.MD5Hash;
@@ -74,11 +74,12 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Daemon;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.VersionInfo;
 
 import javax.management.ObjectName;
@@ -103,8 +104,8 @@ public class SecondaryNameNode implements Runnable,
   static{
     HdfsConfiguration.init();
   }
-  public static final Log LOG = 
-    LogFactory.getLog(SecondaryNameNode.class.getName());
+  public static final Logger LOG =
+      LoggerFactory.getLogger(SecondaryNameNode.class.getName());
 
   private final long starttime = Time.now();
   private volatile long lastCheckpointTime = 0;
@@ -276,7 +277,7 @@ public class SecondaryNameNode implements Runnable,
   }
 
   /**
-   * Shut down this instance of the datanode.
+   * Shut down this instance of the secondary namenode.
    * Returns only after shutdown is complete.
    */
   public void shutdown() {
@@ -367,12 +368,12 @@ public class SecondaryNameNode implements Runnable,
         // Prevent a huge number of edits from being created due to
         // unrecoverable conditions and endless retries.
         if (checkpointImage.getMergeErrorCount() > maxRetries) {
-          LOG.fatal("Merging failed " + 
+          LOG.error("Merging failed " +
               checkpointImage.getMergeErrorCount() + " times.");
           terminate(1);
         }
       } catch (Throwable e) {
-        LOG.fatal("Throwable Exception in doCheckpoint", e);
+        LOG.error("Throwable Exception in doCheckpoint", e);
         e.printStackTrace();
         terminate(1, e);
       }
@@ -474,7 +475,7 @@ public class SecondaryNameNode implements Runnable,
         DFSConfigKeys.DFS_NAMENODE_SECONDARY_HTTPS_ADDRESS_DEFAULT);
     InetSocketAddress httpsAddr = NetUtils.createSocketAddr(httpsAddrString);
 
-    HttpServer2.Builder builder = DFSUtil.httpServerTemplateForNNAndJN(conf,
+    HttpServer2.Builder builder = DFSUtil.getHttpServerTemplate(conf,
         httpAddr, httpsAddr, "secondary", DFSConfigKeys.
             DFS_SECONDARY_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
         DFSConfigKeys.DFS_SECONDARY_NAMENODE_KEYTAB_FILE_KEY);
@@ -676,7 +677,7 @@ public class SecondaryNameNode implements Runnable,
   public static void main(String[] argv) throws Exception {
     CommandLineOpts opts = SecondaryNameNode.parseArgs(argv);
     if (opts == null) {
-      LOG.fatal("Failed to parse options");
+      LOG.error("Failed to parse options");
       terminate(1);
     } else if (opts.shouldPrintHelp()) {
       opts.usage();
@@ -703,7 +704,7 @@ public class SecondaryNameNode implements Runnable,
         secondary.join();
       }
     } catch (Throwable e) {
-      LOG.fatal("Failed to start secondary namenode", e);
+      LOG.error("Failed to start secondary namenode", e);
       terminate(1);
     }
   }
@@ -720,6 +721,11 @@ public class SecondaryNameNode implements Runnable,
   @Override // SecondaryNameNodeInfoMXBean
   public String getHostAndPort() {
     return NetUtils.getHostPortString(nameNodeAddr);
+  }
+
+  @Override
+  public boolean isSecurityEnabled() {
+    return UserGroupInformation.isSecurityEnabled();
   }
 
   @Override // SecondaryNameNodeInfoMXBean
@@ -798,7 +804,7 @@ public class SecondaryNameNode implements Runnable,
       geteditsizeOpt = new Option("geteditsize",
         "return the number of uncheckpointed transactions on the NameNode");
       checkpointOpt = OptionBuilder.withArgName("force")
-        .hasOptionalArg().withDescription("checkpoint on startup").create("checkpoint");;
+        .hasOptionalArg().withDescription("checkpoint on startup").create("checkpoint");
       formatOpt = new Option("format", "format the local storage during startup");
       helpOpt = new Option("h", "help", false, "get help information");
       
@@ -1089,11 +1095,11 @@ public class SecondaryNameNode implements Runnable,
             sig.mostRecentCheckpointTxId + " even though it should have " +
             "just been downloaded");
       }
-      dstNamesystem.writeLock();
+      dstNamesystem.writeLock(RwLockMode.GLOBAL);
       try {
         dstImage.reloadFromImageFile(file, dstNamesystem);
       } finally {
-        dstNamesystem.writeUnlock();
+        dstNamesystem.writeUnlock(RwLockMode.GLOBAL, "reloadFromImageFile");
       }
       dstNamesystem.imageLoadComplete();
     }

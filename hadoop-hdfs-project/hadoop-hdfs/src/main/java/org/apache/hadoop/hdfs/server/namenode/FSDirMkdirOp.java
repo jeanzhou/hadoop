@@ -17,7 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.fs.permission.FsCreateModes;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.ParentNotDirectoryException;
@@ -35,6 +36,8 @@ import org.apache.hadoop.security.AccessControlException;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
+
 import static org.apache.hadoop.util.Time.now;
 
 class FSDirMkdirOp {
@@ -110,10 +113,7 @@ class FSDirMkdirOp {
    * Create all ancestor directories and return the parent inodes.
    *
    * @param fsd FSDirectory
-   * @param existing The INodesInPath instance containing all the existing
-   *                 ancestral INodes
-   * @param children The relative path from the parent towards children,
-   *                 starting with "/"
+   * @param iip inodes in path to the fs directory
    * @param perm the permission of the directory. Note that all ancestors
    *             created along the path has implicit {@code u+wx} permissions.
    * @param inheritPerms if the ancestor directories should inherit permissions
@@ -190,10 +190,19 @@ class FSDirMkdirOp {
   private static PermissionStatus addImplicitUwx(PermissionStatus parentPerm,
       PermissionStatus perm) {
     FsPermission p = parentPerm.getPermission();
-    FsPermission ancestorPerm = new FsPermission(
-        p.getUserAction().or(FsAction.WRITE_EXECUTE),
-        p.getGroupAction(),
-        p.getOtherAction());
+    FsPermission ancestorPerm;
+    if (p.getUnmasked() == null) {
+      ancestorPerm = new FsPermission(
+          p.getUserAction().or(FsAction.WRITE_EXECUTE),
+          p.getGroupAction(),
+          p.getOtherAction());
+    } else {
+      ancestorPerm = FsCreateModes.create(
+          new FsPermission(
+            p.getUserAction().or(FsAction.WRITE_EXECUTE),
+            p.getGroupAction(),
+            p.getOtherAction()), p.getUnmasked());
+    }
     return new PermissionStatus(perm.getUserName(), perm.getGroupName(),
         ancestorPerm);
   }
@@ -214,8 +223,8 @@ class FSDirMkdirOp {
     final INodeDirectory dir = new INodeDirectory(inodeId, name, permission,
         timestamp);
 
-    INodesInPath iip =
-        fsd.addLastINode(parent, dir, permission.getPermission(), true);
+    INodesInPath iip = fsd.addLastINode(parent, dir, permission.getPermission(),
+        true, Optional.empty());
     if (iip != null && aclEntries != null) {
       AclStorage.updateINodeAcl(dir, aclEntries, Snapshot.CURRENT_STATE_ID);
     }

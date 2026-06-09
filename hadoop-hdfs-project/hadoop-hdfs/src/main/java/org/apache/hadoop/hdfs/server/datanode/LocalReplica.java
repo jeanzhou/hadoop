@@ -42,7 +42,7 @@ import org.apache.hadoop.util.DataChecksum;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * This class is used for all replicas which are on local storage media
@@ -137,7 +137,7 @@ abstract public class LocalReplica extends ReplicaInfo {
       return;
     }
 
-    ReplicaDirInfo dirInfo = parseBaseDir(dir);
+    ReplicaDirInfo dirInfo = parseBaseDir(dir, getBlockId());
     this.hasSubdirs = dirInfo.hasSubidrs;
 
     synchronized (internedBaseDirs) {
@@ -163,16 +163,21 @@ abstract public class LocalReplica extends ReplicaInfo {
   }
 
   @VisibleForTesting
-  public static ReplicaDirInfo parseBaseDir(File dir) {
-
+  public static ReplicaDirInfo parseBaseDir(File dir, long blockId) {
     File currentDir = dir;
     boolean hasSubdirs = false;
     while (currentDir.getName().startsWith(DataStorage.BLOCK_SUBDIR_PREFIX)) {
       hasSubdirs = true;
       currentDir = currentDir.getParentFile();
     }
-
-    return new ReplicaDirInfo(currentDir.getAbsolutePath(), hasSubdirs);
+    if (hasSubdirs) {
+      // set baseDir to currentDir if it matches id(idToBlockDir).
+      File idToBlockDir = DatanodeUtil.idToBlockDir(currentDir, blockId);
+      if (idToBlockDir.equals(dir)) {
+        return new ReplicaDirInfo(currentDir.getAbsolutePath(), true);
+      }
+    }
+    return new ReplicaDirInfo(dir.getAbsolutePath(), false);
   }
 
   /**
@@ -186,16 +191,18 @@ abstract public class LocalReplica extends ReplicaInfo {
     final FileIoProvider fileIoProvider = getFileIoProvider();
     final File tmpFile = DatanodeUtil.createFileWithExistsCheck(
         getVolume(), b, DatanodeUtil.getUnlinkTmpFile(file), fileIoProvider);
-    try (FileInputStream in = fileIoProvider.getFileInputStream(
-        getVolume(), file)) {
-      try (FileOutputStream out = fileIoProvider.getFileOutputStream(
-          getVolume(), tmpFile)) {
-        IOUtils.copyBytes(in, out, 16 * 1024);
+    try {
+      try (FileInputStream in = fileIoProvider.getFileInputStream(
+          getVolume(), file)) {
+        try (FileOutputStream out = fileIoProvider.getFileOutputStream(
+            getVolume(), tmpFile)) {
+          IOUtils.copyBytes(in, out, 16 * 1024);
+        }
       }
       if (file.length() != tmpFile.length()) {
-        throw new IOException("Copy of file " + file + " size " + file.length()+
-                              " into file " + tmpFile +
-                              " resulted in a size of " + tmpFile.length());
+        throw new IOException("Copy of file " + file + " size " + file.length()
+            + " into file " + tmpFile + " resulted in a size of "
+            + tmpFile.length());
       }
       fileIoProvider.replaceFile(getVolume(), tmpFile, file);
     } catch (IOException e) {
@@ -284,6 +291,12 @@ abstract public class LocalReplica extends ReplicaInfo {
   public LengthInputStream getMetadataInputStream(long offset)
       throws IOException {
     final File meta = getMetaFile();
+    if (NativeIO.isAvailable()) {
+      return new LengthInputStream(
+          getFileIoProvider().getShareDeleteFileInputStream(
+              getVolume(), meta, offset),
+          meta.length());
+    }
     return new LengthInputStream(
         getFileIoProvider().openAndSeek(getVolume(), meta, offset),
         meta.length());

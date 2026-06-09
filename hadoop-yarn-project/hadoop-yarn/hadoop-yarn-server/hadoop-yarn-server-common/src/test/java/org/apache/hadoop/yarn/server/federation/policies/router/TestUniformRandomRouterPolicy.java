@@ -18,18 +18,18 @@
 package org.apache.hadoop.yarn.server.federation.policies.router;
 
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.federation.policies.dao.WeightedPolicyInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterId;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterIdInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterState;
-import org.apache.hadoop.yarn.server.federation.utils.FederationPoliciesTestUtil;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Simple test class for the {@link UniformRandomRouterPolicy}. Tests that one
@@ -37,28 +37,28 @@ import org.junit.Test;
  */
 public class TestUniformRandomRouterPolicy extends BaseRouterPoliciesTest {
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     setPolicy(new UniformRandomRouterPolicy());
     // needed for base test to work
     setPolicyInfo(mock(WeightedPolicyInfo.class));
     for (int i = 1; i <= 2; i++) {
       SubClusterIdInfo sc = new SubClusterIdInfo("sc" + i);
-      SubClusterInfo sci = mock(SubClusterInfo.class);
-      when(sci.getState()).thenReturn(SubClusterState.SC_RUNNING);
-      when(sci.getSubClusterId()).thenReturn(sc.toId());
-      getActiveSubclusters().put(sc.toId(), sci);
+      long now = Time.now();
+      SubClusterInfo federationSubClusterInfo = SubClusterInfo.newInstance(
+          sc.toId(), "dns1:80", "dns1:81", "dns1:82", "dns1:83",
+          now - 1000, SubClusterState.SC_RUNNING, now - 2000, generateClusterMetricsInfo(i));
+      getActiveSubclusters().put(sc.toId(), federationSubClusterInfo);
     }
 
-    FederationPoliciesTestUtil.initializePolicyContext(getPolicy(),
-        mock(WeightedPolicyInfo.class), getActiveSubclusters());
+    setupContext();
   }
 
   @Test
   public void testOneSubclusterIsChosen() throws YarnException {
     SubClusterId chosen = ((FederationRouterPolicy) getPolicy())
         .getHomeSubcluster(getApplicationSubmissionContext(), null);
-    Assert.assertTrue(getActiveSubclusters().keySet().contains(chosen));
+    assertTrue(getActiveSubclusters().keySet().contains(chosen));
   }
 
 }

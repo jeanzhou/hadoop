@@ -23,17 +23,26 @@ import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 
-import java.io.FileInputStream;
+import java.io.File;
 import java.io.InputStreamReader;
 import java.io.IOException;
 import java.io.Reader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Callable;
+import java.util.concurrent.TimeoutException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.hdfs.protocol.DatanodeAdminProperties;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,26 +70,37 @@ public final class CombinedHostsFileReader {
   private CombinedHostsFileReader() {
   }
 
+  private static final String REFER_TO_DOC_MSG = " For the correct JSON" +
+          " format please refer to the documentation (https://hadoop.apache" +
+          ".org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsDataNodeAd" +
+          "minGuide.html#JSON-based_configuration)";
+
   /**
    * Deserialize a set of DatanodeAdminProperties from a json file.
-   * @param hostsFile the input json file to read from
+   * @param hostsFilePath the input json file to read from
    * @return the set of DatanodeAdminProperties
    * @throws IOException
    */
   public static DatanodeAdminProperties[]
-      readFile(final String hostsFile) throws IOException {
+      readFile(final String hostsFilePath) throws IOException {
     DatanodeAdminProperties[] allDNs = new DatanodeAdminProperties[0];
     ObjectMapper objectMapper = new ObjectMapper();
+    File hostFile = new File(hostsFilePath);
     boolean tryOldFormat = false;
-    try (Reader input =
-        new InputStreamReader(new FileInputStream(hostsFile), "UTF-8")) {
-      allDNs = objectMapper.readValue(input, DatanodeAdminProperties[].class);
-    } catch (JsonMappingException jme) {
-      // The old format doesn't have json top-level token to enclose the array.
-      // For backward compatibility, try parsing the old format.
-      tryOldFormat = true;
-      LOG.warn("{} has invalid JSON format." +
-          "Try the old format without top-level token defined.", hostsFile);
+
+    if (hostFile.length() > 0) {
+      try (Reader input =
+          new InputStreamReader(
+              Files.newInputStream(hostFile.toPath()), StandardCharsets.UTF_8)) {
+        allDNs = objectMapper.readValue(input, DatanodeAdminProperties[].class);
+      } catch (JsonMappingException jme) {
+        // The old format doesn't have json top-level token to enclose
+        // the array.
+        // For backward compatibility, try parsing the old format.
+        tryOldFormat = true;
+      }
+    } else {
+      LOG.warn(hostsFilePath + " is empty." + REFER_TO_DOC_MSG);
     }
 
     if (tryOldFormat) {
@@ -89,16 +109,54 @@ public final class CombinedHostsFileReader {
       JsonFactory jsonFactory = new JsonFactory();
       List<DatanodeAdminProperties> all = new ArrayList<>();
       try (Reader input =
-          new InputStreamReader(new FileInputStream(hostsFile), "UTF-8")) {
+          new InputStreamReader(Files.newInputStream(Paths.get(hostsFilePath)),
+                  StandardCharsets.UTF_8)) {
         Iterator<DatanodeAdminProperties> iterator =
             objectReader.readValues(jsonFactory.createParser(input));
         while (iterator.hasNext()) {
           DatanodeAdminProperties properties = iterator.next();
           all.add(properties);
         }
+        LOG.warn(hostsFilePath + " has legacy JSON format." + REFER_TO_DOC_MSG);
+      } catch (Throwable ex) {
+        LOG.warn(hostsFilePath + " has invalid JSON format." + REFER_TO_DOC_MSG,
+                ex);
       }
       allDNs = all.toArray(new DatanodeAdminProperties[all.size()]);
     }
     return allDNs;
+  }
+
+  /**
+   * Wrapper to call readFile with timeout via Future Tasks.
+   * If timeout is reached, it will throw IOException
+   * @param hostsFile the input json file to read from
+   * @param readTimeout timeout for FutureTask execution in milliseconds
+   * @return the set of DatanodeAdminProperties
+   * @throws IOException
+   */
+  public static DatanodeAdminProperties[]
+      readFileWithTimeout(final String hostsFile, final int readTimeout) throws IOException {
+    FutureTask<DatanodeAdminProperties[]> futureTask = new FutureTask<>(
+        new Callable<DatanodeAdminProperties[]>() {
+          @Override
+          public DatanodeAdminProperties[] call() throws Exception {
+            return readFile(hostsFile);
+        }
+      });
+
+    Thread thread = new SubjectInheritingThread(futureTask);
+    thread.start();
+
+    try {
+      return futureTask.get(readTimeout, TimeUnit.MILLISECONDS);
+    } catch (TimeoutException e) {
+      futureTask.cancel(true);
+      LOG.error("refresh File read operation timed out");
+      throw new IOException("host file read operation timed out");
+    } catch (InterruptedException | ExecutionException e) {
+      LOG.error("File read operation interrupted : " + e.getMessage());
+      throw new IOException("host file read operation timed out");
+    }
   }
 }

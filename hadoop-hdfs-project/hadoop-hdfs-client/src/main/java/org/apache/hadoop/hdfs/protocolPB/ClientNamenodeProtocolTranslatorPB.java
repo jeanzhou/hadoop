@@ -24,8 +24,6 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 
-import com.google.common.collect.Lists;
-
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -40,6 +38,7 @@ import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.Options.Rename;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.XAttr;
@@ -48,9 +47,12 @@ import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.ha.HAServiceProtocol;
+import org.apache.hadoop.ha.proto.HAServiceProtocolProtos.HAServiceStateProto;
 import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.hdfs.inotify.EventBatchList;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
+import org.apache.hadoop.hdfs.protocol.BatchedDirectoryListing;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.CacheDirectiveEntry;
 import org.apache.hadoop.hdfs.protocol.CacheDirectiveInfo;
@@ -61,7 +63,9 @@ import org.apache.hadoop.hdfs.protocol.CorruptFileBlocks;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+import org.apache.hadoop.hdfs.protocol.HdfsPartialListing;
 import org.apache.hadoop.hdfs.protocol.ECBlockGroupStats;
+import org.apache.hadoop.hdfs.protocol.ECTopologyVerifierResult;
 import org.apache.hadoop.hdfs.protocol.EncryptionZone;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
@@ -84,6 +88,7 @@ import org.apache.hadoop.hdfs.protocol.RollingUpgradeInfo;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing;
 import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
+import org.apache.hadoop.hdfs.protocol.SnapshotStatus;
 import org.apache.hadoop.hdfs.protocol.proto.AclProtos.GetAclStatusRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.AclProtos.GetAclStatusResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.AclProtos.ModifyAclEntriesRequestProto;
@@ -112,6 +117,8 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.Disall
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.FinalizeUpgradeRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.FsyncRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetAdditionalDatanodeRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetBatchedListingRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetBatchedListingResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetBlockLocationsRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetBlockLocationsResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetContentSummaryRequestProto;
@@ -121,6 +128,8 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetDat
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetDatanodeReportRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetDatanodeStorageReportRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetEditsFromTxidRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetEnclosingRootRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetEnclosingRootResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetFileInfoRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetFileInfoResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetFileLinkInfoRequestProto;
@@ -137,15 +146,19 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetLoc
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetPreferredBlockSizeRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetQuotaUsageRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetServerDefaultsRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSlowDatanodeReportRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshotDiffReportRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshotDiffReportResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshotDiffReportListingRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshotDiffReportListingResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshottableDirListingRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshottableDirListingResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshotListingRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetSnapshotListingResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetStoragePoliciesRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetStoragePoliciesResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetStoragePolicyRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.HAServiceStateRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.IsFileClosedRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.ListCacheDirectivesRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.ListCacheDirectivesResponseProto;
@@ -158,6 +171,7 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.MetaSa
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.MkdirsRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.ModifyCacheDirectiveRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.ModifyCachePoolRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.MsyncRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.OpenFilesBatchResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.RecoverLeaseRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.RefreshNodesRequestProto;
@@ -186,6 +200,9 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.Trunca
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.UnsetStoragePolicyRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.UpdateBlockForPipelineRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.UpdatePipelineRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.UpgradeStatusRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.UpgradeStatusResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.SatisfyStoragePolicyRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.*;
 import org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos.CreateEncryptionZoneRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos.EncryptionZoneProto;
@@ -209,6 +226,9 @@ import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.GetErasureCodin
 import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.SetErasureCodingPolicyRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.UnsetErasureCodingPolicyRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.CodecProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BatchedDirectoryListingProto;
+import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.GetECTopologyResultForPoliciesRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.GetECTopologyResultForPoliciesResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ErasureCodingPolicyProto;
 import org.apache.hadoop.hdfs.protocol.proto.XAttrProtos.GetXAttrsRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.XAttrProtos.ListXAttrsRequestProto;
@@ -221,11 +241,11 @@ import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.retry.AsyncCallHandler;
 import org.apache.hadoop.ipc.Client;
-import org.apache.hadoop.ipc.ProtobufHelper;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.ProtocolMetaInterface;
 import org.apache.hadoop.ipc.ProtocolTranslator;
 import org.apache.hadoop.ipc.RPC;
+import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.RpcClientUtil;
 import org.apache.hadoop.security.proto.SecurityProtos.CancelDelegationTokenRequestProto;
 import org.apache.hadoop.security.proto.SecurityProtos.GetDelegationTokenRequestProto;
@@ -233,10 +253,15 @@ import org.apache.hadoop.security.proto.SecurityProtos.GetDelegationTokenRespons
 import org.apache.hadoop.security.proto.SecurityProtos.RenewDelegationTokenRequestProto;
 import org.apache.hadoop.security.token.Token;
 
-import com.google.protobuf.ByteString;
-import com.google.protobuf.Message;
-import com.google.protobuf.ServiceException;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
+import org.apache.hadoop.thirdparty.protobuf.Message;
+import org.apache.hadoop.thirdparty.protobuf.ServiceException;
+
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.concurrent.AsyncGet;
+
+import static org.apache.hadoop.ipc.internal.ShadedProtobufHelper.getRemoteException;
+import static org.apache.hadoop.ipc.internal.ShadedProtobufHelper.ipc;
 
 /**
  * This class forwards NN's ClientProtocol calls as RPC calls to the NN server
@@ -249,45 +274,50 @@ public class ClientNamenodeProtocolTranslatorPB implements
     ProtocolMetaInterface, ClientProtocol, Closeable, ProtocolTranslator {
   final private ClientNamenodeProtocolPB rpcProxy;
 
-  static final GetServerDefaultsRequestProto VOID_GET_SERVER_DEFAULT_REQUEST =
+  protected static final GetServerDefaultsRequestProto VOID_GET_SERVER_DEFAULT_REQUEST =
       GetServerDefaultsRequestProto.newBuilder().build();
 
-  private final static GetFsStatusRequestProto VOID_GET_FSSTATUS_REQUEST =
+  protected final static GetFsStatusRequestProto VOID_GET_FSSTATUS_REQUEST =
       GetFsStatusRequestProto.newBuilder().build();
 
-  private final static GetFsReplicatedBlockStatsRequestProto
+  protected final static GetFsReplicatedBlockStatsRequestProto
       VOID_GET_FS_REPLICATED_BLOCK_STATS_REQUEST =
       GetFsReplicatedBlockStatsRequestProto.newBuilder().build();
 
-  private final static GetFsECBlockGroupStatsRequestProto
+  protected final static GetFsECBlockGroupStatsRequestProto
       VOID_GET_FS_ECBLOCKGROUP_STATS_REQUEST =
       GetFsECBlockGroupStatsRequestProto.newBuilder().build();
 
-  private final static RollEditsRequestProto VOID_ROLLEDITS_REQUEST =
+  protected final static RollEditsRequestProto VOID_ROLLEDITS_REQUEST =
       RollEditsRequestProto.getDefaultInstance();
 
-  private final static RefreshNodesRequestProto VOID_REFRESH_NODES_REQUEST =
+  protected final static RefreshNodesRequestProto VOID_REFRESH_NODES_REQUEST =
       RefreshNodesRequestProto.newBuilder().build();
 
-  private final static FinalizeUpgradeRequestProto
+  protected final static FinalizeUpgradeRequestProto
       VOID_FINALIZE_UPGRADE_REQUEST =
       FinalizeUpgradeRequestProto.newBuilder().build();
 
-  private final static GetDataEncryptionKeyRequestProto
+  protected final static UpgradeStatusRequestProto
+      VOID_UPGRADE_STATUS_REQUEST =
+      UpgradeStatusRequestProto.newBuilder().build();
+
+  protected final static GetDataEncryptionKeyRequestProto
       VOID_GET_DATA_ENCRYPTIONKEY_REQUEST =
       GetDataEncryptionKeyRequestProto.newBuilder().build();
 
-  private final static GetStoragePoliciesRequestProto
+  protected final static GetStoragePoliciesRequestProto
       VOID_GET_STORAGE_POLICIES_REQUEST =
       GetStoragePoliciesRequestProto.newBuilder().build();
 
-  private final static GetErasureCodingPoliciesRequestProto
+  protected final static GetErasureCodingPoliciesRequestProto
       VOID_GET_EC_POLICIES_REQUEST = GetErasureCodingPoliciesRequestProto
       .newBuilder().build();
 
-  private final static GetErasureCodingCodecsRequestProto
+  protected final static GetErasureCodingCodecsRequestProto
       VOID_GET_EC_CODEC_REQUEST = GetErasureCodingCodecsRequestProto
       .newBuilder().build();
+
 
   public ClientNamenodeProtocolTranslatorPB(ClientNamenodeProtocolPB proxy) {
     rpcProxy = proxy;
@@ -307,32 +337,25 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setOffset(offset)
         .setLength(length)
         .build();
-    try {
-      GetBlockLocationsResponseProto resp = rpcProxy.getBlockLocations(null,
-          req);
-      return resp.hasLocations() ?
-          PBHelperClient.convert(resp.getLocations()) : null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    GetBlockLocationsResponseProto resp = ipc(() -> rpcProxy.getBlockLocations(null,
+        req));
+    return resp.hasLocations() ?
+        PBHelperClient.convert(resp.getLocations()) : null;
   }
 
   @Override
   public FsServerDefaults getServerDefaults() throws IOException {
     GetServerDefaultsRequestProto req = VOID_GET_SERVER_DEFAULT_REQUEST;
-    try {
-      return PBHelperClient
-          .convert(rpcProxy.getServerDefaults(null, req).getServerDefaults());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient
+        .convert(ipc(() -> rpcProxy.getServerDefaults(null, req).getServerDefaults()));
   }
 
   @Override
   public HdfsFileStatus create(String src, FsPermission masked,
       String clientName, EnumSetWritable<CreateFlag> flag,
       boolean createParent, short replication, long blockSize,
-      CryptoProtocolVersion[] supportedVersions, String ecPolicyName)
+      CryptoProtocolVersion[] supportedVersions, String ecPolicyName,
+      String storagePolicy)
       throws IOException {
     CreateRequestProto.Builder builder = CreateRequestProto.newBuilder()
         .setSrc(src)
@@ -345,6 +368,9 @@ public class ClientNamenodeProtocolTranslatorPB implements
     if (ecPolicyName != null) {
       builder.setEcPolicyName(ecPolicyName);
     }
+    if (storagePolicy != null) {
+      builder.setStoragePolicy(storagePolicy);
+    }
     FsPermission unmasked = masked.getUnmasked();
     if (unmasked != null) {
       builder.setUnmasked(PBHelperClient.convert(unmasked));
@@ -352,13 +378,8 @@ public class ClientNamenodeProtocolTranslatorPB implements
     builder.addAllCryptoProtocolVersion(
         PBHelperClient.convert(supportedVersions));
     CreateRequestProto req = builder.build();
-    try {
-      CreateResponseProto res = rpcProxy.create(null, req);
-      return res.hasFs() ? PBHelperClient.convert(res.getFs()) : null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
-
+    CreateResponseProto res = ipc(() -> rpcProxy.create(null, req));
+    return res.hasFs() ? PBHelperClient.convert(res.getFs()) : null;
   }
 
   @Override
@@ -369,11 +390,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setNewLength(newLength)
         .setClientName(clientName)
         .build();
-    try {
-      return rpcProxy.truncate(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.truncate(null, req).getResult());
   }
 
   @Override
@@ -383,16 +400,12 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setClientName(clientName).setFlag(
             PBHelperClient.convertCreateFlag(flag))
         .build();
-    try {
-      AppendResponseProto res = rpcProxy.append(null, req);
-      LocatedBlock lastBlock = res.hasBlock() ? PBHelperClient
-          .convertLocatedBlockProto(res.getBlock()) : null;
-      HdfsFileStatus stat = (res.hasStat()) ?
-          PBHelperClient.convert(res.getStat()) : null;
-      return new LastBlockWithStatus(lastBlock, stat);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    AppendResponseProto res = ipc(() -> rpcProxy.append(null, req));
+    LocatedBlock lastBlock = res.hasBlock() ? PBHelperClient
+        .convertLocatedBlockProto(res.getBlock()) : null;
+    HdfsFileStatus stat = (res.hasStat()) ?
+        PBHelperClient.convert(res.getStat()) : null;
+    return new LastBlockWithStatus(lastBlock, stat);
   }
 
   @Override
@@ -402,11 +415,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setSrc(src)
         .setReplication(replication)
         .build();
-    try {
-      return rpcProxy.setReplication(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.setReplication(null, req)).getResult();
   }
 
   @Override
@@ -416,21 +425,17 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setSrc(src)
         .setPermission(PBHelperClient.convert(permission))
         .build();
-    try {
-      if (Client.isAsynchronousMode()) {
-        rpcProxy.setPermission(null, req);
-        setAsyncReturnValue();
-      } else {
-        rpcProxy.setPermission(null, req);
-      }
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    if (Client.isAsynchronousMode()) {
+      ipc(() -> rpcProxy.setPermission(null, req));
+      setAsyncReturnValue();
+    } else {
+      ipc(() -> rpcProxy.setPermission(null, req));
     }
   }
 
   private void setAsyncReturnValue() {
     final AsyncGet<Message, Exception> asyncReturnMessage
-        = ProtobufRpcEngine.getAsyncReturnMessage();
+        = ProtobufRpcEngine2.getAsyncReturnMessage();
     final AsyncGet<Void, Exception> asyncGet
         = new AsyncGet<Void, Exception>() {
       @Override
@@ -456,15 +461,11 @@ public class ClientNamenodeProtocolTranslatorPB implements
       req.setUsername(username);
     if (groupname != null)
       req.setGroupname(groupname);
-    try {
-      if (Client.isAsynchronousMode()) {
-        rpcProxy.setOwner(null, req.build());
-        setAsyncReturnValue();
-      } else {
-        rpcProxy.setOwner(null, req.build());
-      }
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    if (Client.isAsynchronousMode()) {
+      ipc(() -> rpcProxy.setOwner(null, req.build()));
+      setAsyncReturnValue();
+    } else {
+      ipc(() -> rpcProxy.setOwner(null, req.build()));
     }
   }
 
@@ -474,11 +475,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
     AbandonBlockRequestProto req = AbandonBlockRequestProto.newBuilder()
         .setB(PBHelperClient.convert(b)).setSrc(src).setHolder(holder)
         .setFileId(fileId).build();
-    try {
-      rpcProxy.abandonBlock(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.abandonBlock(null, req));
   }
 
   @Override
@@ -499,12 +496,8 @@ public class ClientNamenodeProtocolTranslatorPB implements
       req.addAllFlags(PBHelperClient.convertAddBlockFlags(
           addBlockFlags));
     }
-    try {
-      return PBHelperClient.convertLocatedBlockProto(
-          rpcProxy.addBlock(null, req.build()).getBlock());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convertLocatedBlockProto(
+        ipc(() -> rpcProxy.addBlock(null, req.build())).getBlock());
   }
 
   @Override
@@ -523,12 +516,8 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setNumAdditionalNodes(numAdditionalNodes)
         .setClientName(clientName)
         .build();
-    try {
-      return PBHelperClient.convertLocatedBlockProto(
-          rpcProxy.getAdditionalDatanode(null, req).getBlock());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convertLocatedBlockProto(
+        ipc(() -> rpcProxy.getAdditionalDatanode(null, req)).getBlock());
   }
 
   @Override
@@ -540,11 +529,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setFileId(fileId);
     if (last != null)
       req.setLast(PBHelperClient.convert(last));
-    try {
-      return rpcProxy.complete(null, req.build()).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.complete(null, req.build())).getResult();
   }
 
   @Override
@@ -553,11 +538,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .addAllBlocks(Arrays.asList(
             PBHelperClient.convertLocatedBlocks(blocks)))
         .build();
-    try {
-      rpcProxy.reportBadBlocks(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.reportBadBlocks(null, req));
   }
 
   @Override
@@ -566,11 +547,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setSrc(src)
         .setDst(dst).build();
 
-    try {
-      return rpcProxy.rename(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.rename(null, req)).getResult();
   }
 
 
@@ -583,7 +560,8 @@ public class ClientNamenodeProtocolTranslatorPB implements
       for (Rename option : options) {
         if (option == Rename.OVERWRITE) {
           overwrite = true;
-        } else if (option == Rename.TO_TRASH) {
+        }
+        if (option == Rename.TO_TRASH) {
           toTrash = true;
         }
       }
@@ -594,17 +572,12 @@ public class ClientNamenodeProtocolTranslatorPB implements
         setOverwriteDest(overwrite).
         setMoveToTrash(toTrash).
         build();
-    try {
-      if (Client.isAsynchronousMode()) {
-        rpcProxy.rename2(null, req);
-        setAsyncReturnValue();
-      } else {
-        rpcProxy.rename2(null, req);
-      }
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    if (Client.isAsynchronousMode()) {
+      ipc(() -> rpcProxy.rename2(null, req));
+      setAsyncReturnValue();
+    } else {
+      ipc(() -> rpcProxy.rename2(null, req));
     }
-
   }
 
   @Override
@@ -612,11 +585,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
     ConcatRequestProto req = ConcatRequestProto.newBuilder().
         setTrg(trg).
         addAllSrcs(Arrays.asList(srcs)).build();
-    try {
-      rpcProxy.concat(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.concat(null, req));
   }
 
 
@@ -624,11 +593,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
   public boolean delete(String src, boolean recursive) throws IOException {
     DeleteRequestProto req = DeleteRequestProto.newBuilder().setSrc(src)
         .setRecursive(recursive).build();
-    try {
-      return rpcProxy.delete(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.delete(null, req).getResult());
   }
 
   @Override
@@ -643,11 +608,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
       builder.setUnmasked(PBHelperClient.convert(unmasked));
     }
     MkdirsRequestProto req = builder.build();
-    try {
-      return rpcProxy.mkdirs(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.mkdirs(null, req)).getResult();
   }
 
   @Override
@@ -657,27 +618,62 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setSrc(src)
         .setStartAfter(ByteString.copyFrom(startAfter))
         .setNeedLocation(needLocation).build();
-    try {
-      GetListingResponseProto result = rpcProxy.getListing(null, req);
-
-      if (result.hasDirList()) {
-        return PBHelperClient.convert(result.getDirList());
-      }
-      return null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    GetListingResponseProto result = ipc(() -> rpcProxy.getListing(null, req));
+    if (result.hasDirList()) {
+      return PBHelperClient.convert(result.getDirList());
     }
+    return null;
   }
 
   @Override
-  public void renewLease(String clientName) throws IOException {
-    RenewLeaseRequestProto req = RenewLeaseRequestProto.newBuilder()
-        .setClientName(clientName).build();
-    try {
-      rpcProxy.renewLease(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+  public BatchedDirectoryListing getBatchedListing(
+      String[] srcs, byte[] startAfter, boolean needLocation)
+      throws IOException {
+    GetBatchedListingRequestProto req = GetBatchedListingRequestProto
+        .newBuilder()
+        .addAllPaths(Arrays.asList(srcs))
+        .setStartAfter(ByteString.copyFrom(startAfter))
+        .setNeedLocation(needLocation).build();
+    GetBatchedListingResponseProto result =
+        ipc(() -> rpcProxy.getBatchedListing(null, req));
+
+    if (result.getListingsCount() > 0) {
+      HdfsPartialListing[] listingArray =
+          new HdfsPartialListing[result.getListingsCount()];
+      int listingIdx = 0;
+      for (BatchedDirectoryListingProto proto : result.getListingsList()) {
+        HdfsPartialListing listing;
+        if (proto.hasException()) {
+          HdfsProtos.RemoteExceptionProto reProto = proto.getException();
+          RemoteException ex = new RemoteException(
+              reProto.getClassName(), reProto.getMessage());
+          listing = new HdfsPartialListing(proto.getParentIdx(), ex);
+        } else {
+          List<HdfsFileStatus> statuses =
+              PBHelperClient.convertHdfsFileStatus(
+                  proto.getPartialListingList());
+          listing = new HdfsPartialListing(proto.getParentIdx(), statuses);
+        }
+        listingArray[listingIdx++] = listing;
+      }
+      BatchedDirectoryListing batchedListing =
+          new BatchedDirectoryListing(listingArray, result.getHasMore(),
+              result.getStartAfter().toByteArray());
+      return batchedListing;
     }
+    return null;
+  }
+
+
+  @Override
+  public void renewLease(String clientName, List<String> namespaces)
+      throws IOException {
+    RenewLeaseRequestProto.Builder builder = RenewLeaseRequestProto
+        .newBuilder().setClientName(clientName);
+    if (namespaces != null && !namespaces.isEmpty()) {
+      builder.addAllNamespaces(namespaces);
+    }
+    ipc(() -> rpcProxy.renewLease(null, builder.build()));
   }
 
   @Override
@@ -686,41 +682,25 @@ public class ClientNamenodeProtocolTranslatorPB implements
     RecoverLeaseRequestProto req = RecoverLeaseRequestProto.newBuilder()
         .setSrc(src)
         .setClientName(clientName).build();
-    try {
-      return rpcProxy.recoverLease(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.recoverLease(null, req)).getResult();
   }
 
   @Override
   public long[] getStats() throws IOException {
-    try {
-      return PBHelperClient.convert(rpcProxy.getFsStats(null,
-          VOID_GET_FSSTATUS_REQUEST));
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.getFsStats(null,
+        VOID_GET_FSSTATUS_REQUEST)));
   }
 
   @Override
   public ReplicatedBlockStats getReplicatedBlockStats() throws IOException {
-    try {
-      return PBHelperClient.convert(rpcProxy.getFsReplicatedBlockStats(null,
-          VOID_GET_FS_REPLICATED_BLOCK_STATS_REQUEST));
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.getFsReplicatedBlockStats(null,
+        VOID_GET_FS_REPLICATED_BLOCK_STATS_REQUEST)));
   }
 
   @Override
   public ECBlockGroupStats getECBlockGroupStats() throws IOException {
-    try {
-      return PBHelperClient.convert(rpcProxy.getFsECBlockGroupStats(null,
-          VOID_GET_FS_ECBLOCKGROUP_STATS_REQUEST));
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.getFsECBlockGroupStats(null,
+        VOID_GET_FS_ECBLOCKGROUP_STATS_REQUEST)));
   }
 
   @Override
@@ -729,12 +709,8 @@ public class ClientNamenodeProtocolTranslatorPB implements
     GetDatanodeReportRequestProto req = GetDatanodeReportRequestProto
         .newBuilder()
         .setType(PBHelperClient.convert(type)).build();
-    try {
-      return PBHelperClient.convert(
-          rpcProxy.getDatanodeReport(null, req).getDiList());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(
+        ipc(() -> rpcProxy.getDatanodeReport(null, req)).getDiList());
   }
 
   @Override
@@ -743,13 +719,9 @@ public class ClientNamenodeProtocolTranslatorPB implements
     final GetDatanodeStorageReportRequestProto req
         = GetDatanodeStorageReportRequestProto.newBuilder()
         .setType(PBHelperClient.convert(type)).build();
-    try {
-      return PBHelperClient.convertDatanodeStorageReports(
-          rpcProxy.getDatanodeStorageReport(null, req)
-              .getDatanodeStorageReportsList());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convertDatanodeStorageReports(
+        ipc(() -> rpcProxy.getDatanodeStorageReport(null, req)
+            .getDatanodeStorageReportsList()));
   }
 
   @Override
@@ -758,11 +730,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .newBuilder()
         .setFilename(filename)
         .build();
-    try {
-      return rpcProxy.getPreferredBlockSize(null, req).getBsize();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.getPreferredBlockSize(null, req)).getBsize();
   }
 
   @Override
@@ -771,33 +739,21 @@ public class ClientNamenodeProtocolTranslatorPB implements
     SetSafeModeRequestProto req = SetSafeModeRequestProto.newBuilder()
         .setAction(PBHelperClient.convert(action))
         .setChecked(isChecked).build();
-    try {
-      return rpcProxy.setSafeMode(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.setSafeMode(null, req)).getResult();
   }
 
   @Override
   public boolean saveNamespace(long timeWindow, long txGap) throws IOException {
-    try {
-      SaveNamespaceRequestProto req = SaveNamespaceRequestProto.newBuilder()
-          .setTimeWindow(timeWindow).setTxGap(txGap).build();
-      return rpcProxy.saveNamespace(null, req).getSaved();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    SaveNamespaceRequestProto req = SaveNamespaceRequestProto.newBuilder()
+        .setTimeWindow(timeWindow).setTxGap(txGap).build();
+    return ipc(() -> rpcProxy.saveNamespace(null, req)).getSaved();
   }
 
   @Override
   public long rollEdits() throws IOException {
-    try {
-      RollEditsResponseProto resp = rpcProxy.rollEdits(null,
-          VOID_ROLLEDITS_REQUEST);
-      return resp.getNewSegmentTxId();
-    } catch (ServiceException se) {
-      throw ProtobufHelper.getRemoteException(se);
-    }
+    RollEditsResponseProto resp = ipc(() -> rpcProxy.rollEdits(null,
+        VOID_ROLLEDITS_REQUEST));
+    return resp.getNewSegmentTxId();
   }
 
   @Override
@@ -805,29 +761,24 @@ public class ClientNamenodeProtocolTranslatorPB implements
     RestoreFailedStorageRequestProto req = RestoreFailedStorageRequestProto
         .newBuilder()
         .setArg(arg).build();
-    try {
-      return rpcProxy.restoreFailedStorage(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.restoreFailedStorage(null, req)).getResult();
   }
 
   @Override
   public void refreshNodes() throws IOException {
-    try {
-      rpcProxy.refreshNodes(null, VOID_REFRESH_NODES_REQUEST);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.refreshNodes(null, VOID_REFRESH_NODES_REQUEST));
   }
 
   @Override
   public void finalizeUpgrade() throws IOException {
-    try {
-      rpcProxy.finalizeUpgrade(null, VOID_FINALIZE_UPGRADE_REQUEST);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.finalizeUpgrade(null, VOID_FINALIZE_UPGRADE_REQUEST));
+  }
+
+  @Override
+  public boolean upgradeStatus() throws IOException {
+    final UpgradeStatusResponseProto proto = ipc(() -> rpcProxy.upgradeStatus(
+        null, VOID_UPGRADE_STATUS_REQUEST));
+    return proto.getUpgradeFinalized();
   }
 
   @Override
@@ -835,16 +786,12 @@ public class ClientNamenodeProtocolTranslatorPB implements
       throws IOException {
     final RollingUpgradeRequestProto r = RollingUpgradeRequestProto.newBuilder()
         .setAction(PBHelperClient.convert(action)).build();
-    try {
-      final RollingUpgradeResponseProto proto =
-          rpcProxy.rollingUpgrade(null, r);
-      if (proto.hasRollingUpgradeInfo()) {
-        return PBHelperClient.convert(proto.getRollingUpgradeInfo());
-      }
-      return null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    final RollingUpgradeResponseProto proto =
+        ipc(() -> rpcProxy.rollingUpgrade(null, r));
+    if (proto.hasRollingUpgradeInfo()) {
+      return PBHelperClient.convert(proto.getRollingUpgradeInfo());
     }
+    return null;
   }
 
   @Override
@@ -854,24 +801,15 @@ public class ClientNamenodeProtocolTranslatorPB implements
         ListCorruptFileBlocksRequestProto.newBuilder().setPath(path);
     if (cookie != null)
       req.setCookie(cookie);
-    try {
-      return PBHelperClient.convert(
-          rpcProxy.listCorruptFileBlocks(null, req.build()).getCorrupt());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(
+        ipc(() -> rpcProxy.listCorruptFileBlocks(null, req.build())).getCorrupt());
   }
 
   @Override
   public void metaSave(String filename) throws IOException {
     MetaSaveRequestProto req = MetaSaveRequestProto.newBuilder()
         .setFilename(filename).build();
-    try {
-      rpcProxy.metaSave(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
-
+    ipc(() -> rpcProxy.metaSave(null, req));
   }
 
   @Override
@@ -879,12 +817,8 @@ public class ClientNamenodeProtocolTranslatorPB implements
     GetFileInfoRequestProto req = GetFileInfoRequestProto.newBuilder()
         .setSrc(src)
         .build();
-    try {
-      GetFileInfoResponseProto res = rpcProxy.getFileInfo(null, req);
-      return res.hasFs() ? PBHelperClient.convert(res.getFs()) : null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    GetFileInfoResponseProto res = ipc(() -> rpcProxy.getFileInfo(null, req));
+    return res.hasFs() ? PBHelperClient.convert(res.getFs()) : null;
   }
 
   @Override
@@ -895,29 +829,19 @@ public class ClientNamenodeProtocolTranslatorPB implements
             .setSrc(src)
             .setNeedBlockToken(needBlockToken)
             .build();
-    try {
-      GetLocatedFileInfoResponseProto res =
-          rpcProxy.getLocatedFileInfo(null, req);
-      return (HdfsLocatedFileStatus) (res.hasFs()
-          ? PBHelperClient.convert(res.getFs())
-          : null);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    GetLocatedFileInfoResponseProto res =
+        ipc(() -> rpcProxy.getLocatedFileInfo(null, req));
+    return (HdfsLocatedFileStatus) (res.hasFs()
+        ? PBHelperClient.convert(res.getFs())
+        : null);
   }
 
   @Override
   public HdfsFileStatus getFileLinkInfo(String src) throws IOException {
     GetFileLinkInfoRequestProto req = GetFileLinkInfoRequestProto.newBuilder()
         .setSrc(src).build();
-    try {
-      GetFileLinkInfoResponseProto result = rpcProxy.getFileLinkInfo(null, req);
-      return result.hasFs() ?
-          PBHelperClient.convert(rpcProxy.getFileLinkInfo(null, req).getFs()) :
-          null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    GetFileLinkInfoResponseProto result = ipc(() -> rpcProxy.getFileLinkInfo(null, req));
+    return result.hasFs() ? PBHelperClient.convert(result.getFs()) : null;
   }
 
   @Override
@@ -926,12 +850,8 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .newBuilder()
         .setPath(path)
         .build();
-    try {
-      return PBHelperClient.convert(rpcProxy.getContentSummary(null, req)
-          .getSummary());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.getContentSummary(null, req))
+        .getSummary());
   }
 
   @Override
@@ -946,11 +866,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
       builder.setStorageType(PBHelperClient.convertStorageType(type));
     }
     final SetQuotaRequestProto req = builder.build();
-    try {
-      rpcProxy.setQuota(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.setQuota(null, req));
   }
 
   @Override
@@ -959,11 +875,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
     FsyncRequestProto req = FsyncRequestProto.newBuilder().setSrc(src)
         .setClient(client).setLastBlockLength(lastBlockLength)
         .setFileId(fileId).build();
-    try {
-      rpcProxy.fsync(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.fsync(null, req));
   }
 
   @Override
@@ -973,11 +885,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setMtime(mtime)
         .setAtime(atime)
         .build();
-    try {
-      rpcProxy.setTimes(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.setTimes(null, req));
   }
 
   @Override
@@ -989,23 +897,15 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setDirPerm(PBHelperClient.convert(dirPerm))
         .setCreateParent(createParent)
         .build();
-    try {
-      rpcProxy.createSymlink(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.createSymlink(null, req));
   }
 
   @Override
   public String getLinkTarget(String path) throws IOException {
     GetLinkTargetRequestProto req = GetLinkTargetRequestProto.newBuilder()
         .setPath(path).build();
-    try {
-      GetLinkTargetResponseProto rsp = rpcProxy.getLinkTarget(null, req);
-      return rsp.hasTargetPath() ? rsp.getTargetPath() : null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    GetLinkTargetResponseProto rsp = ipc(() -> rpcProxy.getLinkTarget(null, req));
+    return rsp.hasTargetPath() ? rsp.getTargetPath() : null;
   }
 
   @Override
@@ -1016,12 +916,8 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setBlock(PBHelperClient.convert(block))
         .setClientName(clientName)
         .build();
-    try {
-      return PBHelperClient.convertLocatedBlockProto(
-          rpcProxy.updateBlockForPipeline(null, req).getBlock());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convertLocatedBlockProto(
+        ipc(() -> rpcProxy.updateBlockForPipeline(null, req)).getBlock());
   }
 
   @Override
@@ -1035,11 +931,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .addAllNewNodes(Arrays.asList(PBHelperClient.convert(newNodes)))
         .addAllStorageIDs(storageIDs == null ? null : Arrays.asList(storageIDs))
         .build();
-    try {
-      rpcProxy.updatePipeline(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.updatePipeline(null, req));
   }
 
   @Override
@@ -1049,14 +941,10 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .newBuilder()
         .setRenewer(renewer == null ? "" : renewer.toString())
         .build();
-    try {
-      GetDelegationTokenResponseProto resp =
-          rpcProxy.getDelegationToken(null, req);
-      return resp.hasToken() ?
-          PBHelperClient.convertDelegationToken(resp.getToken()) : null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    GetDelegationTokenResponseProto resp =
+        ipc(() -> rpcProxy.getDelegationToken(null, req));
+    return resp.hasToken() ?
+        PBHelperClient.convertDelegationToken(resp.getToken()) : null;
   }
 
   @Override
@@ -1066,11 +954,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         RenewDelegationTokenRequestProto.newBuilder().
             setToken(PBHelperClient.convert(token)).
             build();
-    try {
-      return rpcProxy.renewDelegationToken(null, req).getNewExpiryTime();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.renewDelegationToken(null, req)).getNewExpiryTime();
   }
 
   @Override
@@ -1080,11 +964,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .newBuilder()
         .setToken(PBHelperClient.convert(token))
         .build();
-    try {
-      rpcProxy.cancelDelegationToken(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.cancelDelegationToken(null, req));
   }
 
   @Override
@@ -1093,11 +973,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         SetBalancerBandwidthRequestProto.newBuilder()
             .setBandwidth(bandwidth)
             .build();
-    try {
-      rpcProxy.setBalancerBandwidth(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.setBalancerBandwidth(null, req));
   }
 
   @Override
@@ -1109,14 +985,10 @@ public class ClientNamenodeProtocolTranslatorPB implements
 
   @Override
   public DataEncryptionKey getDataEncryptionKey() throws IOException {
-    try {
-      GetDataEncryptionKeyResponseProto rsp = rpcProxy.getDataEncryptionKey(
-          null, VOID_GET_DATA_ENCRYPTIONKEY_REQUEST);
-      return rsp.hasDataEncryptionKey() ?
-          PBHelperClient.convert(rsp.getDataEncryptionKey()) : null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    GetDataEncryptionKeyResponseProto rsp = ipc(() -> rpcProxy.getDataEncryptionKey(
+        null, VOID_GET_DATA_ENCRYPTIONKEY_REQUEST));
+    return rsp.hasDataEncryptionKey() ?
+        PBHelperClient.convert(rsp.getDataEncryptionKey()) : null;
   }
 
 
@@ -1124,11 +996,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
   public boolean isFileClosed(String src) throws IOException {
     IsFileClosedRequestProto req = IsFileClosedRequestProto.newBuilder()
         .setSrc(src).build();
-    try {
-      return rpcProxy.isFileClosed(null, req).getResult();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.isFileClosed(null, req)).getResult();
   }
 
   @Override
@@ -1145,11 +1013,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
       builder.setSnapshotName(snapshotName);
     }
     final CreateSnapshotRequestProto req = builder.build();
-    try {
-      return rpcProxy.createSnapshot(null, req).getSnapshotPath();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.createSnapshot(null, req)).getSnapshotPath();
   }
 
   @Override
@@ -1157,33 +1021,21 @@ public class ClientNamenodeProtocolTranslatorPB implements
       throws IOException {
     DeleteSnapshotRequestProto req = DeleteSnapshotRequestProto.newBuilder()
         .setSnapshotRoot(snapshotRoot).setSnapshotName(snapshotName).build();
-    try {
-      rpcProxy.deleteSnapshot(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.deleteSnapshot(null, req));
   }
 
   @Override
   public void allowSnapshot(String snapshotRoot) throws IOException {
     AllowSnapshotRequestProto req = AllowSnapshotRequestProto.newBuilder()
         .setSnapshotRoot(snapshotRoot).build();
-    try {
-      rpcProxy.allowSnapshot(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.allowSnapshot(null, req));
   }
 
   @Override
   public void disallowSnapshot(String snapshotRoot) throws IOException {
     DisallowSnapshotRequestProto req = DisallowSnapshotRequestProto
         .newBuilder().setSnapshotRoot(snapshotRoot).build();
-    try {
-      rpcProxy.disallowSnapshot(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.disallowSnapshot(null, req));
   }
 
   @Override
@@ -1192,11 +1044,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
     RenameSnapshotRequestProto req = RenameSnapshotRequestProto.newBuilder()
         .setSnapshotRoot(snapshotRoot).setSnapshotOldName(snapshotOldName)
         .setSnapshotNewName(snapshotNewName).build();
-    try {
-      rpcProxy.renameSnapshot(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.renameSnapshot(null, req));
   }
 
   @Override
@@ -1204,17 +1052,28 @@ public class ClientNamenodeProtocolTranslatorPB implements
       throws IOException {
     GetSnapshottableDirListingRequestProto req =
         GetSnapshottableDirListingRequestProto.newBuilder().build();
-    try {
-      GetSnapshottableDirListingResponseProto result = rpcProxy
-          .getSnapshottableDirListing(null, req);
+    GetSnapshottableDirListingResponseProto result = ipc(() -> rpcProxy
+        .getSnapshottableDirListing(null, req));
 
-      if (result.hasSnapshottableDirList()) {
-        return PBHelperClient.convert(result.getSnapshottableDirList());
-      }
-      return null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    if (result.hasSnapshottableDirList()) {
+      return PBHelperClient.convert(result.getSnapshottableDirList());
     }
+    return null;
+  }
+
+  @Override
+  public SnapshotStatus[] getSnapshotListing(String path)
+      throws IOException {
+    GetSnapshotListingRequestProto req =
+        GetSnapshotListingRequestProto.newBuilder()
+            .setSnapshotRoot(path).build();
+    GetSnapshotListingResponseProto result = ipc(() -> rpcProxy
+        .getSnapshotListing(null, req));
+
+    if (result.hasSnapshotList()) {
+      return PBHelperClient.convert(result.getSnapshotList());
+    }
+    return null;
   }
 
   @Override
@@ -1223,14 +1082,10 @@ public class ClientNamenodeProtocolTranslatorPB implements
     GetSnapshotDiffReportRequestProto req = GetSnapshotDiffReportRequestProto
         .newBuilder().setSnapshotRoot(snapshotRoot)
         .setFromSnapshot(fromSnapshot).setToSnapshot(toSnapshot).build();
-    try {
-      GetSnapshotDiffReportResponseProto result =
-          rpcProxy.getSnapshotDiffReport(null, req);
+    GetSnapshotDiffReportResponseProto result =
+        ipc(() -> rpcProxy.getSnapshotDiffReport(null, req));
 
-      return PBHelperClient.convert(result.getDiffReport());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(result.getDiffReport());
   }
 
   @Override
@@ -1244,61 +1099,45 @@ public class ClientNamenodeProtocolTranslatorPB implements
             HdfsProtos.SnapshotDiffReportCursorProto.newBuilder()
                 .setStartPath(PBHelperClient.getByteString(startPath))
                 .setIndex(index).build()).build();
-    try {
-      GetSnapshotDiffReportListingResponseProto result =
-          rpcProxy.getSnapshotDiffReportListing(null, req);
+    GetSnapshotDiffReportListingResponseProto result =
+        ipc(() -> rpcProxy.getSnapshotDiffReportListing(null, req));
 
-      return PBHelperClient.convert(result.getDiffReport());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(result.getDiffReport());
   }
 
   @Override
   public long addCacheDirective(CacheDirectiveInfo directive,
       EnumSet<CacheFlag> flags) throws IOException {
-    try {
-      AddCacheDirectiveRequestProto.Builder builder =
-          AddCacheDirectiveRequestProto.newBuilder().
-              setInfo(PBHelperClient.convert(directive));
-      if (!flags.isEmpty()) {
-        builder.setCacheFlags(PBHelperClient.convertCacheFlags(flags));
-      }
-      return rpcProxy.addCacheDirective(null, builder.build()).getId();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    AddCacheDirectiveRequestProto.Builder builder =
+        AddCacheDirectiveRequestProto.newBuilder().
+            setInfo(PBHelperClient.convert(directive));
+    if (!flags.isEmpty()) {
+      builder.setCacheFlags(PBHelperClient.convertCacheFlags(flags));
     }
+    return ipc(() -> rpcProxy.addCacheDirective(null, builder.build())).getId();
   }
 
   @Override
   public void modifyCacheDirective(CacheDirectiveInfo directive,
       EnumSet<CacheFlag> flags) throws IOException {
-    try {
-      ModifyCacheDirectiveRequestProto.Builder builder =
-          ModifyCacheDirectiveRequestProto.newBuilder().
-              setInfo(PBHelperClient.convert(directive));
-      if (!flags.isEmpty()) {
-        builder.setCacheFlags(PBHelperClient.convertCacheFlags(flags));
-      }
-      rpcProxy.modifyCacheDirective(null, builder.build());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    ModifyCacheDirectiveRequestProto.Builder builder =
+        ModifyCacheDirectiveRequestProto.newBuilder().
+            setInfo(PBHelperClient.convert(directive));
+    if (!flags.isEmpty()) {
+      builder.setCacheFlags(PBHelperClient.convertCacheFlags(flags));
     }
+    ipc(() -> rpcProxy.modifyCacheDirective(null, builder.build()));
   }
 
   @Override
   public void removeCacheDirective(long id)
       throws IOException {
-    try {
-      rpcProxy.removeCacheDirective(null,
-          RemoveCacheDirectiveRequestProto.newBuilder().
-              setId(id).build());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.removeCacheDirective(null,
+        RemoveCacheDirectiveRequestProto.newBuilder().
+            setId(id).build()));
   }
 
-  private static class BatchedCacheEntries
+  protected static class BatchedCacheEntries
       implements BatchedEntries<CacheDirectiveEntry> {
     private final ListCacheDirectivesResponseProto response;
 
@@ -1329,16 +1168,13 @@ public class ClientNamenodeProtocolTranslatorPB implements
     if (filter == null) {
       filter = new CacheDirectiveInfo.Builder().build();
     }
-    try {
-      return new BatchedCacheEntries(
-          rpcProxy.listCacheDirectives(null,
-              ListCacheDirectivesRequestProto.newBuilder().
-                  setPrevId(prevId).
-                  setFilter(PBHelperClient.convert(filter)).
-                  build()));
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    CacheDirectiveInfo f = filter;
+    return new BatchedCacheEntries(
+        ipc(() -> rpcProxy.listCacheDirectives(null,
+            ListCacheDirectivesRequestProto.newBuilder().
+                setPrevId(prevId).
+                setFilter(PBHelperClient.convert(f)).
+                build())));
   }
 
   @Override
@@ -1346,11 +1182,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
     AddCachePoolRequestProto.Builder builder =
         AddCachePoolRequestProto.newBuilder();
     builder.setInfo(PBHelperClient.convert(info));
-    try {
-      rpcProxy.addCachePool(null, builder.build());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.addCachePool(null, builder.build()));
   }
 
   @Override
@@ -1358,25 +1190,17 @@ public class ClientNamenodeProtocolTranslatorPB implements
     ModifyCachePoolRequestProto.Builder builder =
         ModifyCachePoolRequestProto.newBuilder();
     builder.setInfo(PBHelperClient.convert(req));
-    try {
-      rpcProxy.modifyCachePool(null, builder.build());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.modifyCachePool(null, builder.build()));
   }
 
   @Override
   public void removeCachePool(String cachePoolName) throws IOException {
-    try {
-      rpcProxy.removeCachePool(null,
-          RemoveCachePoolRequestProto.newBuilder().
-              setPoolName(cachePoolName).build());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.removeCachePool(null,
+        RemoveCachePoolRequestProto.newBuilder().
+            setPoolName(cachePoolName).build()));
   }
 
-  private static class BatchedCachePoolEntries
+  protected static class BatchedCachePoolEntries
       implements BatchedEntries<CachePoolEntry> {
     private final ListCachePoolsResponseProto proto;
 
@@ -1404,14 +1228,10 @@ public class ClientNamenodeProtocolTranslatorPB implements
   @Override
   public BatchedEntries<CachePoolEntry> listCachePools(String prevKey)
       throws IOException {
-    try {
-      return new BatchedCachePoolEntries(
-          rpcProxy.listCachePools(null,
-              ListCachePoolsRequestProto.newBuilder().
-                  setPrevPoolName(prevKey).build()));
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return new BatchedCachePoolEntries(
+        ipc(() -> rpcProxy.listCachePools(null,
+            ListCachePoolsRequestProto.newBuilder().
+                setPrevPoolName(prevKey).build())));
   }
 
   @Override
@@ -1420,11 +1240,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
     ModifyAclEntriesRequestProto req = ModifyAclEntriesRequestProto
         .newBuilder().setSrc(src)
         .addAllAclSpec(PBHelperClient.convertAclEntryProto(aclSpec)).build();
-    try {
-      rpcProxy.modifyAclEntries(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.modifyAclEntries(null, req));
   }
 
   @Override
@@ -1433,33 +1249,21 @@ public class ClientNamenodeProtocolTranslatorPB implements
     RemoveAclEntriesRequestProto req = RemoveAclEntriesRequestProto
         .newBuilder().setSrc(src)
         .addAllAclSpec(PBHelperClient.convertAclEntryProto(aclSpec)).build();
-    try {
-      rpcProxy.removeAclEntries(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.removeAclEntries(null, req));
   }
 
   @Override
   public void removeDefaultAcl(String src) throws IOException {
     RemoveDefaultAclRequestProto req = RemoveDefaultAclRequestProto
         .newBuilder().setSrc(src).build();
-    try {
-      rpcProxy.removeDefaultAcl(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.removeDefaultAcl(null, req));
   }
 
   @Override
   public void removeAcl(String src) throws IOException {
     RemoveAclRequestProto req = RemoveAclRequestProto.newBuilder()
         .setSrc(src).build();
-    try {
-      rpcProxy.removeAcl(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.removeAcl(null, req));
   }
 
   @Override
@@ -1468,15 +1272,11 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setSrc(src)
         .addAllAclSpec(PBHelperClient.convertAclEntryProto(aclSpec))
         .build();
-    try {
-      if (Client.isAsynchronousMode()) {
-        rpcProxy.setAcl(null, req);
-        setAsyncReturnValue();
-      } else {
-        rpcProxy.setAcl(null, req);
-      }
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    if (Client.isAsynchronousMode()) {
+      ipc(() -> rpcProxy.setAcl(null, req));
+      setAsyncReturnValue();
+    } else {
+      ipc(() -> rpcProxy.setAcl(null, req));
     }
   }
 
@@ -1488,7 +1288,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
       if (Client.isAsynchronousMode()) {
         rpcProxy.getAclStatus(null, req);
         final AsyncGet<Message, Exception> asyncReturnMessage
-            = ProtobufRpcEngine.getAsyncReturnMessage();
+            = ProtobufRpcEngine2.getAsyncReturnMessage();
         final AsyncGet<AclStatus, Exception> asyncGet
             = new AsyncGet<AclStatus, Exception>() {
           @Override
@@ -1508,7 +1308,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         return PBHelperClient.convert(rpcProxy.getAclStatus(null, req));
       }
     } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+      throw getRemoteException(e);
     }
   }
 
@@ -1522,11 +1322,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
       builder.setKeyName(keyName);
     }
     CreateEncryptionZoneRequestProto req = builder.build();
-    try {
-      rpcProxy.createEncryptionZone(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.createEncryptionZone(null, req));
   }
 
   @Override
@@ -1535,16 +1331,12 @@ public class ClientNamenodeProtocolTranslatorPB implements
         GetEZForPathRequestProto.newBuilder();
     builder.setSrc(src);
     final GetEZForPathRequestProto req = builder.build();
-    try {
-      final EncryptionZonesProtos.GetEZForPathResponseProto response =
-          rpcProxy.getEZForPath(null, req);
-      if (response.hasZone()) {
-        return PBHelperClient.convert(response.getZone());
-      } else {
-        return null;
-      }
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    final EncryptionZonesProtos.GetEZForPathResponseProto response =
+        ipc(() -> rpcProxy.getEZForPath(null, req));
+    if (response.hasZone()) {
+      return PBHelperClient.convert(response.getZone());
+    } else {
+      return null;
     }
   }
 
@@ -1555,18 +1347,14 @@ public class ClientNamenodeProtocolTranslatorPB implements
         ListEncryptionZonesRequestProto.newBuilder()
             .setId(id)
             .build();
-    try {
-      EncryptionZonesProtos.ListEncryptionZonesResponseProto response =
-          rpcProxy.listEncryptionZones(null, req);
-      List<EncryptionZone> elements =
-          Lists.newArrayListWithCapacity(response.getZonesCount());
-      for (EncryptionZoneProto p : response.getZonesList()) {
-        elements.add(PBHelperClient.convert(p));
-      }
-      return new BatchedListEntries<>(elements, response.getHasMore());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    EncryptionZonesProtos.ListEncryptionZonesResponseProto response =
+        ipc(() -> rpcProxy.listEncryptionZones(null, req));
+    List<EncryptionZone> elements =
+        Lists.newArrayListWithCapacity(response.getZonesCount());
+    for (EncryptionZoneProto p : response.getZonesList()) {
+      elements.add(PBHelperClient.convert(p));
     }
+    return new BatchedListEntries<>(elements, response.getHasMore());
   }
 
   @Override
@@ -1579,25 +1367,29 @@ public class ClientNamenodeProtocolTranslatorPB implements
       builder.setEcPolicyName(ecPolicyName);
     }
     SetErasureCodingPolicyRequestProto req = builder.build();
-    try {
-      rpcProxy.setErasureCodingPolicy(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.setErasureCodingPolicy(null, req));
   }
 
   @Override
-  public void unsetErasureCodingPolicy(String src)
-      throws IOException {
+  public void unsetErasureCodingPolicy(String src) throws IOException {
     final UnsetErasureCodingPolicyRequestProto.Builder builder =
-        ErasureCodingProtos.UnsetErasureCodingPolicyRequestProto.newBuilder();
+        UnsetErasureCodingPolicyRequestProto.newBuilder();
     builder.setSrc(src);
     UnsetErasureCodingPolicyRequestProto req = builder.build();
-    try {
-      rpcProxy.unsetErasureCodingPolicy(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.unsetErasureCodingPolicy(null, req));
+  }
+
+  @Override
+  public ECTopologyVerifierResult getECTopologyResultForPolicies(
+      final String... policyNames) throws IOException {
+    final GetECTopologyResultForPoliciesRequestProto.Builder builder =
+        GetECTopologyResultForPoliciesRequestProto.newBuilder();
+    builder.addAllPolicies(Arrays.asList(policyNames));
+    GetECTopologyResultForPoliciesRequestProto req = builder.build();
+    GetECTopologyResultForPoliciesResponseProto response =
+        ipc(() -> rpcProxy.getECTopologyResultForPolicies(null, req));
+    return PBHelperClient
+        .convertECTopologyVerifierResultProto(response.getResponse());
   }
 
   @Override
@@ -1607,11 +1399,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         ReencryptEncryptionZoneRequestProto.newBuilder();
     builder.setZone(zone).setAction(PBHelperClient.convert(action));
     ReencryptEncryptionZoneRequestProto req = builder.build();
-    try {
-      rpcProxy.reencryptEncryptionZone(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.reencryptEncryptionZone(null, req));
   }
 
   @Override
@@ -1619,18 +1407,14 @@ public class ClientNamenodeProtocolTranslatorPB implements
       throws IOException {
     final ListReencryptionStatusRequestProto req =
         ListReencryptionStatusRequestProto.newBuilder().setId(id).build();
-    try {
-      ListReencryptionStatusResponseProto response =
-          rpcProxy.listReencryptionStatus(null, req);
-      List<ZoneReencryptionStatus> elements =
-          Lists.newArrayListWithCapacity(response.getStatusesCount());
-      for (ZoneReencryptionStatusProto p : response.getStatusesList()) {
-        elements.add(PBHelperClient.convert(p));
-      }
-      return new BatchedListEntries<>(elements, response.getHasMore());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    ListReencryptionStatusResponseProto response =
+        ipc(() -> rpcProxy.listReencryptionStatus(null, req));
+    List<ZoneReencryptionStatus> elements =
+        Lists.newArrayListWithCapacity(response.getStatusesCount());
+    for (ZoneReencryptionStatusProto p : response.getStatusesList()) {
+      elements.add(PBHelperClient.convert(p));
     }
+    return new BatchedListEntries<>(elements, response.getHasMore());
   }
 
   @Override
@@ -1641,11 +1425,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         .setXAttr(PBHelperClient.convertXAttrProto(xAttr))
         .setFlag(PBHelperClient.convert(flag))
         .build();
-    try {
-      rpcProxy.setXAttr(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.setXAttr(null, req));
   }
 
   @Override
@@ -1657,11 +1437,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
       builder.addAllXAttrs(PBHelperClient.convertXAttrProto(xAttrs));
     }
     GetXAttrsRequestProto req = builder.build();
-    try {
-      return PBHelperClient.convert(rpcProxy.getXAttrs(null, req));
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.getXAttrs(null, req)));
   }
 
   @Override
@@ -1670,11 +1446,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         ListXAttrsRequestProto.newBuilder();
     builder.setSrc(src);
     ListXAttrsRequestProto req = builder.build();
-    try {
-      return PBHelperClient.convert(rpcProxy.listXAttrs(null, req));
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.listXAttrs(null, req)));
   }
 
   @Override
@@ -1682,22 +1454,14 @@ public class ClientNamenodeProtocolTranslatorPB implements
     RemoveXAttrRequestProto req = RemoveXAttrRequestProto
         .newBuilder().setSrc(src)
         .setXAttr(PBHelperClient.convertXAttrProto(xAttr)).build();
-    try {
-      rpcProxy.removeXAttr(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.removeXAttr(null, req));
   }
 
   @Override
   public void checkAccess(String path, FsAction mode) throws IOException {
     CheckAccessRequestProto req = CheckAccessRequestProto.newBuilder()
         .setPath(path).setMode(PBHelperClient.convert(mode)).build();
-    try {
-      rpcProxy.checkAccess(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.checkAccess(null, req));
   }
 
   @Override
@@ -1705,66 +1469,42 @@ public class ClientNamenodeProtocolTranslatorPB implements
       throws IOException {
     SetStoragePolicyRequestProto req = SetStoragePolicyRequestProto
         .newBuilder().setSrc(src).setPolicyName(policyName).build();
-    try {
-      rpcProxy.setStoragePolicy(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.setStoragePolicy(null, req));
   }
 
   @Override
   public void unsetStoragePolicy(String src) throws IOException {
     UnsetStoragePolicyRequestProto req = UnsetStoragePolicyRequestProto
         .newBuilder().setSrc(src).build();
-    try {
-      rpcProxy.unsetStoragePolicy(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.unsetStoragePolicy(null, req));
   }
 
   @Override
   public BlockStoragePolicy getStoragePolicy(String path) throws IOException {
     GetStoragePolicyRequestProto request = GetStoragePolicyRequestProto
         .newBuilder().setPath(path).build();
-    try {
-      return PBHelperClient.convert(rpcProxy.getStoragePolicy(null, request)
-          .getStoragePolicy());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.getStoragePolicy(null, request))
+        .getStoragePolicy());
   }
 
   @Override
   public BlockStoragePolicy[] getStoragePolicies() throws IOException {
-    try {
-      GetStoragePoliciesResponseProto response = rpcProxy
-          .getStoragePolicies(null, VOID_GET_STORAGE_POLICIES_REQUEST);
-      return PBHelperClient.convertStoragePolicies(response.getPoliciesList());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    GetStoragePoliciesResponseProto response = ipc(() -> rpcProxy
+        .getStoragePolicies(null, VOID_GET_STORAGE_POLICIES_REQUEST));
+    return PBHelperClient.convertStoragePolicies(response.getPoliciesList());
   }
 
   public long getCurrentEditLogTxid() throws IOException {
     GetCurrentEditLogTxidRequestProto req = GetCurrentEditLogTxidRequestProto
         .getDefaultInstance();
-    try {
-      return rpcProxy.getCurrentEditLogTxid(null, req).getTxid();
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return ipc(() -> rpcProxy.getCurrentEditLogTxid(null, req)).getTxid();
   }
 
   @Override
   public EventBatchList getEditsFromTxid(long txid) throws IOException {
     GetEditsFromTxidRequestProto req = GetEditsFromTxidRequestProto.newBuilder()
         .setTxid(txid).build();
-    try {
-      return PBHelperClient.convert(rpcProxy.getEditsFromTxid(null, req));
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.getEditsFromTxid(null, req)));
   }
 
   @Override
@@ -1776,17 +1516,13 @@ public class ClientNamenodeProtocolTranslatorPB implements
     AddErasureCodingPoliciesRequestProto req =
         AddErasureCodingPoliciesRequestProto.newBuilder()
         .addAllEcPolicies(protos).build();
-    try {
-      AddErasureCodingPoliciesResponseProto rep = rpcProxy
-          .addErasureCodingPolicies(null, req);
-      AddErasureCodingPolicyResponse[] responses =
-          rep.getResponsesList().stream()
-              .map(PBHelperClient::convertAddErasureCodingPolicyResponse)
-              .toArray(AddErasureCodingPolicyResponse[]::new);
-      return responses;
-    }  catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    AddErasureCodingPoliciesResponseProto rep = ipc(() -> rpcProxy
+        .addErasureCodingPolicies(null, req));
+    AddErasureCodingPolicyResponse[] responses =
+        rep.getResponsesList().stream()
+            .map(PBHelperClient::convertAddErasureCodingPolicyResponse)
+            .toArray(AddErasureCodingPolicyResponse[]::new);
+    return responses;
   }
 
   @Override
@@ -1796,11 +1532,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         RemoveErasureCodingPolicyRequestProto.newBuilder();
     builder.setEcPolicyName(ecPolicyName);
     RemoveErasureCodingPolicyRequestProto req = builder.build();
-    try {
-      rpcProxy.removeErasureCodingPolicy(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.removeErasureCodingPolicy(null, req));
   }
 
   @Override
@@ -1810,11 +1542,7 @@ public class ClientNamenodeProtocolTranslatorPB implements
         EnableErasureCodingPolicyRequestProto.newBuilder();
     builder.setEcPolicyName(ecPolicyName);
     EnableErasureCodingPolicyRequestProto req = builder.build();
-    try {
-      rpcProxy.enableErasureCodingPolicy(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.enableErasureCodingPolicy(null, req));
   }
 
   @Override
@@ -1824,45 +1552,33 @@ public class ClientNamenodeProtocolTranslatorPB implements
         DisableErasureCodingPolicyRequestProto.newBuilder();
     builder.setEcPolicyName(ecPolicyName);
     DisableErasureCodingPolicyRequestProto req = builder.build();
-    try {
-      rpcProxy.disableErasureCodingPolicy(null, req);
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    ipc(() -> rpcProxy.disableErasureCodingPolicy(null, req));
   }
 
   @Override
   public ErasureCodingPolicyInfo[] getErasureCodingPolicies()
       throws IOException {
-    try {
-      GetErasureCodingPoliciesResponseProto response = rpcProxy
-          .getErasureCodingPolicies(null, VOID_GET_EC_POLICIES_REQUEST);
-      ErasureCodingPolicyInfo[] ecPolicies =
-          new ErasureCodingPolicyInfo[response.getEcPoliciesCount()];
-      int i = 0;
-      for (ErasureCodingPolicyProto proto : response.getEcPoliciesList()) {
-        ecPolicies[i++] =
-            PBHelperClient.convertErasureCodingPolicyInfo(proto);
-      }
-      return ecPolicies;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    GetErasureCodingPoliciesResponseProto response = ipc(() -> rpcProxy
+        .getErasureCodingPolicies(null, VOID_GET_EC_POLICIES_REQUEST));
+    ErasureCodingPolicyInfo[] ecPolicies =
+        new ErasureCodingPolicyInfo[response.getEcPoliciesCount()];
+    int i = 0;
+    for (ErasureCodingPolicyProto proto : response.getEcPoliciesList()) {
+      ecPolicies[i++] =
+          PBHelperClient.convertErasureCodingPolicyInfo(proto);
     }
+    return ecPolicies;
   }
 
   @Override
   public Map<String, String> getErasureCodingCodecs() throws IOException {
-    try {
-      GetErasureCodingCodecsResponseProto response = rpcProxy
-          .getErasureCodingCodecs(null, VOID_GET_EC_CODEC_REQUEST);
-      Map<String, String> ecCodecs = new HashMap<>();
-      for (CodecProto codec : response.getCodecList()) {
-        ecCodecs.put(codec.getCodec(), codec.getCoders());
-      }
-      return ecCodecs;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    GetErasureCodingCodecsResponseProto response = ipc(() -> rpcProxy
+        .getErasureCodingCodecs(null, VOID_GET_EC_CODEC_REQUEST));
+    Map<String, String> ecCodecs = new HashMap<>();
+    for (CodecProto codec : response.getCodecList()) {
+      ecCodecs.put(codec.getCodec(), codec.getCoders());
     }
+    return ecCodecs;
   }
 
   @Override
@@ -1870,29 +1586,21 @@ public class ClientNamenodeProtocolTranslatorPB implements
       throws IOException {
     GetErasureCodingPolicyRequestProto req =
         GetErasureCodingPolicyRequestProto.newBuilder().setSrc(src).build();
-    try {
-      GetErasureCodingPolicyResponseProto response =
-          rpcProxy.getErasureCodingPolicy(null, req);
-      if (response.hasEcPolicy()) {
-        return PBHelperClient.convertErasureCodingPolicy(
-            response.getEcPolicy());
-      }
-      return null;
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+    GetErasureCodingPolicyResponseProto response =
+        ipc(() -> rpcProxy.getErasureCodingPolicy(null, req));
+    if (response.hasEcPolicy()) {
+      return PBHelperClient.convertErasureCodingPolicy(
+          response.getEcPolicy());
     }
+    return null;
   }
 
   @Override
   public QuotaUsage getQuotaUsage(String path) throws IOException {
     GetQuotaUsageRequestProto req =
         GetQuotaUsageRequestProto.newBuilder().setPath(path).build();
-    try {
-      return PBHelperClient.convert(rpcProxy.getQuotaUsage(null, req)
-          .getUsage());
-    } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
-    }
+    return PBHelperClient.convert(ipc(() -> rpcProxy.getQuotaUsage(null, req))
+        .getUsage());
   }
 
   @Deprecated
@@ -1913,17 +1621,69 @@ public class ClientNamenodeProtocolTranslatorPB implements
     }
     req.setPath(path);
 
+    ListOpenFilesResponseProto response =
+        ipc(() -> rpcProxy.listOpenFiles(null, req.build()));
+    List<OpenFileEntry> openFileEntries =
+        Lists.newArrayListWithCapacity(response.getEntriesCount());
+    for (OpenFilesBatchResponseProto p : response.getEntriesList()) {
+      openFileEntries.add(PBHelperClient.convert(p));
+    }
+    return new BatchedListEntries<>(openFileEntries, response.getHasMore());
+  }
+
+  @Override
+  public void msync() throws IOException {
+    MsyncRequestProto.Builder req = MsyncRequestProto.newBuilder();
+    ipc(() -> rpcProxy.msync(null, req.build()));
+  }
+
+  @Override
+  public void satisfyStoragePolicy(String src) throws IOException {
+    SatisfyStoragePolicyRequestProto req =
+        SatisfyStoragePolicyRequestProto.newBuilder().setSrc(src).build();
+    ipc(() -> rpcProxy.satisfyStoragePolicy(null, req));
+  }
+
+  @Override
+  public DatanodeInfo[] getSlowDatanodeReport() throws IOException {
+    GetSlowDatanodeReportRequestProto req =
+        GetSlowDatanodeReportRequestProto.newBuilder().build();
+    return PBHelperClient.convert(
+        ipc(() -> rpcProxy.getSlowDatanodeReport(null, req)).getDatanodeInfoProtoList());
+  }
+
+  @Override
+  public HAServiceProtocol.HAServiceState getHAServiceState()
+      throws IOException {
+    HAServiceStateRequestProto req =
+        HAServiceStateRequestProto.newBuilder().build();
+    HAServiceStateProto res =
+        ipc(() -> rpcProxy.getHAServiceState(null, req)).getState();
+    switch(res) {
+    case ACTIVE:
+      return HAServiceProtocol.HAServiceState.ACTIVE;
+    case STANDBY:
+      return HAServiceProtocol.HAServiceState.STANDBY;
+    case OBSERVER:
+      return HAServiceProtocol.HAServiceState.OBSERVER;
+    case INITIALIZING:
+    default:
+      return HAServiceProtocol.HAServiceState.INITIALIZING;
+    }
+  }
+
+  @Override
+  public Path getEnclosingRoot(String filename) throws IOException {
+    final GetEnclosingRootRequestProto.Builder builder =
+        GetEnclosingRootRequestProto.newBuilder();
+    builder.setFilename(filename);
+    final GetEnclosingRootRequestProto req = builder.build();
     try {
-      ListOpenFilesResponseProto response =
-          rpcProxy.listOpenFiles(null, req.build());
-      List<OpenFileEntry> openFileEntries =
-          Lists.newArrayListWithCapacity(response.getEntriesCount());
-      for (OpenFilesBatchResponseProto p : response.getEntriesList()) {
-        openFileEntries.add(PBHelperClient.convert(p));
-      }
-      return new BatchedListEntries<>(openFileEntries, response.getHasMore());
+      final GetEnclosingRootResponseProto response =
+          rpcProxy.getEnclosingRoot(null, req);
+      return new Path(response.getEnclosingRootPath());
     } catch (ServiceException e) {
-      throw ProtobufHelper.getRemoteException(e);
+      throw getRemoteException(e);
     }
   }
 

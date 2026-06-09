@@ -20,26 +20,32 @@ package org.apache.hadoop.hdfs.server.namenode;
 import java.io.IOException;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.util.Time;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Ensure during large directory delete, namenode does not block until the 
  * deletion completes and handles new requests from other clients
  */
 public class TestLargeDirectoryDelete {
-  private static final Log LOG = LogFactory.getLog(TestLargeDirectoryDelete.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestLargeDirectoryDelete.class);
   private static final Configuration CONF = new HdfsConfiguration();
   private static final int TOTAL_BLOCKS = 10000;
   private MiniDFSCluster mc = null;
@@ -73,13 +79,13 @@ public class TestLargeDirectoryDelete {
       createFile(filename, 100);
     }
   }
-  
+
   private int getBlockCount() {
-    Assert.assertNotNull("Null cluster", mc);
-    Assert.assertNotNull("No Namenode in cluster", mc.getNameNode());
+    assertNotNull(mc, "Null cluster");
+    assertNotNull(mc.getNameNode(), "No Namenode in cluster");
     FSNamesystem namesystem = mc.getNamesystem();
-    Assert.assertNotNull("Null Namesystem in cluster", namesystem);
-    Assert.assertNotNull("Null Namesystem.blockmanager", namesystem.getBlockManager());
+    assertNotNull(namesystem, "Null Namesystem in cluster");
+    assertNotNull(namesystem.getBlockManager(), "Null Namesystem.blockmanager");
     return (int) namesystem.getBlocksTotal();
   }
 
@@ -118,11 +124,11 @@ public class TestLargeDirectoryDelete {
           try {
             int blockcount = getBlockCount();
             if (blockcount < TOTAL_BLOCKS && blockcount > 0) {
-              mc.getNamesystem().writeLock();
+              mc.getNamesystem().writeLock(RwLockMode.GLOBAL);
               try {
                 lockOps++;
               } finally {
-                mc.getNamesystem().writeUnlock();
+                mc.getNamesystem().writeUnlock(RwLockMode.GLOBAL, "runThreads");
               }
               Thread.sleep(1);
             }
@@ -137,15 +143,16 @@ public class TestLargeDirectoryDelete {
     threads[1].start();
     
     final long start = Time.now();
-    FSNamesystem.BLOCK_DELETION_INCREMENT = 1;
     mc.getFileSystem().delete(new Path("/root"), true); // recursive delete
+    BlockManagerTestUtil.waitForMarkedDeleteQueueIsEmpty(
+        mc.getNamesystem(0).getBlockManager());
     final long end = Time.now();
     threads[0].endThread();
     threads[1].endThread();
     LOG.info("Deletion took " + (end - start) + "msecs");
     LOG.info("createOperations " + createOps);
     LOG.info("lockOperations " + lockOps);
-    Assert.assertTrue(lockOps + createOps > 0);
+    assertTrue(lockOps + createOps > 0);
     threads[0].rethrow();
     threads[1].rethrow();
   }
@@ -159,16 +166,16 @@ public class TestLargeDirectoryDelete {
    * implementation class, the thread is notified: other threads can wait
    * for it to terminate
    */
-  private abstract class TestThread extends Thread {
+  private abstract class TestThread extends SubjectInheritingThread {
     volatile Throwable thrown;
     protected volatile boolean live = true;
 
     @Override
-    public void run() {
+    public void work() {
       try {
         execute();
       } catch (Throwable throwable) {
-        LOG.warn(throwable);
+        LOG.warn("{}", throwable);
         setThrown(throwable);
       } finally {
         synchronized (this) {
@@ -214,9 +221,9 @@ public class TestLargeDirectoryDelete {
     mc = new MiniDFSCluster.Builder(CONF).build();
     try {
       mc.waitActive();
-      Assert.assertNotNull("No Namenode in cluster", mc.getNameNode());
+      assertNotNull(mc.getNameNode(), "No Namenode in cluster");
       createFiles();
-      Assert.assertEquals(TOTAL_BLOCKS, getBlockCount());
+      assertEquals(TOTAL_BLOCKS, getBlockCount());
       runThreads();
     } finally {
       mc.shutdown();

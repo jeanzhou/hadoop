@@ -80,6 +80,7 @@ public class HtmlQuoting {
    * @param buffer the byte array to take the characters from
    * @param off the index of the first byte to quote
    * @param len the number of bytes to quote
+   * @throws IOException raised on errors performing I/O.
    */
   public static void quoteHtmlChars(OutputStream output, byte[] buffer,
                                     int off, int len) throws IOException {
@@ -119,7 +120,7 @@ public class HtmlQuoting {
       ByteArrayOutputStream buffer = new ByteArrayOutputStream();
       try {
         quoteHtmlChars(buffer, bytes, 0, bytes.length);
-        return buffer.toString("UTF-8");
+        return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
       } catch (IOException ioe) {
         // Won't happen, since it is a bytearrayoutputstream
         return null;

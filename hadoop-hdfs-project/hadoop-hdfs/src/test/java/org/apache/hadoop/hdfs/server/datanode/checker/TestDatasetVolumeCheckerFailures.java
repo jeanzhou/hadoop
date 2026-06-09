@@ -24,9 +24,9 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.*;
 import org.apache.hadoop.util.FakeTimer;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.invocation.InvocationOnMock;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.stubbing.Answer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,11 +35,12 @@ import java.nio.channels.ClosedChannelException;
 import java.util.concurrent.TimeUnit;
 import java.util.*;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
-import static org.mockito.Matchers.anyObject;
-import static org.mockito.Mockito.*;
-
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test a few more conditions not covered by TestDatasetVolumeChecker.
@@ -53,7 +54,7 @@ public class TestDatasetVolumeCheckerFailures {
 
   private static final long MIN_DISK_CHECK_GAP_MS = 1000; // 1 second.
 
-  @Before
+  @BeforeEach
   public void commonInit() {
     timer = new FakeTimer();
     conf = new HdfsConfiguration();
@@ -65,7 +66,8 @@ public class TestDatasetVolumeCheckerFailures {
    * Test timeout in {@link DatasetVolumeChecker#checkAllVolumes}.
    * @throws Exception
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testTimeout() throws Exception {
     // Add a volume whose check routine hangs forever.
     final List<FsVolumeSpi> volumes =
@@ -82,7 +84,7 @@ public class TestDatasetVolumeCheckerFailures {
 
     // Ensure that the hung volume is detected as failed.
     Set<FsVolumeSpi> failedVolumes = checker.checkAllVolumes(dataset);
-    assertThat(failedVolumes.size(), is(1));
+    assertThat(failedVolumes.size()).isEqualTo(1);
   }
 
   /**
@@ -90,7 +92,8 @@ public class TestDatasetVolumeCheckerFailures {
    *
    * @throws Exception
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testCheckingClosedVolume() throws Exception {
     // Add a volume that cannot be referenced.
     final List<FsVolumeSpi> volumes =
@@ -101,15 +104,16 @@ public class TestDatasetVolumeCheckerFailures {
 
     DatasetVolumeChecker checker = new DatasetVolumeChecker(conf, timer);
     Set<FsVolumeSpi> failedVolumes = checker.checkAllVolumes(dataset);
-    assertThat(failedVolumes.size(), is(0));
-    assertThat(checker.getNumSyncDatasetChecks(), is(0L));
+    assertThat(failedVolumes.size()).isEqualTo(0);
+    assertThat(checker.getNumSyncDatasetChecks()).isEqualTo(0L);
 
     // The closed volume should not have been checked as it cannot
     // be referenced.
-    verify(volumes.get(0), times(0)).check(anyObject());
+    verify(volumes.get(0), times(0)).check(any());
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testMinGapIsEnforcedForSyncChecks() throws Exception {
     final List<FsVolumeSpi> volumes =
         TestDatasetVolumeChecker.makeVolumes(1, VolumeCheckResult.HEALTHY);
@@ -118,18 +122,18 @@ public class TestDatasetVolumeCheckerFailures {
     final DatasetVolumeChecker checker = new DatasetVolumeChecker(conf, timer);
 
     checker.checkAllVolumes(dataset);
-    assertThat(checker.getNumSyncDatasetChecks(), is(1L));
+    assertThat(checker.getNumSyncDatasetChecks()).isEqualTo(1L);
 
     // Re-check without advancing the timer. Ensure the check is skipped.
     checker.checkAllVolumes(dataset);
-    assertThat(checker.getNumSyncDatasetChecks(), is(1L));
-    assertThat(checker.getNumSkippedChecks(), is(1L));
+    assertThat(checker.getNumSyncDatasetChecks()).isEqualTo(1L);
+    assertThat(checker.getNumSkippedChecks()).isEqualTo(1L);
 
     // Re-check after advancing the timer. Ensure the check is performed.
     timer.advance(MIN_DISK_CHECK_GAP_MS);
     checker.checkAllVolumes(dataset);
-    assertThat(checker.getNumSyncDatasetChecks(), is(2L));
-    assertThat(checker.getNumSkippedChecks(), is(1L));
+    assertThat(checker.getNumSyncDatasetChecks()).isEqualTo(2L);
+    assertThat(checker.getNumSkippedChecks()).isEqualTo(1L);
   }
 
   /**
@@ -147,15 +151,11 @@ public class TestDatasetVolumeCheckerFailures {
     when(reference.getVolume()).thenReturn(volume);
     when(volume.obtainReference()).thenReturn(reference);
     when(volume.getStorageLocation()).thenReturn(location);
-    when(volume.check(anyObject())).thenAnswer(
-        new Answer<VolumeCheckResult>() {
-        @Override
-        public VolumeCheckResult answer(InvocationOnMock invocation)
-            throws Throwable {
+    when(volume.check(any())).thenAnswer(
+        (Answer<VolumeCheckResult>) invocation -> {
           Thread.sleep(Long.MAX_VALUE);     // Sleep forever.
           return VolumeCheckResult.HEALTHY; // unreachable.
-        }
-      });
+        });
     return volume;
   }
 

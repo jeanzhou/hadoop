@@ -17,6 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CRM_CHECKLOCKTIME_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CRM_CHECKLOCKTIME_ENABLE;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CRM_MAXLOCKTIME_MS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CRM_MAXLOCKTIME_MS_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CRM_SLEEP_TIME_MS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CRM_SLEEP_TIME_MS_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_PATH_BASED_CACHE_BLOCK_MAP_ALLOCATION_PERCENT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_PATH_BASED_CACHE_BLOCK_MAP_ALLOCATION_PERCENT_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_LIST_CACHE_DIRECTIVES_NUM_RESPONSES;
@@ -25,6 +31,8 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_LIST_CACHE_POOLS
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_LIST_CACHE_POOLS_NUM_RESPONSES_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_PATH_BASED_CACHE_REFRESH_INTERVAL_MS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_PATH_BASED_CACHE_REFRESH_INTERVAL_MS_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CACHING_ENABLED_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CACHING_ENABLED_DEFAULT;
 
 import java.io.DataInput;
 import java.io.DataOutputStream;
@@ -35,14 +43,13 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.apache.commons.io.IOUtils;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedListEntries;
@@ -81,15 +88,20 @@ import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress.Co
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Step;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StepType;
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.util.GSet;
 import org.apache.hadoop.util.LightWeightGSet;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.Time;
+
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.HashMultimap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Multimap;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Lists;
 
 /**
  * The Cache Manager handles caching on DataNodes.
@@ -123,8 +135,7 @@ public class CacheManager {
    * listCacheDirectives relies on the ordering of elements in this map
    * to track what has already been listed by the client.
    */
-  private final TreeMap<Long, CacheDirective> directivesById =
-      new TreeMap<Long, CacheDirective>();
+  private final TreeMap<Long, CacheDirective> directivesById = new TreeMap<>();
 
   /**
    * The directive ID to use for a new directive.  IDs always increase, and are
@@ -133,10 +144,10 @@ public class CacheManager {
   private long nextDirectiveId;
 
   /**
-   * Cache directives, sorted by path
+   * Cache directives
    */
-  private final TreeMap<String, List<CacheDirective>> directivesByPath =
-      new TreeMap<String, List<CacheDirective>>();
+  private final Multimap<String, CacheDirective> directivesByPath =
+      HashMultimap.create();
 
   /**
    * Cache pools, sorted by name.
@@ -172,9 +183,27 @@ public class CacheManager {
   private final SerializerCompat serializerCompat = new SerializerCompat();
 
   /**
+   * Whether caching is enabled.
+   *
+   * If caching is disabled, we will not process cache reports or store
+   * information about what is cached where.  We also do not start the
+   * CacheReplicationMonitor thread.  This will save resources, but provide
+   * less functionality.
+   *
+   * Even when caching is disabled, we still store path-based cache
+   * information.  This information is stored in the edit log and fsimage.  We
+   * don't want to lose it just because a configuration setting was turned off.
+   * However, we will not act on this information if caching is disabled.
+   */
+  private final boolean enabled;
+
+  /**
    * The CacheReplicationMonitor.
    */
   private CacheReplicationMonitor monitor;
+  private boolean isCheckLockTimeEnable;
+  private long maxLockTimeMs;
+  private long sleepTimeMs;
 
   public static final class PersistState {
     public final CacheManagerSection section;
@@ -194,6 +223,8 @@ public class CacheManager {
     this.namesystem = namesystem;
     this.blockManager = blockManager;
     this.nextDirectiveId = 1;
+    this.enabled = conf.getBoolean(DFS_NAMENODE_CACHING_ENABLED_KEY,
+        DFS_NAMENODE_CACHING_ENABLED_DEFAULT);
     this.maxListCachePoolsResponses = conf.getInt(
         DFS_NAMENODE_LIST_CACHE_POOLS_NUM_RESPONSES,
         DFS_NAMENODE_LIST_CACHE_POOLS_NUM_RESPONSES_DEFAULT);
@@ -211,10 +242,32 @@ public class CacheManager {
         DFS_NAMENODE_PATH_BASED_CACHE_BLOCK_MAP_ALLOCATION_PERCENT);
       cachedBlocksPercent = MIN_CACHED_BLOCKS_PERCENT;
     }
-    this.cachedBlocks = new LightWeightGSet<CachedBlock, CachedBlock>(
+    this.cachedBlocks = enabled ? new LightWeightGSet<CachedBlock, CachedBlock>(
           LightWeightGSet.computeCapacity(cachedBlocksPercent,
-              "cachedBlocks"));
+              "cachedBlocks")) : new LightWeightGSet<>(0);
+    this.isCheckLockTimeEnable = conf.getBoolean(
+        DFS_NAMENODE_CRM_CHECKLOCKTIME_ENABLE,
+        DFS_NAMENODE_CRM_CHECKLOCKTIME_DEFAULT);
+    this.maxLockTimeMs = conf.getLong(DFS_NAMENODE_CRM_MAXLOCKTIME_MS,
+        DFS_NAMENODE_CRM_MAXLOCKTIME_MS_DEFAULT);
+    this.sleepTimeMs = conf.getLong(DFS_NAMENODE_CRM_SLEEP_TIME_MS,
+        DFS_NAMENODE_CRM_SLEEP_TIME_MS_DEFAULT);
+  }
 
+  public boolean isEnabled() {
+    return enabled;
+  }
+
+  public boolean isCheckLockTimeEnable() {
+    return isCheckLockTimeEnable;
+  }
+
+  public long getMaxLockTimeMs() {
+    return this.maxLockTimeMs;
+  }
+
+  public long getSleepTimeMs() {
+    return this.sleepTimeMs;
   }
 
   /**
@@ -229,6 +282,12 @@ public class CacheManager {
   }
 
   public void startMonitorThread() {
+    if (!isEnabled()) {
+      LOG.info("Not starting CacheReplicationMonitor as name-node caching" +
+              " is disabled.");
+      return;
+    }
+
     crmLock.lock();
     try {
       if (this.monitor == null) {
@@ -242,12 +301,16 @@ public class CacheManager {
   }
 
   public void stopMonitorThread() {
+    if (!isEnabled()) {
+      return;
+    }
+
     crmLock.lock();
     try {
       if (this.monitor != null) {
         CacheReplicationMonitor prevMonitor = this.monitor;
         this.monitor = null;
-        IOUtils.closeQuietly(prevMonitor);
+        IOUtils.closeStream(prevMonitor);
       }
     } finally {
       crmLock.unlock();
@@ -255,7 +318,7 @@ public class CacheManager {
   }
 
   public void clearDirectiveStats() {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     for (CacheDirective directive : directivesById.values()) {
       directive.resetStatistics();
     }
@@ -265,7 +328,7 @@ public class CacheManager {
    * @return Unmodifiable view of the collection of CachePools.
    */
   public Collection<CachePool> getCachePools() {
-    assert namesystem.hasReadLock();
+    assert namesystem.hasReadLock(RwLockMode.FS);
     return Collections.unmodifiableCollection(cachePools.values());
   }
 
@@ -273,18 +336,18 @@ public class CacheManager {
    * @return Unmodifiable view of the collection of CacheDirectives.
    */
   public Collection<CacheDirective> getCacheDirectives() {
-    assert namesystem.hasReadLock();
+    assert namesystem.hasReadLock(RwLockMode.FS);
     return Collections.unmodifiableCollection(directivesById.values());
   }
   
   @VisibleForTesting
   public GSet<CachedBlock, CachedBlock> getCachedBlocks() {
-    assert namesystem.hasReadLock();
+    assert namesystem.hasReadLock(RwLockMode.BM);
     return cachedBlocks;
   }
 
   private long getNextDirectiveId() throws IOException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     if (nextDirectiveId >= Long.MAX_VALUE - 1) {
       throw new IOException("No more available IDs.");
     }
@@ -483,12 +546,7 @@ public class CacheManager {
     assert addedDirective;
     directivesById.put(directive.getId(), directive);
     String path = directive.getPath();
-    List<CacheDirective> directives = directivesByPath.get(path);
-    if (directives == null) {
-      directives = new ArrayList<CacheDirective>(1);
-      directivesByPath.put(path, directives);
-    }
-    directives.add(directive);
+    directivesByPath.put(path, directive);
     // Fix up pool stats
     CacheDirectiveStats stats =
         computeNeeded(directive.getPath(), directive.getReplication());
@@ -517,7 +575,7 @@ public class CacheManager {
   public CacheDirectiveInfo addDirective(
       CacheDirectiveInfo info, FSPermissionChecker pc, EnumSet<CacheFlag> flags)
       throws IOException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     CacheDirective directive;
     try {
       CachePool pool = getCachePool(validatePoolName(info));
@@ -595,7 +653,7 @@ public class CacheManager {
 
   public void modifyDirective(CacheDirectiveInfo info,
       FSPermissionChecker pc, EnumSet<CacheFlag> flags) throws IOException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     String idString =
         (info.getId() == null) ?
             "(null)" : info.getId().toString();
@@ -646,16 +704,12 @@ public class CacheManager {
 
   private void removeInternal(CacheDirective directive)
       throws InvalidRequestException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     // Remove the corresponding entry in directivesByPath.
     String path = directive.getPath();
-    List<CacheDirective> directives = directivesByPath.get(path);
-    if (directives == null || !directives.remove(directive)) {
-      throw new InvalidRequestException("Failed to locate entry " +
-          directive.getId() + " by path " + directive.getPath());
-    }
-    if (directives.size() == 0) {
-      directivesByPath.remove(path);
+    if (!directivesByPath.remove(path, directive)) {
+      throw new InvalidRequestException("Failed to locate entry "
+          + directive.getId() + " by path " + directive.getPath());
     }
     // Fix up the stats from removing the pool
     final CachePool pool = directive.getPool();
@@ -671,7 +725,7 @@ public class CacheManager {
 
   public void removeDirective(long id, FSPermissionChecker pc)
       throws IOException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     try {
       CacheDirective directive = getById(id);
       checkWritePermission(pc, directive.getPool());
@@ -687,7 +741,7 @@ public class CacheManager {
         listCacheDirectives(long prevId,
             CacheDirectiveInfo filter,
             FSPermissionChecker pc) throws IOException {
-    assert namesystem.hasReadLock();
+    assert namesystem.hasReadLock(RwLockMode.FS);
     final int NUM_PRE_ALLOCATED_ENTRIES = 16;
     String filterPath = null;
     if (filter.getPath() != null) {
@@ -762,7 +816,7 @@ public class CacheManager {
    */
   public CachePoolInfo addCachePool(CachePoolInfo info)
       throws IOException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     CachePool pool;
     try {
       CachePoolInfo.validate(info);
@@ -792,7 +846,7 @@ public class CacheManager {
    */
   public void modifyCachePool(CachePoolInfo info)
       throws IOException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     StringBuilder bld = new StringBuilder();
     try {
       CachePoolInfo.validate(info);
@@ -862,7 +916,7 @@ public class CacheManager {
    */
   public void removeCachePool(String poolName)
       throws IOException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.FS);
     try {
       CachePoolInfo.validateName(poolName);
       CachePool pool = cachePools.remove(poolName);
@@ -874,7 +928,7 @@ public class CacheManager {
       Iterator<CacheDirective> iter = pool.getDirectiveList().iterator();
       while (iter.hasNext()) {
         CacheDirective directive = iter.next();
-        directivesByPath.remove(directive.getPath());
+        directivesByPath.removeAll(directive.getPath());
         directivesById.remove(directive.getId());
         iter.remove();
       }
@@ -888,7 +942,7 @@ public class CacheManager {
 
   public BatchedListEntries<CachePoolEntry>
       listCachePools(FSPermissionChecker pc, String prevKey) {
-    assert namesystem.hasReadLock();
+    assert namesystem.hasReadLock(RwLockMode.FS);
     final int NUM_PRE_ALLOCATED_ENTRIES = 16;
     ArrayList<CachePoolEntry> results = 
         new ArrayList<CachePoolEntry>(NUM_PRE_ALLOCATED_ENTRIES);
@@ -912,6 +966,11 @@ public class CacheManager {
     }
   }
 
+  @SuppressFBWarnings(
+      value="EC_UNRELATED_TYPES",
+      justification="HDFS-15255 Asked Wei-Chiu and Pifta to review this" +
+          " warning and we all agree the code is OK and the warning is not " +
+          "needed")
   private void setCachedLocations(LocatedBlock block) {
     CachedBlock cachedBlock =
         new CachedBlock(block.getBlock().getBlockId(),
@@ -945,7 +1004,12 @@ public class CacheManager {
 
   public final void processCacheReport(final DatanodeID datanodeID,
       final List<Long> blockIds) throws IOException {
-    namesystem.writeLock();
+    if (!enabled) {
+      LOG.debug("Ignoring cache report from {} because {} = false. number of blocks: {}",
+          datanodeID, DFS_NAMENODE_CACHING_ENABLED_KEY, blockIds.size());
+      return;
+    }
+    namesystem.writeLock(RwLockMode.BM);
     final long startTime = Time.monotonicNow();
     final long endTime;
     try {
@@ -959,7 +1023,7 @@ public class CacheManager {
       processCacheReportImpl(datanode, blockIds);
     } finally {
       endTime = Time.monotonicNow();
-      namesystem.writeUnlock("processCacheReport");
+      namesystem.writeUnlock(RwLockMode.BM, "processCacheReport");
     }
 
     // Log the block report processing stats from Namenode perspective
@@ -967,9 +1031,8 @@ public class CacheManager {
     if (metrics != null) {
       metrics.addCacheBlockReport((int) (endTime - startTime));
     }
-    LOG.debug("Processed cache report from {}, blocks: {}, " +
-        "processing time: {} msecs", datanodeID, blockIds.size(), 
-        (endTime - startTime));
+    LOG.debug("Processed cache report from {}, blocks: {}, processing time: {} msecs",
+        datanodeID, blockIds.size(), (endTime - startTime));
   }
 
   private void processCacheReportImpl(final DatanodeDescriptor datanode,
@@ -1042,6 +1105,10 @@ public class CacheManager {
       if (p.getLimit() != null)
         b.setLimit(p.getLimit());
 
+      if (p.getMaxRelativeExpiryMs() != null) {
+        b.setMaxRelativeExpiry(p.getMaxRelativeExpiryMs());
+      }
+
       pools.add(b.build());
     }
 
@@ -1107,6 +1174,10 @@ public class CacheManager {
       if (p.hasLimit())
         info.setLimit(p.getLimit());
 
+      if (p.hasMaxRelativeExpiry()) {
+        info.setMaxRelativeExpiryMs(p.getMaxRelativeExpiry());
+      }
+
       addCachePool(info);
     }
 
@@ -1133,12 +1204,7 @@ public class CacheManager {
       throw new IOException("A directive with ID " + directive.getId()
           + " already exists");
     }
-    List<CacheDirective> directives = directivesByPath.get(directive.getPath());
-    if (directives == null) {
-      directives = new LinkedList<CacheDirective>();
-      directivesByPath.put(directive.getPath(), directives);
-    }
-    directives.add(directive);
+    directivesByPath.put(directive.getPath(), directive);
   }
 
   private final class SerializerCompat {

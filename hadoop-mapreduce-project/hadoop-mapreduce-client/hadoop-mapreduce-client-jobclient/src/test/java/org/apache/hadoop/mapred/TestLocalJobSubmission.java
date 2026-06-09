@@ -31,18 +31,59 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.SleepJob;
+import org.apache.hadoop.mapreduce.security.IntermediateEncryptedStream;
+import org.apache.hadoop.mapreduce.security.SpillCallBackPathsFinder;
+import org.apache.hadoop.mapreduce.util.MRJobConfUtil;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.ToolRunner;
-import org.junit.Test;
 
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * check for the job submission options of
  * -jt local -libjars
  */
 public class TestLocalJobSubmission {
-  private static Path TEST_ROOT_DIR =
-      new Path(System.getProperty("test.build.data","/tmp"));
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestLocalJobSubmission.class);
+
+  private static File testRootDir;
+
+  private File unitTestDir;
+  private Path jarPath;
+  private Configuration config;
+
+  @BeforeAll
+  public static void setupClass() throws Exception {
+    // setup the test root directory
+    testRootDir =
+        GenericTestUtils.setupTestRootDir(TestLocalJobSubmission.class);
+  }
+
+  @BeforeEach
+  public void setup(TestInfo testInfo) throws IOException {
+    unitTestDir = new File(testRootDir, testInfo.getDisplayName());
+    unitTestDir.mkdirs();
+    config = createConfig();
+    jarPath = makeJar(new Path(unitTestDir.getAbsolutePath(), "test.jar"));
+  }
+
+  private Configuration createConfig() {
+    // Set the temp directories a subdir of the test directory.
+    Configuration conf =
+        MRJobConfUtil.setLocalDirectoriesConfigForTesting(null, unitTestDir);
+    conf.set(MRConfig.FRAMEWORK_NAME, "local");
+    return conf;
+  }
 
   /**
    * Test the local job submission options of -jt local -libjars.
@@ -51,12 +92,9 @@ public class TestLocalJobSubmission {
    */
   @Test
   public void testLocalJobLibjarsOption() throws IOException {
-    Configuration conf = new Configuration();
-
-    testLocalJobLibjarsOption(conf);
-
-    conf.setBoolean(Job.USE_WILDCARD_FOR_LIBJARS, false);
-    testLocalJobLibjarsOption(conf);
+    testLocalJobLibjarsOption(config);
+    config.setBoolean(Job.USE_WILDCARD_FOR_LIBJARS, false);
+    testLocalJobLibjarsOption(config);
   }
 
   /**
@@ -67,8 +105,6 @@ public class TestLocalJobSubmission {
    */
   private void testLocalJobLibjarsOption(Configuration conf)
       throws IOException {
-    Path jarPath = makeJar(new Path(TEST_ROOT_DIR, "test.jar"));
-
     conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost:9000");
     conf.set(MRConfig.FRAMEWORK_NAME, "local");
     final String[] args = {
@@ -79,11 +115,10 @@ public class TestLocalJobSubmission {
     try {
       res = ToolRunner.run(conf, new SleepJob(), args);
     } catch (Exception e) {
-      System.out.println("Job failed with " + e.getLocalizedMessage());
-      e.printStackTrace(System.out);
+      LOG.error("Job failed with {}", e.getLocalizedMessage(), e);
       fail("Job failed");
     }
-    assertEquals("dist job res is not 0:", 0, res);
+    assertEquals(0, res, "dist job res is not 0:");
   }
 
   /**
@@ -93,21 +128,23 @@ public class TestLocalJobSubmission {
    */
   @Test
   public void testLocalJobEncryptedIntermediateData() throws IOException {
-    Configuration conf = new Configuration();
-    conf.set(MRConfig.FRAMEWORK_NAME, "local");
-    conf.setBoolean(MRJobConfig.MR_ENCRYPTED_INTERMEDIATE_DATA, true);
+    config = MRJobConfUtil.initEncryptedIntermediateConfigsForTesting(config);
     final String[] args = {
         "-m", "1", "-r", "1", "-mt", "1", "-rt", "1"
     };
     int res = -1;
     try {
-      res = ToolRunner.run(conf, new SleepJob(), args);
+      SpillCallBackPathsFinder spillInjector =
+          (SpillCallBackPathsFinder) IntermediateEncryptedStream
+              .setSpillCBInjector(new SpillCallBackPathsFinder());
+      res = ToolRunner.run(config, new SleepJob(), args);
+      assertTrue(spillInjector.getEncryptedSpilledFiles().size() > 0,
+          "No spill occurred");
     } catch (Exception e) {
-      System.out.println("Job failed with " + e.getLocalizedMessage());
-      e.printStackTrace(System.out);
+      LOG.error("Job failed with {}", e.getLocalizedMessage(), e);
       fail("Job failed");
     }
-    assertEquals("dist job res is not 0:", 0, res);
+    assertEquals(0, res, "dist job res is not 0:");
   }
 
   /**
@@ -116,15 +153,13 @@ public class TestLocalJobSubmission {
    */
   @Test
   public void testJobMaxMapConfig() throws Exception {
-    Configuration conf = new Configuration();
-    conf.set(MRConfig.FRAMEWORK_NAME, "local");
-    conf.setInt(MRJobConfig.JOB_MAX_MAP, 0);
+    config.setInt(MRJobConfig.JOB_MAX_MAP, 0);
     final String[] args = {
         "-m", "1", "-r", "1", "-mt", "1", "-rt", "1"
     };
     int res = -1;
     try {
-      res = ToolRunner.run(conf, new SleepJob(), args);
+      res = ToolRunner.run(config, new SleepJob(), args);
       fail("Job should fail");
     } catch (IllegalArgumentException e) {
       assertTrue(e.getLocalizedMessage().contains(
@@ -139,23 +174,19 @@ public class TestLocalJobSubmission {
    */
   @Test
   public void testLocalJobFilesOption() throws IOException {
-    Path jarPath = makeJar(new Path(TEST_ROOT_DIR, "test.jar"));
-
-    Configuration conf = new Configuration();
-    conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost:9000");
-    conf.set(MRConfig.FRAMEWORK_NAME, "local");
-    final String[] args =
-        {"-jt", "local", "-files", jarPath.toString(), "-m", "1", "-r", "1",
-            "-mt", "1", "-rt", "1"};
+    config.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost:9000");
+    final String[] args = {
+        "-jt", "local", "-files", jarPath.toString(),
+        "-m", "1", "-r", "1", "-mt", "1", "-rt", "1"
+    };
     int res = -1;
     try {
-      res = ToolRunner.run(conf, new SleepJob(), args);
+      res = ToolRunner.run(config, new SleepJob(), args);
     } catch (Exception e) {
-      System.out.println("Job failed with " + e.getLocalizedMessage());
-      e.printStackTrace(System.out);
+      LOG.error("Job failed with {}", e.getLocalizedMessage(), e);
       fail("Job failed");
     }
-    assertEquals("dist job res is not 0:", 0, res);
+    assertEquals(0, res, "dist job res is not 0:");
   }
 
   /**
@@ -165,27 +196,22 @@ public class TestLocalJobSubmission {
    */
   @Test
   public void testLocalJobArchivesOption() throws IOException {
-    Path jarPath = makeJar(new Path(TEST_ROOT_DIR, "test.jar"));
-
-    Configuration conf = new Configuration();
-    conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost:9000");
-    conf.set(MRConfig.FRAMEWORK_NAME, "local");
+    config.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost:9000");
     final String[] args =
         {"-jt", "local", "-archives", jarPath.toString(), "-m", "1", "-r",
             "1", "-mt", "1", "-rt", "1"};
     int res = -1;
     try {
-      res = ToolRunner.run(conf, new SleepJob(), args);
+      res = ToolRunner.run(config, new SleepJob(), args);
     } catch (Exception e) {
-      System.out.println("Job failed with " + e.getLocalizedMessage());
-      e.printStackTrace(System.out);
+      LOG.error("Job failed with {}" + e.getLocalizedMessage(), e);
       fail("Job failed");
     }
-    assertEquals("dist job res is not 0:", 0, res);
+    assertEquals(0, res, "dist job res is not 0:");
   }
 
   private Path makeJar(Path p) throws IOException {
-    FileOutputStream fos = new FileOutputStream(new File(p.toString()));
+    FileOutputStream fos = new FileOutputStream(p.toString());
     JarOutputStream jos = new JarOutputStream(fos);
     ZipEntry ze = new ZipEntry("test.jar.inside");
     jos.putNextEntry(ze);

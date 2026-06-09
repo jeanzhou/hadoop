@@ -29,6 +29,7 @@ import java.util.regex.Pattern;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalFileSystem;
@@ -37,6 +38,13 @@ import org.apache.hadoop.fs.PathIOException;
 import org.apache.hadoop.fs.PathIsDirectoryException;
 import org.apache.hadoop.fs.PathIsNotDirectoryException;
 import org.apache.hadoop.fs.PathNotFoundException;
+import org.apache.hadoop.fs.RemoteIterator;
+
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY_SEQUENTIAL;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_LENGTH;
+import static org.apache.hadoop.util.functional.FutureIO.awaitFuture;
+import static org.apache.hadoop.util.functional.RemoteIterators.mappingRemoteIterator;
 
 /**
  * Encapsulates a Path (path), its FileStatus (stat), and its FileSystem (fs).
@@ -277,6 +285,20 @@ public class PathData implements Comparable<PathData> {
   }
 
   /**
+   * Returns a RemoteIterator for PathData objects of the items contained in the
+   * given directory.
+   * @return remote iterator of PathData objects for its children
+   * @throws IOException if anything else goes wrong...
+   */
+  public RemoteIterator<PathData> getDirectoryContentsIterator()
+      throws IOException {
+    checkIfExists(FileTypeRequirement.SHOULD_BE_DIRECTORY);
+    final RemoteIterator<FileStatus> stats = this.fs.listStatusIterator(path);
+    return mappingRemoteIterator(stats,
+        file -> new PathData(fs, getStringForChildPath(file.getPath()), file));
+  }
+
+  /**
    * Creates a new object for a child entry in this directory
    * @param child the basename will be appended to this object's path
    * @return PathData for the child
@@ -457,9 +479,9 @@ public class PathData implements Comparable<PathData> {
       return decodedRemainder;
     } else {
       StringBuilder buffer = new StringBuilder();
-      buffer.append(scheme);
-      buffer.append(":");
-      buffer.append(decodedRemainder);
+      buffer.append(scheme)
+          .append(":")
+          .append(decodedRemainder);
       return buffer.toString();
     }
   }
@@ -583,5 +605,36 @@ public class PathData implements Comparable<PathData> {
   @Override
   public int hashCode() {
     return path.hashCode();
+  }
+
+
+  /**
+   * Open a file for sequential IO.
+   * <p>
+   * This uses FileSystem.openFile() to request sequential IO;
+   * the file status is also passed in.
+   * Filesystems may use to optimize their IO.
+   * </p>
+   * @return an input stream
+   * @throws IOException failure
+   */
+  protected FSDataInputStream openForSequentialIO()
+      throws IOException {
+    return openFile(FS_OPTION_OPENFILE_READ_POLICY_SEQUENTIAL);
+  }
+
+  /**
+   * Open a file.
+   * @param policy fadvise policy.
+   * @return an input stream
+   * @throws IOException failure
+   */
+  protected FSDataInputStream openFile(final String policy) throws IOException {
+    return awaitFuture(fs.openFile(path)
+        .opt(FS_OPTION_OPENFILE_READ_POLICY,
+            policy)
+        .optLong(FS_OPTION_OPENFILE_LENGTH,
+            stat.getLen())   // file length hint for object stores
+        .build());
   }
 }

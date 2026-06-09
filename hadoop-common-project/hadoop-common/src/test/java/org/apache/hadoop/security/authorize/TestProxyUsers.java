@@ -17,10 +17,9 @@
  */
 package org.apache.hadoop.security.authorize;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
-
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Collection;
@@ -31,9 +30,11 @@ import org.apache.hadoop.security.Groups;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.NativeCodeLoader;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.*;
 
 
 public class TestProxyUsers {
@@ -334,43 +335,39 @@ public class TestProxyUsers {
     assertNotAuthorized(proxyUserUgi, "10.221.0.0");
   }
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testNullUser() throws Exception {
-    Configuration conf = new Configuration();
-    conf.set(
-        DefaultImpersonationProvider.getTestProvider().
-            getProxySuperuserGroupConfKey(REAL_USER_NAME),
-        "*");
-    conf.set(
-        DefaultImpersonationProvider.getTestProvider().
-            getProxySuperuserIpConfKey(REAL_USER_NAME),
-        PROXY_IP_RANGE);
-    ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
-    // user is null
-    ProxyUsers.authorize(null, "10.222.0.0");
+    assertThrows(IllegalArgumentException.class, () -> {
+      Configuration conf = new Configuration();
+      conf.set(DefaultImpersonationProvider.getTestProvider().
+          getProxySuperuserGroupConfKey(REAL_USER_NAME), "*");
+      conf.set(DefaultImpersonationProvider.getTestProvider().
+          getProxySuperuserIpConfKey(REAL_USER_NAME), PROXY_IP_RANGE);
+      ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+      // user is null
+      ProxyUsers.authorize(null, "10.222.0.0");
+    });
   }
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testNullIpAddress() throws Exception {
-    Configuration conf = new Configuration();
-    conf.set(
-        DefaultImpersonationProvider.getTestProvider().
-            getProxySuperuserGroupConfKey(REAL_USER_NAME),
-        "*");
-    conf.set(
-        DefaultImpersonationProvider.getTestProvider().
-            getProxySuperuserIpConfKey(REAL_USER_NAME),
-        PROXY_IP_RANGE);
-    ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+    assertThrows(IllegalArgumentException.class, () -> {
+      Configuration conf = new Configuration();
+      conf.set(DefaultImpersonationProvider.getTestProvider().
+          getProxySuperuserGroupConfKey(REAL_USER_NAME), "*");
+      conf.set(DefaultImpersonationProvider.getTestProvider().
+          getProxySuperuserIpConfKey(REAL_USER_NAME), PROXY_IP_RANGE);
+      ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
 
-    // First try proxying a group that's allowed
-    UserGroupInformation realUserUgi = UserGroupInformation
-        .createRemoteUser(REAL_USER_NAME);
-    UserGroupInformation proxyUserUgi = UserGroupInformation.createProxyUserForTesting(
-        PROXY_USER_NAME, realUserUgi, GROUP_NAMES);
+      // First try proxying a group that's allowed
+      UserGroupInformation realUserUgi = UserGroupInformation
+          .createRemoteUser(REAL_USER_NAME);
+      UserGroupInformation proxyUserUgi = UserGroupInformation.createProxyUserForTesting(
+          PROXY_USER_NAME, realUserUgi, GROUP_NAMES);
 
-    // remote address is null
-    ProxyUsers.authorize(proxyUserUgi, null);
+      // remote address is null
+      ProxyUsers.authorize(proxyUserUgi, (InetAddress) null);
+    });
   }
 
   @Test
@@ -474,16 +471,17 @@ public class TestProxyUsers {
     assertEquals (GROUP_NAMES.length, groupsToBeProxied.size());
   }
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testProxyUsersWithNullPrefix() throws Exception {
-    ProxyUsers.refreshSuperUserGroupsConfiguration(new Configuration(false), 
-        null);
+    assertThrows(IllegalArgumentException.class,
+        ()-> ProxyUsers.refreshSuperUserGroupsConfiguration(new Configuration(false), null));
   }
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testProxyUsersWithEmptyPrefix() throws Exception {
-    ProxyUsers.refreshSuperUserGroupsConfiguration(new Configuration(false), 
-        "");
+    assertThrows(IllegalArgumentException.class, () -> {
+      ProxyUsers.refreshSuperUserGroupsConfiguration(new Configuration(false), "");
+    });
   }
 
   @Test
@@ -533,9 +531,21 @@ public class TestProxyUsers {
     assertNotAuthorized(proxyUserUgi, "1.2.3.4");
   }
 
+  private static InetAddress toFakeAddress(String ip) {
+    try {
+      InetAddress addr = InetAddress.getByName(ip);
+      return InetAddress.getByAddress(ip.replace('.', '-'),
+          addr.getAddress());
+    } catch (UnknownHostException e) {
+      throw new IllegalArgumentException(e);
+    }
+  }
+
   private void assertNotAuthorized(UserGroupInformation proxyUgi, String host) {
     try {
+      // test both APIs.
       ProxyUsers.authorize(proxyUgi, host);
+      ProxyUsers.authorize(proxyUgi, toFakeAddress(host));
       fail("Allowed authorization of " + proxyUgi + " from " + host);
     } catch (AuthorizationException e) {
       // Expected
@@ -544,7 +554,9 @@ public class TestProxyUsers {
   
   private void assertAuthorized(UserGroupInformation proxyUgi, String host) {
     try {
+      // test both APIs.
       ProxyUsers.authorize(proxyUgi, host);
+      ProxyUsers.authorize(proxyUgi, toFakeAddress(host));
     } catch (AuthorizationException e) {
       fail("Did not allow authorization of " + proxyUgi + " from " + host);
     }
@@ -560,9 +572,9 @@ public class TestProxyUsers {
      * Authorize a user (superuser) to impersonate another user (user1) if the 
      * superuser belongs to the group "sudo_user1" .
      */
-
-    public void authorize(UserGroupInformation user, 
-        String remoteAddress) throws AuthorizationException{
+    @Override
+    public void authorize(UserGroupInformation user,
+        InetAddress remoteAddress) throws AuthorizationException{
       UserGroupInformation superUser = user.getRealUser();
 
       String sudoGroupName = "sudo_" + user.getShortUserName();
@@ -571,6 +583,7 @@ public class TestProxyUsers {
             + " is not allowed to impersonate " + user.getUserName());
       }
     }
+
 
     @Override
     public void setConf(Configuration conf) {
@@ -597,7 +610,6 @@ public class TestProxyUsers {
         );
     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
 
-
     // First try proxying a group that's allowed
     UserGroupInformation realUserUgi = UserGroupInformation
         .createRemoteUser(REAL_USER_NAME);
@@ -608,7 +620,8 @@ public class TestProxyUsers {
     SecureRandom sr = new SecureRandom();
     for (int i=1; i < 1000000; i++){
       try {
-        ProxyUsers.authorize(proxyUserUgi,  "1.2.3."+ sr.nextInt(testRange));
+        ProxyUsers.authorize(proxyUserUgi,
+            toFakeAddress("1.2.3."+ sr.nextInt(testRange)));
        } catch (AuthorizationException e) {
       }
     }

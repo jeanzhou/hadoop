@@ -21,9 +21,11 @@ import java.io.IOException;
 import java.util.EnumMap;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.server.federation.resolver.order.AvailableSpaceResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.DestinationOrder;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.HashFirstResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.HashResolver;
+import org.apache.hadoop.hdfs.server.federation.resolver.order.LeaderFollowerResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.LocalResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.OrderedResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.RandomResolver;
@@ -31,7 +33,7 @@ import org.apache.hadoop.hdfs.server.federation.router.Router;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Mount table resolver that supports multiple locations for each mount entry.
@@ -43,8 +45,8 @@ import com.google.common.annotations.VisibleForTesting;
  * <p>
  * Does the Mount table entry for this path have multiple destinations?
  * <ul>
- * <li>No -> Return the location
- * <li>Yes -> Return all locations, prioritizing the best guess from the
+ * <li>No: Return the location
+ * <li>Yes: Return all locations, prioritizing the best guess from the
  * consistent hashing algorithm.
  * </ul>
  * <p>
@@ -77,6 +79,8 @@ public class MultipleDestinationMountTableResolver extends MountTableResolver {
     addResolver(DestinationOrder.LOCAL, new LocalResolver(conf, router));
     addResolver(DestinationOrder.RANDOM, new RandomResolver());
     addResolver(DestinationOrder.HASH_ALL, new HashResolver());
+    addResolver(DestinationOrder.SPACE, new AvailableSpaceResolver(conf, router));
+    addResolver(DestinationOrder.LEADER_FOLLOWER, new LeaderFollowerResolver());
   }
 
   @Override
@@ -96,8 +100,9 @@ public class MultipleDestinationMountTableResolver extends MountTableResolver {
 
         // Change the order of the name spaces according to the policy
         if (firstNamespace != null) {
-          // This is the entity in the tree, we need to create our own copy
-          mountTableResult = new PathLocation(mountTableResult, firstNamespace);
+          // Create our own prioritized copy based on the entity in the tree.
+          mountTableResult = PathLocation.prioritizeDestination(
+              mountTableResult, firstNamespace);
           LOG.debug("Ordered locations following {} are {}",
               order, mountTableResult);
         } else {
@@ -112,5 +117,10 @@ public class MultipleDestinationMountTableResolver extends MountTableResolver {
   @VisibleForTesting
   public void addResolver(DestinationOrder order, OrderedResolver resolver) {
     orderedResolvers.put(order, resolver);
+  }
+
+  @VisibleForTesting
+  public OrderedResolver getOrderedResolver(DestinationOrder order) {
+    return orderedResolvers.get(order);
   }
 }

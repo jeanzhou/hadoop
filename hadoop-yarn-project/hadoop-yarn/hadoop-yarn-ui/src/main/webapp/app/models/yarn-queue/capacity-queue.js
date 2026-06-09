@@ -21,22 +21,35 @@ import Converter from 'yarn-ui/utils/converter';
 
 export default DS.Model.extend({
   name: DS.attr("string"),
+  queuePath: DS.attr("string"),
   children: DS.attr("array"),
   parent: DS.attr("string"),
   capacity: DS.attr("number"),
   partitions: DS.attr("array"),
   partitionMap: DS.attr("object"),
+  resourceUsagesByPartitionMap: DS.attr("object"),
   maxCapacity: DS.attr("number"),
   usedCapacity: DS.attr("number"),
   absCapacity: DS.attr("number"),
   absMaxCapacity: DS.attr("number"),
   absUsedCapacity: DS.attr("number"),
+  weight: DS.attr("number"),
+  normalizedWeight: DS.attr("number"),
+  creationMethod: DS.attr("string"),
+  orderingPolicyInfo: DS.attr("string"),
   state: DS.attr("string"),
   userLimit: DS.attr("number"),
   userLimitFactor: DS.attr("number"),
-  preemptionDisabled: DS.attr("number"),
+  preemptionDisabled: DS.attr("string"),
+  intraQueuePreemptionDisabled: DS.attr("string"),
+  defaultPriority: DS.attr("number"),
   numPendingApplications: DS.attr("number"),
   numActiveApplications: DS.attr("number"),
+  numContainers: DS.attr("number"),
+  maxApplications: DS.attr("number"),
+  maxApplicationsPerUser: DS.attr("number"),
+  nodeLabels: DS.attr("string"),
+  defaultNodeLabelExpression: DS.attr("string"),
   users: DS.hasMany("YarnUser"),
   type: DS.attr("string"),
   resources: DS.attr("object"),
@@ -47,6 +60,14 @@ export default DS.Model.extend({
       return true;
     }
     return len <= 0;
+  }.property("children"),
+
+  isWeightMode: function() {
+   return this.get("weight") !== -1;
+  }.property("children"),
+
+  isFlexibleDynamicQueue: function() {
+    return this.get("creationMethod") === "dynamicFlexible";
   }.property("children"),
 
   capacitiesBarChartData: function() {
@@ -94,7 +115,7 @@ export default DS.Model.extend({
 
   hasUserUsages: function() {
     return this.get("userUsagesDonutChartData").length > 0;
-  }.property(),
+  }.property("userUsagesDonutChartData"),
 
   numOfApplicationsDonutChartData: function() {
     return [

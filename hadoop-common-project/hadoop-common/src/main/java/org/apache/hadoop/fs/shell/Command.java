@@ -33,9 +33,13 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathNotFoundException;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.hadoop.fs.FileUtil.maybeIgnoreMissingDirectory;
+import static org.apache.hadoop.util.functional.RemoteIterators.cleanupRemoteIterator;
 
 /**
  * An abstract class for the execution of a file system command
@@ -74,7 +78,11 @@ abstract public class Command extends Configured {
     err = System.err;
   }
   
-  /** Constructor */
+  /**
+   * Constructor.
+   *
+   * @param conf configuration.
+   */
   protected Command(Configuration conf) {
     super(conf);
   }
@@ -106,7 +114,7 @@ abstract public class Command extends Configured {
    * Execute the command on the input path data. Commands can override to make
    * use of the resolved filesystem.
    * @param pathData The input path with resolved filesystem
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   protected void run(PathData pathData) throws IOException {
     run(pathData.path);
@@ -133,11 +141,19 @@ abstract public class Command extends Configured {
     return exitCode;
   }
 
-  /** sets the command factory for later use */
+  /**
+   * sets the command factory for later use.
+   * @param factory factory.
+   */
   public void setCommandFactory(CommandFactory factory) {
     this.commandFactory = factory;
   }
-  /** retrieves the command factory */
+
+  /**
+   * retrieves the command factory.
+   *
+   * @return command factory.
+   */
   protected CommandFactory getCommandFactory() {
     return this.commandFactory;
   }
@@ -147,16 +163,16 @@ abstract public class Command extends Configured {
    * expand arguments, and then process each argument.
    * <pre>
    * run
-   * |-> {@link #processOptions(LinkedList)}
-   * \-> {@link #processRawArguments(LinkedList)}
-   *      |-> {@link #expandArguments(LinkedList)}
-   *      |   \-> {@link #expandArgument(String)}*
-   *      \-> {@link #processArguments(LinkedList)}
-   *          |-> {@link #processArgument(PathData)}*
-   *          |   |-> {@link #processPathArgument(PathData)}
-   *          |   \-> {@link #processPaths(PathData, PathData...)}
-   *          |        \-> {@link #processPath(PathData)}*
-   *          \-> {@link #processNonexistentPath(PathData)}
+   * |{@literal ->} {@link #processOptions(LinkedList)}
+   * \{@literal ->} {@link #processRawArguments(LinkedList)}
+   *      |{@literal ->} {@link #expandArguments(LinkedList)}
+   *      |   \{@literal ->} {@link #expandArgument(String)}*
+   *      \{@literal ->} {@link #processArguments(LinkedList)}
+   *          |{@literal ->} {@link #processArgument(PathData)}*
+   *          |   |{@literal ->} {@link #processPathArgument(PathData)}
+   *          |   \{@literal ->} {@link #processPaths(PathData, PathData...)}
+   *          |        \{@literal ->} {@link #processPath(PathData)}*
+   *          \{@literal ->} {@link #processNonexistentPath(PathData)}
    * </pre>
    * Most commands will chose to implement just
    * {@link #processOptions(LinkedList)} and {@link #processPath(PathData)}
@@ -198,7 +214,7 @@ abstract public class Command extends Configured {
    * IllegalArgumentException is thrown, the FsShell object will print the
    * short usage of the command.
    * @param args the command line arguments
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   protected void processOptions(LinkedList<String> args) throws IOException {}
 
@@ -208,7 +224,7 @@ abstract public class Command extends Configured {
    * {@link #expandArguments(LinkedList)} and pass the resulting list to
    * {@link #processArguments(LinkedList)} 
    * @param args the list of argument strings
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   protected void processRawArguments(LinkedList<String> args)
   throws IOException {
@@ -291,8 +307,8 @@ abstract public class Command extends Configured {
   /**
    *  This is the last chance to modify an argument before going into the
    *  (possibly) recursive {@link #processPaths(PathData, PathData...)}
-   *  -> {@link #processPath(PathData)} loop.  Ex.  ls and du use this to
-   *  expand out directories.
+   *  {@literal ->} {@link #processPath(PathData)} loop.  Ex.  ls and du use
+   *  this to expand out directories.
    *  @param item a {@link PathData} representing a path which exists
    *  @throws IOException if anything goes wrong... 
    */
@@ -325,18 +341,67 @@ abstract public class Command extends Configured {
    */
   protected void processPaths(PathData parent, PathData ... items)
   throws IOException {
-    // TODO: this really should be iterative
     for (PathData item : items) {
       try {
-        processPath(item);
-        if (recursive && isPathRecursable(item)) {
-          recursePath(item);
-        }
-        postProcessPath(item);
+        processPathInternal(item);
       } catch (IOException e) {
         displayError(e);
       }
     }
+  }
+
+  /**
+   * Iterates over the given expanded paths and invokes
+   * {@link #processPath(PathData)} on each element. If "recursive" is true,
+   * will do a post-visit DFS on directories.
+   * @param parent if called via a recurse, will be the parent dir, else null
+   * @param itemsIterator a iterator of {@link PathData} objects to process
+   * @throws IOException if anything goes wrong...
+   */
+  protected void processPaths(PathData parent,
+      RemoteIterator<PathData> itemsIterator) throws IOException {
+    int groupSize = getListingGroupSize();
+    if (groupSize == 0) {
+      // No grouping of contents required.
+      while (itemsIterator.hasNext()) {
+        processPaths(parent, itemsIterator.next());
+      }
+    } else {
+      List<PathData> items = new ArrayList<PathData>(groupSize);
+      while (itemsIterator.hasNext()) {
+        items.add(itemsIterator.next());
+        if (!itemsIterator.hasNext() || items.size() == groupSize) {
+          processPaths(parent, items.toArray(new PathData[items.size()]));
+          items.clear();
+        }
+      }
+    }
+    cleanupRemoteIterator(itemsIterator);
+  }
+
+  private void processPathInternal(PathData item) throws IOException {
+    processPath(item);
+    if (recursive && isPathRecursable(item)) {
+      recursePath(item);
+    }
+    postProcessPath(item);
+  }
+
+  /**
+   * Whether the directory listing for a path should be sorted.?
+   * @return true/false.
+   */
+  protected boolean isSorted() {
+    return false;
+  }
+
+  /**
+   * While using iterator method for listing for a path, whether to group items
+   * and process as array? If so what is the size of array?
+   * @return size of the grouping array.
+   */
+  protected int getListingGroupSize() {
+    return 0;
   }
 
   /**
@@ -384,7 +449,17 @@ abstract public class Command extends Configured {
   protected void recursePath(PathData item) throws IOException {
     try {
       depth++;
-      processPaths(item, item.getDirectoryContents());
+      try {
+        if (isSorted()) {
+          // use the non-iterative method for listing because explicit sorting is
+          // required. Iterators not guaranteed to return sorted elements
+          processPaths(item, item.getDirectoryContents());
+        } else {
+          processPaths(item, item.getDirectoryContentsIterator());
+        }
+      } catch (FileNotFoundException e) {
+        maybeIgnoreMissingDirectory(item.fs, item.path, e);
+      }
     } finally {
       depth--;
     }
@@ -403,7 +478,7 @@ abstract public class Command extends Configured {
     if (e instanceof InterruptedIOException) {
       throw new CommandInterruptException();
     }
-    
+    LOG.debug("{} failure", getName(), e);
     String errorMessage = e.getLocalizedMessage();
     if (errorMessage == null) {
       // this is an unexpected condition, so dump the whole exception since

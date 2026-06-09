@@ -43,7 +43,7 @@ public class ConfiguredYarnAuthorizer extends YarnAuthorizationProvider {
   private final ConcurrentMap<PrivilegedEntity, Map<AccessType, AccessControlList>>
       allAcls = new ConcurrentHashMap<>();
   private volatile AccessControlList adminAcl = null;
-  private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();;
+  private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
   private final ReentrantReadWriteLock.ReadLock readLock = lock.readLock();
   private final ReentrantReadWriteLock.WriteLock writeLock =  lock.writeLock();
 
@@ -57,8 +57,8 @@ public class ConfiguredYarnAuthorizer extends YarnAuthorizationProvider {
   @Override
   public void setPermission(List<Permission> permissions,
       UserGroupInformation user) {
+    writeLock.lock();
     try {
-      writeLock.lock();
       for (Permission perm : permissions) {
         allAcls.put(perm.getTarget(), perm.getAcls());
       }
@@ -94,8 +94,8 @@ public class ConfiguredYarnAuthorizer extends YarnAuthorizationProvider {
 
   @Override
   public boolean checkPermission(AccessRequest accessRequest) {
+    readLock.lock();
     try {
-      readLock.lock();
       return checkPermissionInternal(accessRequest.getAccessType(),
           accessRequest.getEntity(), accessRequest.getUser());
     } finally {

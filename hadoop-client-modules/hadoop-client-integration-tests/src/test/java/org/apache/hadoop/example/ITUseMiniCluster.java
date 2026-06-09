@@ -20,13 +20,14 @@
 
 package org.apache.hadoop.example;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import java.io.IOException;
 import java.net.URISyntaxException;
 
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +36,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IOUtils;
 
 import org.apache.hadoop.conf.Configuration;
 
@@ -43,6 +45,7 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 
 import org.apache.hadoop.hdfs.web.WebHdfsTestUtil;
 import org.apache.hadoop.hdfs.web.WebHdfsConstants;
+import org.apache.hadoop.yarn.server.MiniYARNCluster;
 
 /**
  * Ensure that we can perform operations against the shaded minicluster
@@ -54,6 +57,7 @@ public class ITUseMiniCluster {
       LoggerFactory.getLogger(ITUseMiniCluster.class);
 
   private MiniDFSCluster cluster;
+  private MiniYARNCluster yarnCluster;
 
   private static final String TEST_PATH = "/foo/bar/cats/dee";
   private static final String FILENAME = "test.file";
@@ -66,20 +70,27 @@ public class ITUseMiniCluster {
       + "fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident,"
       + " sunt in culpa qui officia deserunt mollit anim id est laborum.";
 
-  @Before
+  @BeforeEach
   public void clusterUp() throws IOException {
     final Configuration conf = new HdfsConfiguration();
     cluster = new MiniDFSCluster.Builder(conf)
         .numDataNodes(3)
         .build();
     cluster.waitActive();
+
+    conf.set("yarn.scheduler.capacity.root.queues", "default");
+    conf.setInt("yarn.scheduler.capacity.root.default.capacity", 100);
+    yarnCluster = new MiniYARNCluster(getClass().getName(), 1, 1, 1, 1);
+    yarnCluster.init(conf);
+    yarnCluster.start();
   }
 
-  @After
+  @AfterEach
   public void clusterDown() {
     if (cluster != null) {
       cluster.close();
     }
+    IOUtils.cleanupWithLogger(LOG, yarnCluster);
   }
 
   @Test
@@ -101,7 +112,7 @@ public class ITUseMiniCluster {
     }
     try (FSDataInputStream in = fs.open(path)) {
       final String result = in.readUTF();
-      Assert.assertEquals("Didn't read back text we wrote.", TEXT, result);
+      assertEquals(TEXT, result, "Didn't read back text we wrote.");
     }
   }
 

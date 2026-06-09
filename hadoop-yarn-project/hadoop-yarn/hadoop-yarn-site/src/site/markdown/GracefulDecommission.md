@@ -41,7 +41,7 @@ Graceful Decommission of YARN Nodes is the mechanism to decommission NMs while m
 
 To do a normal decommissioning:
 
-1. Start a YARN cluster (with NodeManageres and ResourceManager)
+1. Start a YARN cluster (with NodeManagers and ResourceManager)
 2. Start a yarn job (for example with `yarn jar...` )
 3. Add `yarn.resourcemanager.nodes.exclude-path` property to your `yarn-site.xml` (Note: you don't need to restart the ResourceManager)
 4. Create a text file (the location is defined in the previous step) with one line which contains the name of a selected NodeManager 
@@ -58,7 +58,7 @@ Features
 `yarn rmadmin -refreshNodes [-g [timeout in seconds] -client|server]` notifies NodesListManager to detect and handle include and exclude hosts changes. NodesListManager loads excluded hosts from the exclude file as specified through the `yarn.resourcemanager.nodes.exclude-path` configuration in yarn-site.xml. (Note:  It is unnecessary to restart RM in case of changing the exclude-path 
 as this config will be read again for every `refreshNodes` command)
 
-The format of the file could be plain text or XML depending the extension of the file. Only the XML format supports per node timout for graceful decommissioning.
+The format of the file could be plain text or XML depending the extension of the file. Only the XML format supports per node timeout for graceful decommissioning.
 
 NodesListManager inspects and compares status of RMNodes in resource manager and the exclude list, and apply necessary actions based on following rules:
 
@@ -83,7 +83,7 @@ In case of server side timeout:
 2. Use the timeout in `yarn rmadmin -refreshNodes -g [timeout in seconds] -server|client` if specified;
 3. Use the default timeout specified through *"yarn.resourcemanager.nodemanager-graceful-decommission-timeout-secs"* configuration.
 
-In case of client side timout (see bellow):
+In case of client side timeout (see bellow):
 
 1. Only the command line parameter defined by the `-g` flag will be used. 
 
@@ -112,7 +112,7 @@ host3
 
 Note: In the future more file formats are planned with timeout support. Follow the [YARN-5536](https://issues.apache.org/jira/browse/YARN-5536) if you are interested. 
 
-Important to mention, that the timeout is not persited. In case of a RM restart/failover the node will be immediatelly decommission. (Follow the [YARN-5464](https://issues.apache.org/jira/browse/YARN-5464) for changes in this behavior).
+Important to mention, that the timeout is not persisted. In case of a RM restart/failover the node will be immediately decommission. (Follow the [YARN-5464](https://issues.apache.org/jira/browse/YARN-5464) for changes in this behavior).
 
 ### Client or server side timeout
 

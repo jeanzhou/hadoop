@@ -49,7 +49,8 @@ public interface ResourceScheduler extends YarnScheduler, Recoverable {
   /**
    * Re-initialize the <code>ResourceScheduler</code>.
    * @param conf configuration
-   * @throws IOException
+   * @param rmContext RMContext.
+   * @throws IOException an I/O exception has occurred.
    */
   void reinitialize(Configuration conf, RMContext rmContext) throws IOException;
 
@@ -71,4 +72,9 @@ public interface ResourceScheduler extends YarnScheduler, Recoverable {
    */
   boolean attemptAllocationOnNode(SchedulerApplicationAttempt appAttempt,
       SchedulingRequest schedulingRequest, SchedulerNode schedulerNode);
+
+  /**
+   * Reset scheduler metrics.
+   */
+  void resetSchedulerMetrics();
 }

@@ -36,11 +36,11 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.tools.util.DistCpTestUtils;
 import org.apache.hadoop.util.Progressable;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 /**
  * Tests distcp in combination with HDFS XAttrs.
@@ -77,7 +77,7 @@ public class TestDistCpWithXAttrs {
   private static final Path dstFile4 = new Path(dstDir2, "file4");
   private static final String rootedSrcName = "/src";
 
-  @BeforeClass
+  @BeforeAll
   public static void init() throws Exception {
     initCluster(true, true);
     fs.mkdirs(subDir1);
@@ -112,9 +112,9 @@ public class TestDistCpWithXAttrs {
     fs.setXAttr(file3, name4, value4);
   }
 
-  @AfterClass
+  @AfterAll
   public static void shutdown() {
-    IOUtils.cleanup(null, fs);
+    IOUtils.cleanupWithLogger(null, fs);
     if (cluster != null) {
       cluster.shutdown();
     }

@@ -23,8 +23,9 @@ import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -81,8 +82,8 @@ public final class ProviderUtils {
     String authority = nestedUri.getAuthority();
     if (authority != null) {
       String[] parts = nestedUri.getAuthority().split("@", 2);
-      result.append(parts[0]);
-      result.append("://");
+      result.append(parts[0])
+          .append("://");
       if (parts.length == 2) {
         result.append(parts[1]);
       }
@@ -135,6 +136,7 @@ public final class ProviderUtils {
    * @param config the existing configuration with provider path
    * @param fileSystemClass the class which providers must be compatible
    * @return Configuration clone with new provider path
+   * @throws IOException raised on errors performing I/O.
    */
   public static Configuration excludeIncompatibleCredentialProviders(
       Configuration config, Class<? extends FileSystem> fileSystemClass)
@@ -146,7 +148,7 @@ public final class ProviderUtils {
     if (providerPath == null) {
       return config;
     }
-    StringBuffer newProviderPath = new StringBuffer();
+    StringBuilder newProviderPath = new StringBuilder();
     String[] providers = providerPath.split(",");
     Path path = null;
     for (String provider: providers) {
@@ -167,9 +169,8 @@ public final class ProviderUtils {
         }
         if (clazz != null) {
           if (fileSystemClass.isAssignableFrom(clazz)) {
-            LOG.debug("Filesystem based provider" +
-                " excluded from provider path due to recursive dependency: "
-                + provider);
+            LOG.debug("Filesystem based provider excluded from provider " +
+                "path due to recursive dependency: {}", provider);
           } else {
             if (newProviderPath.length() > 0) {
               newProviderPath.append(",");
@@ -225,7 +226,7 @@ public final class ProviderUtils {
           throw new IOException("Password file does not exist");
         }
         try (InputStream is = pwdFile.openStream()) {
-          pass = IOUtils.toString(is).trim().toCharArray();
+          pass = IOUtils.toString(is, StandardCharsets.UTF_8).trim().toCharArray();
         }
       }
     }

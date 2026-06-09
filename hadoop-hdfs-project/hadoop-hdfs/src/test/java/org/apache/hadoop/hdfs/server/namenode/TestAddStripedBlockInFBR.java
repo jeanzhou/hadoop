@@ -32,18 +32,18 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.NumberReplicas;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.Whitebox;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 import java.io.IOException;
 
+@Timeout(300)
 public class TestAddStripedBlockInFBR {
   private final ErasureCodingPolicy ecPolicy =
       StripedFileTestUtil.getDefaultECPolicy();
@@ -55,10 +55,7 @@ public class TestAddStripedBlockInFBR {
   private MiniDFSCluster cluster;
   private DistributedFileSystem dfs;
 
-  @Rule
-  public Timeout globalTimeout = new Timeout(300000);
-
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     Configuration conf = new HdfsConfiguration();
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(groupSize).build();
@@ -68,7 +65,7 @@ public class TestAddStripedBlockInFBR {
         StripedFileTestUtil.getDefaultECPolicy().getName());
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     if (cluster != null) {
       cluster.shutdown();

@@ -25,9 +25,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.KeyProvider.Metadata;
@@ -75,7 +75,7 @@ public class KeyShell extends CommandShell {
    * </pre>
    * @param args Command line arguments.
    * @return 0 on success, 1 on failure.
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   @Override
   protected int init(String[] args) throws IOException {
@@ -139,7 +139,7 @@ public class KeyShell extends CommandShell {
         }
         if (attributes.containsKey(attr)) {
           getOut().println("\nEach attribute must correspond to only one " +
-              "value:\natttribute \"" + attr + "\" was repeated\n");
+              "value:\nattribute \"" + attr + "\" was repeated\n");
           return 1;
         }
         attributes.put(attr, val);
@@ -169,7 +169,7 @@ public class KeyShell extends CommandShell {
 
   @Override
   public String getCommandUsage() {
-    StringBuffer sbuf = new StringBuffer(USAGE_PREFIX + COMMANDS);
+    StringBuilder sbuf = new StringBuilder(USAGE_PREFIX + COMMANDS);
     String banner = StringUtils.repeat("=", 66);
     sbuf.append(banner + "\n");
     sbuf.append(CreateCommand.USAGE + ":\n\n" + CreateCommand.DESC + "\n");
@@ -265,8 +265,7 @@ public class KeyShell extends CommandShell {
           }
         }
       } catch (IOException e) {
-        getOut().println("Cannot list keys for KeyProvider: " + provider
-            + ": " + e.toString());
+        getOut().println("Cannot list keys for KeyProvider: " + provider);
         throw e;
       }
     }
@@ -318,12 +317,12 @@ public class KeyShell extends CommandShell {
           printProviderWritten();
         } catch (NoSuchAlgorithmException e) {
           getOut().println("Cannot roll key: " + keyName +
-              " within KeyProvider: " + provider + ". " + e.toString());
+              " within KeyProvider: " + provider + ".");
           throw e;
         }
       } catch (IOException e1) {
         getOut().println("Cannot roll key: " + keyName + " within KeyProvider: "
-            + provider + ". " + e1.toString());
+            + provider + ".");
         throw e1;
       }
     }
@@ -374,8 +373,8 @@ public class KeyShell extends CommandShell {
           }
           return cont;
         } catch (IOException e) {
-          getOut().println(keyName + " will not be deleted.");
-          e.printStackTrace(getErr());
+          getOut().println(keyName + " will not be deleted. "
+              + prettifyException(e));
         }
       }
       return true;
@@ -392,7 +391,7 @@ public class KeyShell extends CommandShell {
           getOut().println(keyName + " has been successfully deleted.");
           printProviderWritten();
         } catch (IOException e) {
-          getOut().println(keyName + " has not been deleted. " + e.toString());
+          getOut().println(keyName + " has not been deleted.");
           throw e;
         }
       }
@@ -463,13 +462,13 @@ public class KeyShell extends CommandShell {
             "with options " + options.toString() + ".");
         printProviderWritten();
       } catch (InvalidParameterException e) {
-        getOut().println(keyName + " has not been created. " + e.toString());
+        getOut().println(keyName + " has not been created.");
         throw e;
       } catch (IOException e) {
-        getOut().println(keyName + " has not been created. " + e.toString());
+        getOut().println(keyName + " has not been created.");
         throw e;
       } catch (NoSuchAlgorithmException e) {
-        getOut().println(keyName + " has not been created. " + e.toString());
+        getOut().println(keyName + " has not been created.");
         throw e;
       }
     }
@@ -520,7 +519,7 @@ public class KeyShell extends CommandShell {
         printProviderWritten();
       } catch (IOException e) {
         getOut().println("Cannot invalidate cache for key: " + keyName +
-            " within KeyProvider: " + provider + ". " + e.toString());
+            " within KeyProvider: " + provider + ".");
         throw e;
       }
     }
@@ -531,13 +530,24 @@ public class KeyShell extends CommandShell {
     }
   }
 
+  @Override
+  protected void printException(Exception e){
+    getErr().println("Executing command failed with " +
+        "the following exception: " + prettifyException(e));
+  }
+
+  private String prettifyException(Exception e) {
+    return e.getClass().getSimpleName() + ": " +
+        e.getLocalizedMessage().split("\n")[0];
+  }
+
   /**
    * main() entry point for the KeyShell.  While strictly speaking the
    * return is void, it will System.exit() with a return code: 0 is for
    * success and 1 for failure.
    *
    * @param args Command line arguments.
-   * @throws Exception
+   * @throws Exception raised on errors performing I/O.
    */
   public static void main(String[] args) throws Exception {
     int res = ToolRunner.run(new Configuration(), new KeyShell(), args);

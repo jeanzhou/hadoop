@@ -19,18 +19,17 @@
 package org.apache.hadoop.streaming;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.io.WritableComparable;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapred.JobConf;
-import org.apache.commons.logging.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 
  * Shared functionality for hadoopStreaming formats.
@@ -40,7 +39,7 @@ import org.apache.commons.logging.*;
  */
 public abstract class StreamBaseRecordReader implements RecordReader<Text, Text> {
 
-  protected static final Log LOG = LogFactory.getLog(StreamBaseRecordReader.class.getName());
+  protected static final Logger LOG = LoggerFactory.getLogger(StreamBaseRecordReader.class.getName());
 
   // custom JobConf properties for this class are prefixed with this namespace
   final static String CONF_NS = "stream.recordreader.";
@@ -102,7 +101,8 @@ public abstract class StreamBaseRecordReader implements RecordReader<Text, Text>
   void numRecStats(byte[] record, int start, int len) throws IOException {
     numRec_++;
     if (numRec_ == nextStatusRec_) {
-      String recordStr = new String(record, start, Math.min(len, statusMaxRecordChars_), "UTF-8");
+      String recordStr = new String(record, start,
+              Math.min(len, statusMaxRecordChars_), StandardCharsets.UTF_8);
       nextStatusRec_ += 100;//*= 10;
       String status = getStatus(recordStr);
       LOG.info(status);

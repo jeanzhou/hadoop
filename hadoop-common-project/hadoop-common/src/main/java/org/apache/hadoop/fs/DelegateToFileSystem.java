@@ -24,11 +24,14 @@ import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Options.ChecksumOpt;
+import org.apache.hadoop.fs.impl.OpenFileParameters;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.Progressable;
@@ -88,7 +91,11 @@ public abstract class DelegateToFileSystem extends AbstractFileSystem {
     if (!createParent) { // parent must exist.
       // since this.create makes parent dirs automatically
       // we must throw exception if parent does not exist.
-      final FileStatus stat = getFileStatus(f.getParent());
+      Optional<Path> parentPath = f.getOptionalParentPath();
+      if (!parentPath.isPresent()) {
+        throw new FileNotFoundException("Missing parent:" + f);
+      }
+      final FileStatus stat = getFileStatus(parentPath.get());
       if (stat == null) {
         throw new FileNotFoundException("Missing parent:" + f);
       }
@@ -260,5 +267,27 @@ public abstract class DelegateToFileSystem extends AbstractFileSystem {
   @Override //AbstractFileSystem
   public List<Token<?>> getDelegationTokens(String renewer) throws IOException {
     return Arrays.asList(fsImpl.addDelegationTokens(renewer, null));
+  }
+
+  /**
+   * Open a file by delegating to
+   * {@link FileSystem#openFileWithOptions(Path, org.apache.hadoop.fs.impl.OpenFileParameters)}.
+   * @param path path to the file
+   * @param parameters open file parameters from the builder.
+   *
+   * @return a future which will evaluate to the opened file.ControlAlpha
+   * @throws IOException failure to resolve the link.
+   * @throws IllegalArgumentException unknown mandatory key
+   */
+  public CompletableFuture<FSDataInputStream> openFileWithOptions(Path path,
+      final OpenFileParameters parameters) throws IOException {
+    return fsImpl.openFileWithOptions(path, parameters);
+  }
+
+  @Override
+  public boolean hasPathCapability(final Path path,
+      final String capability)
+      throws IOException {
+    return fsImpl.hasPathCapability(path, capability);
   }
 }

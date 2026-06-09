@@ -19,9 +19,16 @@
 package org.apache.hadoop.yarn.server.timeline.webapp;
 
 import java.io.File;
-import java.io.IOException;
 import java.net.URI;
 import java.util.EnumSet;
+
+import javax.ws.rs.client.Client;
+import javax.ws.rs.core.Response;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import net.jodah.failsafe.RetryPolicy;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
@@ -35,17 +42,13 @@ import org.apache.hadoop.yarn.client.api.impl.TimelineClientImpl;
 import org.apache.hadoop.yarn.client.api.impl.TimelineWriter;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.applicationhistoryservice.ApplicationHistoryServer;
-import org.apache.hadoop.yarn.server.applicationhistoryservice.webapp.AHSWebApp;
 import org.apache.hadoop.yarn.server.timeline.MemoryTimelineStore;
 import org.apache.hadoop.yarn.server.timeline.TimelineReader.Field;
 import org.apache.hadoop.yarn.server.timeline.TimelineStore;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
 
-import com.sun.jersey.api.client.Client;
-import com.sun.jersey.api.client.ClientResponse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestTimelineWebServicesWithSSL {
 
@@ -59,7 +62,7 @@ public class TestTimelineWebServicesWithSSL {
   private static TimelineStore store;
   private static Configuration conf;
 
-  @BeforeClass
+  @BeforeAll
   public static void setupServer() throws Exception {
     conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
@@ -85,7 +88,7 @@ public class TestTimelineWebServicesWithSSL {
     store = timelineServer.getTimelineStore();
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDownServer() throws Exception {
     if (timelineServer != null) {
       timelineServer.stop();
@@ -93,7 +96,7 @@ public class TestTimelineWebServicesWithSSL {
   }
 
   @Test
-  public void testPutEntities() throws Exception {
+  void testPutEntities() throws Exception {
     TestTimelineClient client = new TestTimelineClient();
     try {
       client.init(conf);
@@ -108,16 +111,16 @@ public class TestTimelineWebServicesWithSSL {
       expectedEntity.addEvent(event);
 
       TimelinePutResponse response = client.putEntities(expectedEntity);
-      Assert.assertEquals(0, response.getErrors().size());
-      Assert.assertTrue(client.resp.toString().contains("https"));
+      assertEquals(0, response.getErrors().size());
+      assertTrue(client.resp.toString().contains("https"));
 
       TimelineEntity actualEntity = store.getEntity(
           expectedEntity.getEntityId(), expectedEntity.getEntityType(),
           EnumSet.allOf(Field.class));
-      Assert.assertNotNull(actualEntity);
-      Assert.assertEquals(
+      assertNotNull(actualEntity);
+      assertEquals(
           expectedEntity.getEntityId(), actualEntity.getEntityId());
-      Assert.assertEquals(
+      assertEquals(
           expectedEntity.getEntityType(), actualEntity.getEntityType());
     } finally {
       client.stop();
@@ -127,20 +130,18 @@ public class TestTimelineWebServicesWithSSL {
 
   private static class TestTimelineClient extends TimelineClientImpl {
 
-    private ClientResponse resp;
+    private Response resp;
 
     @Override
     protected TimelineWriter createTimelineWriter(Configuration conf,
-        UserGroupInformation authUgi, Client client, URI resURI)
-            throws IOException {
-      return new DirectTimelineWriter(authUgi, client, resURI) {
+        UserGroupInformation authUgi, Client client, URI resURI, RetryPolicy<Object> retryPolicy) {
+      return new DirectTimelineWriter(authUgi, client, resURI, retryPolicy) {
         @Override
-        public ClientResponse doPostingObject(Object obj, String path) {
+        public Response doPostingObject(Object obj, String path) throws JsonProcessingException {
           resp = super.doPostingObject(obj, path);
           return resp;
         }
       };
     }
   }
-
 }

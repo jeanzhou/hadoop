@@ -19,25 +19,26 @@ package org.apache.hadoop.yarn.server.resourcemanager;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.ipc.Server;
+import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.security.authorize.PolicyProvider;
 import org.apache.hadoop.service.AbstractService;
@@ -51,12 +52,13 @@ import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
-import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
+import org.apache.hadoop.yarn.nodelabels.NodeLabelUtil;
 import org.apache.hadoop.yarn.server.api.ResourceTracker;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatRequest;
@@ -90,12 +92,13 @@ import org.apache.hadoop.yarn.server.utils.YarnServerBuilderUtils;
 import org.apache.hadoop.yarn.util.RackResolver;
 import org.apache.hadoop.yarn.util.YarnVersionInfo;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 public class ResourceTrackerService extends AbstractService implements
     ResourceTracker {
 
-  private static final Log LOG = LogFactory.getLog(ResourceTrackerService.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ResourceTrackerService.class);
 
   private static final RecordFactory recordFactory = 
     RecordFactoryProvider.getRecordFactory(null);
@@ -110,6 +113,13 @@ public class ResourceTrackerService extends AbstractService implements
   private final WriteLock writeLock;
 
   private long nextHeartBeatInterval;
+  private boolean heartBeatIntervalScalingEnable;
+  private long heartBeatIntervalMin;
+  private long heartBeatIntervalMax;
+  private float heartBeatIntervalSpeedupFactor;
+  private float heartBeatIntervalSlowdownFactor;
+
+
   private Server server;
   private InetSocketAddress resourceTrackerAddress;
   private String minimumNodeManagerVersion;
@@ -124,6 +134,8 @@ public class ResourceTrackerService extends AbstractService implements
   private DynamicResourceConfiguration drConf;
 
   private final AtomicLong timelineCollectorVersion = new AtomicLong(0);
+  private boolean checkIpHostnameInRegistration;
+  private boolean timelineServiceV2Enabled;
 
   public ResourceTrackerService(RMContext rmContext,
       NodesListManager nodesListManager,
@@ -151,15 +163,10 @@ public class ResourceTrackerService extends AbstractService implements
         YarnConfiguration.DEFAULT_RM_RESOURCE_TRACKER_PORT);
 
     RackResolver.init(conf);
-    nextHeartBeatInterval =
-        conf.getLong(YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_MS,
-            YarnConfiguration.DEFAULT_RM_NM_HEARTBEAT_INTERVAL_MS);
-    if (nextHeartBeatInterval <= 0) {
-      throw new YarnRuntimeException("Invalid Configuration. "
-          + YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_MS
-          + " should be larger than 0.");
-    }
 
+    checkIpHostnameInRegistration = conf.getBoolean(
+        YarnConfiguration.RM_NM_REGISTRATION_IP_HOSTNAME_CHECK_KEY,
+        YarnConfiguration.DEFAULT_RM_NM_REGISTRATION_IP_HOSTNAME_CHECK_KEY);
     minAllocMb = conf.getInt(
         YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_MB,
         YarnConfiguration.DEFAULT_RM_SCHEDULER_MINIMUM_ALLOCATION_MB);
@@ -170,6 +177,8 @@ public class ResourceTrackerService extends AbstractService implements
     minimumNodeManagerVersion = conf.get(
         YarnConfiguration.RM_NODEMANAGER_MINIMUM_VERSION,
         YarnConfiguration.DEFAULT_RM_NODEMANAGER_MINIMUM_VERSION);
+    timelineServiceV2Enabled =  YarnConfiguration.
+        timelineServiceV2Enabled(conf);
 
     if (YarnConfiguration.areNodeLabelsEnabled(conf)) {
       isDistributedNodeLabelsConf =
@@ -177,7 +186,7 @@ public class ResourceTrackerService extends AbstractService implements
       isDelegatedCentralizedNodeLabelsConf =
           YarnConfiguration.isDelegatedCentralizedNodeLabelConfiguration(conf);
     }
-
+    updateHeartBeatConfiguration(conf);
     loadDynamicResourceConfiguration(conf);
     decommissioningWatcher.init(conf);
     super.serviceInit(conf);
@@ -185,8 +194,8 @@ public class ResourceTrackerService extends AbstractService implements
 
   /**
    * Load DynamicResourceConfiguration from dynamic-resources.xml.
-   * @param conf
-   * @throws IOException
+   * @param conf Configuration.
+   * @throws IOException an I/O exception has occurred.
    */
   public void loadDynamicResourceConfiguration(Configuration conf)
       throws IOException {
@@ -210,13 +219,91 @@ public class ResourceTrackerService extends AbstractService implements
 
   /**
    * Update DynamicResourceConfiguration with new configuration.
-   * @param conf
+   * @param conf DynamicResourceConfiguration.
    */
   public void updateDynamicResourceConfiguration(
       DynamicResourceConfiguration conf) {
     this.writeLock.lock();
     try {
       this.drConf = conf;
+    } finally {
+      this.writeLock.unlock();
+    }
+  }
+
+  /**
+   * Update HearBeatConfiguration with new configuration.
+   * @param conf Yarn Configuration
+   */
+  public void updateHeartBeatConfiguration(Configuration conf) {
+    this.writeLock.lock();
+    try {
+      nextHeartBeatInterval =
+          conf.getLong(YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_MS,
+              YarnConfiguration.DEFAULT_RM_NM_HEARTBEAT_INTERVAL_MS);
+      heartBeatIntervalScalingEnable =
+          conf.getBoolean(
+              YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_SCALING_ENABLE,
+              YarnConfiguration.
+                  DEFAULT_RM_NM_HEARTBEAT_INTERVAL_SCALING_ENABLE);
+      heartBeatIntervalMin =
+          conf.getLong(YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_MIN_MS,
+              YarnConfiguration.DEFAULT_RM_NM_HEARTBEAT_INTERVAL_MIN_MS);
+      heartBeatIntervalMax =
+          conf.getLong(YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_MAX_MS,
+              YarnConfiguration.DEFAULT_RM_NM_HEARTBEAT_INTERVAL_MAX_MS);
+      heartBeatIntervalSpeedupFactor =
+          conf.getFloat(
+              YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_SPEEDUP_FACTOR,
+              YarnConfiguration.
+                  DEFAULT_RM_NM_HEARTBEAT_INTERVAL_SPEEDUP_FACTOR);
+      heartBeatIntervalSlowdownFactor =
+          conf.getFloat(
+              YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_SLOWDOWN_FACTOR,
+              YarnConfiguration.
+                  DEFAULT_RM_NM_HEARTBEAT_INTERVAL_SLOWDOWN_FACTOR);
+
+      if (nextHeartBeatInterval <= 0) {
+        LOG.warn("HeartBeat interval: " + nextHeartBeatInterval
+            + " must be greater than 0, using default.");
+        nextHeartBeatInterval =
+            YarnConfiguration.DEFAULT_RM_NM_HEARTBEAT_INTERVAL_MS;
+      }
+
+      if (heartBeatIntervalScalingEnable) {
+        if (heartBeatIntervalMin <= 0
+            || heartBeatIntervalMin > heartBeatIntervalMax
+            || nextHeartBeatInterval < heartBeatIntervalMin
+            || nextHeartBeatInterval > heartBeatIntervalMax) {
+          LOG.warn("Invalid NM Heartbeat Configuration. "
+              + "Required: 0 < minimum <= interval <= maximum. Got: 0 < "
+              + heartBeatIntervalMin + " <= "
+              + nextHeartBeatInterval + " <= "
+              + heartBeatIntervalMax
+              + " Setting min and max to configured interval.");
+          heartBeatIntervalMin = nextHeartBeatInterval;
+          heartBeatIntervalMax = nextHeartBeatInterval;
+        }
+        if (heartBeatIntervalSpeedupFactor < 0
+            || heartBeatIntervalSlowdownFactor < 0) {
+          LOG.warn(
+              "Heartbeat scaling factors must be >= 0 "
+                  + " SpeedupFactor:" + heartBeatIntervalSpeedupFactor
+                  + " SlowdownFactor:" + heartBeatIntervalSlowdownFactor
+                  + ". Using Defaults");
+          heartBeatIntervalSlowdownFactor =
+              YarnConfiguration.
+                  DEFAULT_RM_NM_HEARTBEAT_INTERVAL_SLOWDOWN_FACTOR;
+          heartBeatIntervalSpeedupFactor =
+              YarnConfiguration.DEFAULT_RM_NM_HEARTBEAT_INTERVAL_SPEEDUP_FACTOR;
+        }
+        LOG.info("Heartbeat Scaling Configuration: "
+            + " defaultInterval:" + nextHeartBeatInterval
+            + " minimumInterval:" + heartBeatIntervalMin
+            + " maximumInterval:" + heartBeatIntervalMax
+            + " speedupFactor:" + heartBeatIntervalSpeedupFactor
+            + " slowdownFactor:" + heartBeatIntervalSlowdownFactor);
+      }
     } finally {
       this.writeLock.unlock();
     }
@@ -257,6 +344,7 @@ public class ResourceTrackerService extends AbstractService implements
 
   @Override
   protected void serviceStop() throws Exception {
+    decommissioningWatcher.stop();
     if (this.server != null) {
       this.server.stop();
     }
@@ -285,10 +373,8 @@ public class ResourceTrackerService extends AbstractService implements
     }
 
     if (rmApp.getApplicationSubmissionContext().getUnmanagedAM()) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Ignoring container completion status for unmanaged AM "
-            + rmApp.getApplicationId());
-      }
+      LOG.debug("Ignoring container completion status for unmanaged AM {}",
+          rmApp.getApplicationId());
       return;
     }
 
@@ -325,6 +411,7 @@ public class ResourceTrackerService extends AbstractService implements
     Resource capability = request.getResource();
     String nodeManagerVersion = request.getNMVersion();
     Resource physicalResource = request.getPhysicalResource();
+    NodeStatus nodeStatus = request.getNodeStatus();
 
     RegisterNodeManagerResponse response = recordFactory
         .newRecordInstance(RegisterNodeManagerResponse.class);
@@ -348,6 +435,23 @@ public class ResourceTrackerService extends AbstractService implements
       }
     }
 
+    if (checkIpHostnameInRegistration) {
+      InetSocketAddress nmAddress =
+          NetUtils.createSocketAddrForHost(host, cmPort);
+      InetAddress inetAddress = Server.getRemoteIp();
+      if (inetAddress != null && nmAddress.isUnresolved()) {
+        // Reject registration of unresolved nm to prevent resourcemanager
+        // getting stuck at allocations.
+        final String message =
+            "hostname cannot be resolved (ip=" + inetAddress.getHostAddress()
+                + ", hostname=" + host + ")";
+        LOG.warn("Unresolved nodemanager registration: " + message);
+        response.setDiagnosticsMessage(message);
+        response.setNodeAction(NodeAction.SHUTDOWN);
+        return response;
+      }
+    }
+
     // Check if this node is a 'valid' node
     if (!this.nodesListManager.isValidNode(host) &&
         !isNodeInDecommissioning(nodeId)) {
@@ -365,11 +469,9 @@ public class ResourceTrackerService extends AbstractService implements
 
     Resource dynamicLoadCapability = loadNodeResourceFromDRConfiguration(nid);
     if (dynamicLoadCapability != null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Resource for node: " + nid + " is adjusted from: " +
-            capability + " to: " + dynamicLoadCapability +
-            " due to settings in dynamic-resources.xml.");
-      }
+      LOG.debug("Resource for node: {} is adjusted from: {} to: {} due to"
+          + " settings in dynamic-resources.xml.", nid, capability,
+          dynamicLoadCapability);
       capability = dynamicLoadCapability;
       // sync back with new resource.
       response.setResource(capability);
@@ -401,7 +503,7 @@ public class ResourceTrackerService extends AbstractService implements
     if (oldNode == null) {
       RMNodeStartedEvent startEvent = new RMNodeStartedEvent(nodeId,
           request.getNMContainerStatuses(),
-          request.getRunningApplications());
+          request.getRunningApplications(), nodeStatus);
       if (request.getLogAggregationReportsForApps() != null
           && !request.getLogAggregationReportsForApps().isEmpty()) {
         if (LOG.isDebugEnabled()) {
@@ -437,7 +539,7 @@ public class ResourceTrackerService extends AbstractService implements
 
         this.rmContext.getRMNodes().put(nodeId, rmNode);
         this.rmContext.getDispatcher().getEventHandler()
-            .handle(new RMNodeStartedEvent(nodeId, null, null));
+            .handle(new RMNodeStartedEvent(nodeId, null, null, nodeStatus));
       } else {
         // Reset heartbeat ID since node just restarted.
         oldNode.resetLastNodeHeartBeatResponse();
@@ -481,6 +583,22 @@ public class ResourceTrackerService extends AbstractService implements
       this.rmContext.getRMDelegatedNodeLabelsUpdater().updateNodeLabels(nodeId);
     }
 
+    // Update node's attributes to RM's NodeAttributesManager.
+    if (request.getNodeAttributes() != null) {
+      try {
+        // update node attributes if necessary then update heartbeat response
+        updateNodeAttributesIfNecessary(nodeId, request.getNodeAttributes());
+        response.setAreNodeAttributesAcceptedByRM(true);
+      } catch (IOException ex) {
+        //ensure the error message is captured and sent across in response
+        String errorMsg = response.getDiagnosticsMessage() == null ?
+            ex.getMessage() :
+            response.getDiagnosticsMessage() + "\n" + ex.getMessage();
+        response.setDiagnosticsMessage(errorMsg);
+        response.setAreNodeAttributesAcceptedByRM(false);
+      }
+    }
+
     StringBuilder message = new StringBuilder();
     message.append("NodeManager from node ").append(host).append("(cmPort: ")
         .append(cmPort).append(" httpPort: ");
@@ -490,6 +608,10 @@ public class ResourceTrackerService extends AbstractService implements
     if (response.getAreNodeLabelsAcceptedByRM()) {
       message.append(", node labels { ").append(
           StringUtils.join(",", nodeLabels) + " } ");
+    }
+    if (response.getAreNodeAttributesAcceptedByRM()) {
+      message.append(", node attributes { ")
+          .append(request.getNodeAttributes() + " } ");
     }
 
     LOG.info(message.toString());
@@ -513,7 +635,6 @@ public class ResourceTrackerService extends AbstractService implements
      * 4. Send healthStatus to RMNode
      * 5. Update node's labels if distributed Node Labels configuration is enabled
      */
-
     NodeId nodeId = remoteNodeStatus.getNodeId();
 
     // 1. Check if it's a valid (i.e. not excluded) node, if not, see if it is
@@ -578,29 +699,30 @@ public class ResourceTrackerService extends AbstractService implements
           NodeAction.SHUTDOWN, message);
     }
 
-    boolean timelineV2Enabled =
-        YarnConfiguration.timelineServiceV2Enabled(getConfig());
-    if (timelineV2Enabled) {
+    if (timelineServiceV2Enabled) {
       // Check & update collectors info from request.
       updateAppCollectorsMap(request);
     }
 
     // Heartbeat response
+    long newInterval = nextHeartBeatInterval;
+    if (heartBeatIntervalScalingEnable) {
+      newInterval = rmNode.calculateHeartBeatInterval(
+          nextHeartBeatInterval, heartBeatIntervalMin,
+          heartBeatIntervalMax, heartBeatIntervalSpeedupFactor,
+          heartBeatIntervalSlowdownFactor);
+    }
     NodeHeartbeatResponse nodeHeartBeatResponse =
         YarnServerBuilderUtils.newNodeHeartbeatResponse(
             getNextResponseId(lastNodeHeartbeatResponse.getResponseId()),
-            NodeAction.NORMAL, null, null, null, null, nextHeartBeatInterval);
+            NodeAction.NORMAL, null, null, null, null, newInterval);
     rmNode.setAndUpdateNodeHeartbeatResponse(nodeHeartBeatResponse);
 
     populateKeys(request, nodeHeartBeatResponse);
 
-    ConcurrentMap<ApplicationId, ByteBuffer> systemCredentials =
-        rmContext.getSystemCredentialsForApps();
-    if (!systemCredentials.isEmpty()) {
-      nodeHeartBeatResponse.setSystemCredentialsForApps(systemCredentials);
-    }
+    populateTokenSequenceNo(request, nodeHeartBeatResponse);
 
-    if (timelineV2Enabled) {
+    if (timelineServiceV2Enabled) {
       // Return collectors' map that NM needs to know
       setAppCollectorsMapToResponse(rmNode.getRunningApps(),
           nodeHeartBeatResponse);
@@ -638,6 +760,11 @@ public class ResourceTrackerService extends AbstractService implements
     if (capability != null) {
       nodeHeartBeatResponse.setResource(capability);
     }
+    // Check if we got an event (AdminService) that updated the resources
+    if (rmNode.isUpdatedCapability()) {
+      nodeHeartBeatResponse.setResource(rmNode.getTotalCapability());
+      rmNode.resetUpdatedCapability();
+    }
 
     // 7. Send Container Queuing Limits back to the Node. This will be used by
     // the node to truncate the number of Containers queued for execution.
@@ -646,7 +773,73 @@ public class ResourceTrackerService extends AbstractService implements
           this.rmContext.getNodeManagerQueueLimitCalculator()
               .createContainerQueuingLimit());
     }
+
+    // 8. Get node's attributes and update node-to-attributes mapping
+    // in RMNodeAttributeManager.
+    if (request.getNodeAttributes() != null) {
+      try {
+        // update node attributes if necessary then update heartbeat response
+        updateNodeAttributesIfNecessary(nodeId, request.getNodeAttributes());
+        nodeHeartBeatResponse.setAreNodeAttributesAcceptedByRM(true);
+      } catch (IOException ex) {
+        //ensure the error message is captured and sent across in response
+        String errorMsg =
+            nodeHeartBeatResponse.getDiagnosticsMessage() == null ?
+                ex.getMessage() :
+                nodeHeartBeatResponse.getDiagnosticsMessage() + "\n" + ex
+                    .getMessage();
+        nodeHeartBeatResponse.setDiagnosticsMessage(errorMsg);
+        nodeHeartBeatResponse.setAreNodeAttributesAcceptedByRM(false);
+      }
+    }
+
     return nodeHeartBeatResponse;
+  }
+
+  /**
+   * Update node attributes if necessary.
+   * @param nodeId - node id
+   * @param nodeAttributes - node attributes
+   * @return true if updated
+   * @throws IOException if prefix type is not distributed
+   */
+  private void updateNodeAttributesIfNecessary(NodeId nodeId,
+      Set<NodeAttribute> nodeAttributes) throws IOException {
+    if (LOG.isDebugEnabled()) {
+      nodeAttributes.forEach(nodeAttribute -> LOG.debug(
+          nodeId.toString() + " ATTRIBUTE : " + nodeAttribute.toString()));
+    }
+
+    // Validate attributes
+    if (!nodeAttributes.stream().allMatch(
+        nodeAttribute -> NodeAttribute.PREFIX_DISTRIBUTED
+            .equals(nodeAttribute.getAttributeKey().getAttributePrefix()))) {
+      // All attributes must be in same prefix: nm.yarn.io.
+      // Since we have the checks in NM to make sure attributes reported
+      // in HB are with correct prefix, so it should not reach here.
+      throw new IOException("Reject invalid node attributes from host: "
+          + nodeId.toString() + ", attributes in HB must have prefix "
+          + NodeAttribute.PREFIX_DISTRIBUTED);
+    }
+    // Replace all distributed node attributes associated with this host
+    // with the new reported attributes in node attribute manager.
+    Set<NodeAttribute> currentNodeAttributes =
+        this.rmContext.getNodeAttributesManager()
+            .getAttributesForNode(nodeId.getHost()).keySet();
+    if (!currentNodeAttributes.isEmpty()) {
+      currentNodeAttributes = NodeLabelUtil
+          .filterAttributesByPrefix(currentNodeAttributes,
+              NodeAttribute.PREFIX_DISTRIBUTED);
+    }
+    if (!NodeLabelUtil
+        .isNodeAttributesEquals(nodeAttributes, currentNodeAttributes)) {
+      this.rmContext.getNodeAttributesManager()
+          .replaceNodeAttributes(NodeAttribute.PREFIX_DISTRIBUTED,
+              ImmutableMap.of(nodeId.getHost(), nodeAttributes));
+    } else {
+      LOG.debug("Skip updating node attributes since there is no change"
+          +" for {} : {}", nodeId, nodeAttributes);
+    }
   }
 
   private int getNextResponseId(int responseId) {
@@ -668,10 +861,8 @@ public class ResourceTrackerService extends AbstractService implements
         if (appCollectorData != null) {
           liveAppCollectorsMap.put(appId, appCollectorData);
         } else {
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Collector for applicaton: " + appId +
-                " hasn't registered yet!");
-          }
+          LOG.debug("Collector for applicaton: {} hasn't registered yet!",
+              appId);
         }
       }
     }
@@ -729,10 +920,17 @@ public class ResourceTrackerService extends AbstractService implements
    */
   private boolean isNodeInDecommissioning(NodeId nodeId) {
     RMNode rmNode = this.rmContext.getRMNodes().get(nodeId);
-    if (rmNode != null &&
-        rmNode.getState().equals(NodeState.DECOMMISSIONING)) {
-      return true;
+
+    if (rmNode != null) {
+      NodeState state = rmNode.getState();
+
+      if (state == NodeState.DECOMMISSIONING ||
+          (state == NodeState.RUNNING &&
+          this.nodesListManager.isGracefullyDecommissionableNode(rmNode))) {
+        return true;
+      }
     }
+
     return false;
   }
 
@@ -775,7 +973,7 @@ public class ResourceTrackerService extends AbstractService implements
           .append("} reported from NM with ID ").append(nodeId)
           .append(" was rejected from RM with exception message as : ")
           .append(ex.getMessage());
-      LOG.error(errorMessage, ex);
+      LOG.error(errorMessage.toString(), ex);
       throw new IOException(errorMessage.toString(), ex);
     }
   }
@@ -840,5 +1038,27 @@ public class ResourceTrackerService extends AbstractService implements
   @VisibleForTesting
   public Server getServer() {
     return this.server;
+  }
+
+  private void populateTokenSequenceNo(NodeHeartbeatRequest request,
+      NodeHeartbeatResponse nodeHeartBeatResponse) {
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Token sequence no received from heartbeat request: "
+          + request.getTokenSequenceNo() + ". Current token sequeunce no: "
+          + this.rmContext.getTokenSequenceNo()
+          + ". System credentials for apps size: "
+          + rmContext.getSystemCredentialsForApps().size());
+    }
+    if(request.getTokenSequenceNo() != this.rmContext.getTokenSequenceNo()) {
+      if (!rmContext.getSystemCredentialsForApps().isEmpty()) {
+        LOG.debug("Sending System credentials for apps as part of"
+            + " NodeHeartbeat response.");
+        nodeHeartBeatResponse
+            .setSystemCredentialsForApps(
+                rmContext.getSystemCredentialsForApps().values());
+      }
+    }
+    nodeHeartBeatResponse.setTokenSequenceNo(
+        this.rmContext.getTokenSequenceNo());
   }
 }

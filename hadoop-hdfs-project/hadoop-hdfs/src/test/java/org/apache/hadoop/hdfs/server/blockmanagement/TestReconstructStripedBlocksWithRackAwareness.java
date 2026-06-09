@@ -32,30 +32,36 @@ import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestReconstructStripedBlocksWithRackAwareness {
   public static final Logger LOG = LoggerFactory.getLogger(
       TestReconstructStripedBlocksWithRackAwareness.class);
 
   static {
-    GenericTestUtils.setLogLevel(BlockPlacementPolicy.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.ALL);
-    GenericTestUtils.setLogLevel(BlockManager.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(BlockPlacementPolicy.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.TRACE);
+    GenericTestUtils.setLogLevel(BlockManager.LOG, Level.TRACE);
   }
 
   private final ErasureCodingPolicy ecPolicy =
@@ -94,7 +100,7 @@ public class TestReconstructStripedBlocksWithRackAwareness {
   private static final HdfsConfiguration conf = new HdfsConfiguration();
   private DistributedFileSystem fs;
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
@@ -102,7 +108,7 @@ public class TestReconstructStripedBlocksWithRackAwareness {
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY, 1);
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -162,7 +168,9 @@ public class TestReconstructStripedBlocksWithRackAwareness {
     // the file's block is in 9 dn but 5 racks
     DFSTestUtil.createFile(fs, file,
         cellSize * dataBlocks * 2, (short) 1, 0L);
-    Assert.assertEquals(0, bm.numOfUnderReplicatedBlocks());
+    GenericTestUtils.waitFor(() ->
+        bm.numOfUnderReplicatedBlocks() == 0, 100, 30000);
+    LOG.info("Created file {}", file);
 
     final INodeFile fileNode = fsn.getFSDirectory()
         .getINode4Write(file.toString()).asFile();
@@ -170,10 +178,13 @@ public class TestReconstructStripedBlocksWithRackAwareness {
 
     // we now should have 9 internal blocks distributed in 5 racks
     Set<String> rackSet = new HashSet<>();
-    for (DatanodeStorageInfo storage : blockInfo.storages) {
+    Iterator<DatanodeStorageInfo> it = blockInfo.getStorageInfos();
+    while (it.hasNext()){
+      DatanodeStorageInfo storage = it.next();
       rackSet.add(storage.getDatanodeDescriptor().getNetworkLocation());
     }
-    Assert.assertEquals(dataBlocks - 1, rackSet.size());
+    assertEquals(dataBlocks - 1, rackSet.size(),
+        "rackSet size is wrong: " + rackSet);
 
     // restart the stopped datanode
     cluster.restartDataNode(lastHost);
@@ -181,28 +192,32 @@ public class TestReconstructStripedBlocksWithRackAwareness {
 
     // make sure we have 6 racks again
     NetworkTopology topology = bm.getDatanodeManager().getNetworkTopology();
-    Assert.assertEquals(hosts.length, topology.getNumOfLeaves());
-    Assert.assertEquals(dataBlocks, topology.getNumOfRacks());
+    LOG.info("topology is: {}", topology);
+    assertEquals(hosts.length, topology.getNumOfLeaves());
+    assertEquals(dataBlocks, topology.getNumOfRacks());
 
     // pause all the heartbeats
     for (DataNode dn : cluster.getDataNodes()) {
       DataNodeTestUtils.setHeartbeatsDisabledForTests(dn, true);
     }
 
-    fsn.writeLock();
+    fsn.writeLock(RwLockMode.BM);
     try {
       bm.processMisReplicatedBlocks();
     } finally {
-      fsn.writeUnlock();
+      fsn.writeUnlock(RwLockMode.BM, "testReconstructForNotEnoughRacks");
     }
 
     // check if redundancy monitor correctly schedule the reconstruction work.
     boolean scheduled = false;
     for (int i = 0; i < 5; i++) { // retry 5 times
-      for (DatanodeStorageInfo storage : blockInfo.storages) {
+      it = blockInfo.getStorageInfos();
+      while (it.hasNext()){
+        DatanodeStorageInfo storage = it.next();
         if (storage != null) {
           DatanodeDescriptor dn = storage.getDatanodeDescriptor();
-          Assert.assertEquals(0, dn.getNumberOfBlocksToBeErasureCoded());
+          assertEquals(0, dn.getNumberOfBlocksToBeErasureCoded(),
+              "Block to be erasure coded is wrong for datanode:" + dn);
           if (dn.getNumberOfBlocksToBeReplicated() == 1) {
             scheduled = true;
           }
@@ -213,7 +228,7 @@ public class TestReconstructStripedBlocksWithRackAwareness {
       }
       Thread.sleep(1000);
     }
-    Assert.assertTrue(scheduled);
+    assertTrue(scheduled);
   }
 
   @Test
@@ -260,7 +275,7 @@ public class TestReconstructStripedBlocksWithRackAwareness {
     LocatedBlocks blks = fs.getClient().getLocatedBlocks(file.toString(), 0);
     LocatedStripedBlock block = (LocatedStripedBlock) blks.getLastLocatedBlock();
     for (DatanodeInfo dn : block.getLocations()) {
-      Assert.assertFalse(dn.getHostName().equals("host1"));
+      assertFalse(dn.getHostName().equals("host1"));
     }
   }
 
@@ -311,11 +326,11 @@ public class TestReconstructStripedBlocksWithRackAwareness {
       recovered = bm.countNodes(blockInfo).liveReplicas() >=
           dataBlocks + parityBlocks;
     }
-    Assert.assertTrue(recovered);
+    assertTrue(recovered);
 
     // mark h9 as decommissioning
     DataNode datanode9 = getDataNode(hostNames[hostNames.length - 3]);
-    Assert.assertNotNull(datanode9);
+    assertNotNull(datanode9);
     final DatanodeDescriptor dn9 = dm.getDatanode(datanode9.getDatanodeId());
     dn9.startDecommission();
 
@@ -328,16 +343,17 @@ public class TestReconstructStripedBlocksWithRackAwareness {
 
     // start decommissioning h9
     boolean satisfied = bm.isPlacementPolicySatisfied(blockInfo);
-    Assert.assertFalse(satisfied);
+    assertFalse(satisfied);
     final DatanodeAdminManager decomManager =
         (DatanodeAdminManager) Whitebox.getInternalState(
             dm, "datanodeAdminManager");
-    cluster.getNamesystem().writeLock();
+    cluster.getNamesystem().writeLock(RwLockMode.BM);
     try {
       dn9.stopDecommission();
       decomManager.startDecommission(dn9);
     } finally {
-      cluster.getNamesystem().writeUnlock();
+      cluster.getNamesystem().writeUnlock(RwLockMode.BM,
+          "testReconstructionWithDecommission");
     }
 
     // make sure the decommission finishes and the block in on 6 racks
@@ -346,7 +362,7 @@ public class TestReconstructStripedBlocksWithRackAwareness {
       Thread.sleep(1000);
       decommissioned = dn9.isDecommissioned();
     }
-    Assert.assertTrue(decommissioned);
-    Assert.assertTrue(bm.isPlacementPolicySatisfied(blockInfo));
+    assertTrue(decommissioned);
+    assertTrue(bm.isPlacementPolicySatisfied(blockInfo));
   }
 }

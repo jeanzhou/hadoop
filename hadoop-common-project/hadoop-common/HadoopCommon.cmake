@@ -145,6 +145,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Make GNU extensions available.
     hadoop_add_compiler_flags("-D_GNU_SOURCE")
 
+    # using old default behavior on GCC >= 14.0
+    hadoop_add_compiler_flags("-Wno-error=implicit-function-declaration")
+
     # If JVM_ARCH_DATA_MODEL is 32, compile all binaries as 32-bit.
     if(JVM_ARCH_DATA_MODEL EQUAL 32)
         # Force 32-bit code generation on amd64/x86_64, ppc64, sparc64
@@ -193,8 +196,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
     # Solaris flags. 64-bit compilation is mandatory, and is checked earlier.
     hadoop_add_compiler_flags("-m64 -D_POSIX_C_SOURCE=200112L -D__EXTENSIONS__ -D_POSIX_PTHREAD_SEMANTICS")
-    set(CMAKE_C_FLAGS "-std=gnu99 ${CMAKE_C_FLAGS}")
-    set(CMAKE_CXX_FLAGS "-std=gnu++98 ${CMAKE_CXX_FLAGS}")
+    set(CMAKE_CXX_STANDARD 98)
     hadoop_add_linker_flags("-m64")
 
     # CMAKE_SYSTEM_PROCESSOR is set to the output of 'uname -p', which on Solaris is
@@ -211,3 +213,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
         message(FATAL_ERROR "Unrecognised CMAKE_SYSTEM_PROCESSOR ${CMAKE_SYSTEM_PROCESSOR}")
     endif()
 endif()
+
+# Set GNU99 as the C standard to use
+set(CMAKE_C_STANDARD 99)

@@ -35,6 +35,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.net.SocketFactory;
 
@@ -49,15 +51,17 @@ import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.Rpc
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcStatusProto;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.SaslRpcServer;
+import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.Time;
 
-import com.google.protobuf.BlockingService;
+import org.apache.hadoop.thirdparty.protobuf.BlockingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -85,9 +89,9 @@ public class RPC {
   final static int RPC_SERVICE_CLASS_DEFAULT = 0;
   public enum RpcKind {
     RPC_BUILTIN ((short) 1),         // Used for built in calls by tests
-    RPC_WRITABLE ((short) 2),        // Use WritableRpcEngine 
+    RPC_WRITABLE((short) 2),         // WritableRpcEngine removed; kept for wire-level detection
     RPC_PROTOCOL_BUFFER ((short) 3); // Use ProtobufRpcEngine
-    final static short MAX_INDEX = RPC_PROTOCOL_BUFFER.value; // used for array size
+    final static short MAX_SIZE = RPC_PROTOCOL_BUFFER.value; // used for array size
     private final short value;
 
     RpcKind(short val) {
@@ -147,6 +151,9 @@ public class RPC {
    * Get the protocol name.
    *  If the protocol class has a ProtocolAnnotation, then get the protocol
    *  name from the annotation; otherwise the class name is the protocol name.
+   *
+   * @param protocol input protocol.
+   * @return protocol name.
    */
   static public String getProtocolName(Class<?> protocol) {
     if (protocol == null) {
@@ -161,6 +168,9 @@ public class RPC {
    * If the protocol class has a ProtocolAnnotation,
    * then get the protocol version from the annotation;
    * otherwise get it from the versionID field of the protocol class.
+   *
+   * @param protocol input protocol.
+   * @return ProtocolVersion.
    */
   static public long getProtocolVersion(Class<?> protocol) {
     if (protocol == null) {
@@ -193,14 +203,18 @@ public class RPC {
   private static final String ENGINE_PROP = "rpc.engine";
 
   /**
-   * Set a protocol to use a non-default RpcEngine.
+   * Set a protocol to use a non-default RpcEngine if one
+   * is not specified in the configuration.
    * @param conf configuration to use
    * @param protocol the protocol interface
    * @param engine the RpcEngine impl
    */
   public static void setProtocolEngine(Configuration conf,
                                 Class<?> protocol, Class<?> engine) {
-    conf.setClass(ENGINE_PROP+"."+protocol.getName(), engine, RpcEngine.class);
+    if (conf.get(ENGINE_PROP+"."+protocol.getName()) == null) {
+      conf.setClass(ENGINE_PROP+"."+protocol.getName(), engine,
+                    RpcEngine.class);
+    }
   }
 
   // return the RpcEngine configured to handle a protocol
@@ -208,9 +222,11 @@ public class RPC {
       Configuration conf) {
     RpcEngine engine = PROTOCOL_ENGINES.get(protocol);
     if (engine == null) {
-      Class<?> impl = conf.getClass(ENGINE_PROP+"."+protocol.getName(),
-                                    WritableRpcEngine.class);
-      engine = (RpcEngine)ReflectionUtils.newInstance(impl, conf);
+      Class<?> impl = conf.getClass(ENGINE_PROP + "." + protocol.getName(),
+          null);
+      Preconditions.checkState(impl != null,
+          "No RPC engine configured for %s", protocol.getName());
+      engine = (RpcEngine) ReflectionUtils.newInstance(impl, conf);
       PROTOCOL_ENGINES.put(protocol, engine);
     }
     return engine;
@@ -251,14 +267,14 @@ public class RPC {
     }
     
     /**
-     * Get the client's preferred version
+     * @return Get the client's preferred version.
      */
     public long getClientVersion() {
       return clientVersion;
     }
     
     /**
-     * Get the server's agreed to version.
+     * @return Get the server's agreed to version.
      */
     public long getServerVersion() {
       return serverVersion;
@@ -279,8 +295,9 @@ public class RPC {
   }
 
   /**
-   * Get a proxy connection to a remote server
-   * 
+   * Get a proxy connection to a remote server.
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol class
    * @param clientVersion client version
    * @param addr remote address
@@ -299,8 +316,9 @@ public class RPC {
 
   /**
    * Get a protocol proxy that contains a proxy connection to a remote server
-   * and a set of methods that are supported by the server
-   * 
+   * and a set of methods that are supported by the server.
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol class
    * @param clientVersion client version
    * @param addr remote address
@@ -317,8 +335,9 @@ public class RPC {
   }
 
   /**
-   * Get a proxy connection to a remote server
-   * 
+   * Get a proxy connection to a remote server.
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol class
    * @param clientVersion client version
    * @param addr remote address
@@ -337,7 +356,8 @@ public class RPC {
   /**
    * Get a protocol proxy that contains a proxy connection to a remote server
    * and a set of methods that are supported by the server
-   * 
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol class
    * @param clientVersion client version
    * @param addr remote address
@@ -355,8 +375,9 @@ public class RPC {
   }
   
   /**
-   * Get a proxy connection to a remote server
-   * 
+   * Get a proxy connection to a remote server.
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol class
    * @param clientVersion client version
    * @param addr remote address
@@ -377,16 +398,18 @@ public class RPC {
 
   /**
    * Get a protocol proxy that contains a proxy connection to a remote server
-   * and a set of methods that are supported by the server
-   * 
+   * and a set of methods that are supported by the server.
+   *
+   * @param <T> Generics Type.
    * @param protocol protocol class
    * @param clientVersion client version
    * @param addr remote address
    * @param conf configuration to use
    * @param rpcTimeout timeout for each RPC
+   * @param connectionRetryPolicy input connectionRetryPolicy.
    * @param timeout time in milliseconds before giving up
    * @return the proxy
-   * @throws IOException if the far end through a RemoteException
+   * @throws IOException if the far end through a RemoteException.
    */
   public static <T> ProtocolProxy<T> waitForProtocolProxy(Class<T> protocol,
                                long clientVersion,
@@ -432,9 +455,18 @@ public class RPC {
     }
   }
 
-  /** Construct a client-side proxy object that implements the named protocol,
+  /**
+   * Construct a client-side proxy object that implements the named protocol,
    * talking to a server at the named address. 
-   * @param <T>*/
+   * @param <T> Generics Type T.
+   * @param protocol input protocol.
+   * @param clientVersion input clientVersion.
+   * @param addr input addr.
+   * @param conf input Configuration.
+   * @param factory input factory.
+   * @throws IOException raised on errors performing I/O.
+   * @return proxy.
+   */
   public static <T> T getProxy(Class<T> protocol,
                                 long clientVersion,
                                 InetSocketAddress addr, Configuration conf,
@@ -445,8 +477,9 @@ public class RPC {
 
   /**
    * Get a protocol proxy that contains a proxy connection to a remote server
-   * and a set of methods that are supported by the server
-   * 
+   * and a set of methods that are supported by the server.
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol class
    * @param clientVersion client version
    * @param addr remote address
@@ -463,9 +496,21 @@ public class RPC {
     return getProtocolProxy(protocol, clientVersion, addr, ugi, conf, factory);
   }
   
-  /** Construct a client-side proxy object that implements the named protocol,
+  /**
+   * Construct a client-side proxy object that implements the named protocol,
    * talking to a server at the named address. 
-   * @param <T>*/
+   *
+   * @param <T> Generics Type T.
+   * @param protocol input protocol.
+   * @param clientVersion input clientVersion.
+   * @param addr input addr.
+   * @param ticket input tocket.
+   * @param conf input conf.
+   * @param factory input factory.
+   * @return the protocol proxy.
+   * @throws IOException raised on errors performing I/O.
+   *
+   */
   public static <T> T getProxy(Class<T> protocol,
                                 long clientVersion,
                                 InetSocketAddress addr,
@@ -479,7 +524,8 @@ public class RPC {
   /**
    * Get a protocol proxy that contains a proxy connection to a remote server
    * and a set of methods that are supported by the server
-   * 
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol class
    * @param clientVersion client version
    * @param addr remote address
@@ -498,12 +544,56 @@ public class RPC {
     return getProtocolProxy(protocol, clientVersion, addr, ticket, conf,
         factory, getRpcTimeout(conf), null);
   }
+
+  /**
+   * Get a protocol proxy that contains a proxy connection to a remote server
+   * and a set of methods that are supported by the server.
+   *
+   * @param <T> Generics Type T
+   * @param protocol protocol class
+   * @param clientVersion client's version
+   * @param connId client connection identifier
+   * @param conf configuration
+   * @param factory socket factory
+   * @return the protocol proxy
+   * @throws IOException if the far end through a RemoteException
+   */
+  public static <T> ProtocolProxy<T> getProtocolProxy(Class<T> protocol,
+      long clientVersion, ConnectionId connId, Configuration conf,
+      SocketFactory factory) throws IOException {
+    return getProtocolProxy(protocol, clientVersion, connId, conf,
+        factory, null);
+  }
+
+  /**
+   * Get a protocol proxy that contains a proxy connection to a remote server
+   * and a set of methods that are supported by the server.
+   *
+   * @param <T> Generics Type T
+   * @param protocol protocol class
+   * @param clientVersion client's version
+   * @param connId client connection identifier
+   * @param conf configuration
+   * @param factory socket factory
+   * @param alignmentContext StateID alignment context
+   * @return the protocol proxy
+   * @throws IOException if the far end through a RemoteException
+   */
+  public static <T> ProtocolProxy<T> getProtocolProxy(Class<T> protocol,
+      long clientVersion, ConnectionId connId, Configuration conf,
+      SocketFactory factory, AlignmentContext alignmentContext) throws IOException {
+    if (UserGroupInformation.isSecurityEnabled()) {
+      SaslRpcServer.init(conf);
+    }
+    return getProtocolEngine(protocol, conf).getProxy(
+        protocol, clientVersion, connId, conf, factory, alignmentContext);
+  }
   
   /**
    * Construct a client-side proxy that implements the named protocol,
    * talking to a server at the named address.
-   * @param <T>
-   * 
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol
    * @param clientVersion client's version
    * @param addr server address
@@ -527,8 +617,9 @@ public class RPC {
   
   /**
    * Get a protocol proxy that contains a proxy connection to a remote server
-   * and a set of methods that are supported by the server
-   * 
+   * and a set of methods that are supported by the server.
+   *
+   * @param <T> Generics Type T.
    * @param protocol protocol
    * @param clientVersion client's version
    * @param addr server address
@@ -554,8 +645,9 @@ public class RPC {
 
   /**
    * Get a protocol proxy that contains a proxy connection to a remote server
-   * and a set of methods that are supported by the server
+   * and a set of methods that are supported by the server.
    *
+   * @param <T> Generics Type T.
    * @param protocol protocol
    * @param clientVersion client's version
    * @param addr server address
@@ -584,19 +676,57 @@ public class RPC {
     }
     return getProtocolEngine(protocol, conf).getProxy(protocol, clientVersion,
         addr, ticket, conf, factory, rpcTimeout, connectionRetryPolicy,
-        fallbackToSimpleAuth);
+        fallbackToSimpleAuth, null);
+  }
+
+  /**
+   * Get a protocol proxy that contains a proxy connection to a remote server
+   * and a set of methods that are supported by the server.
+   *
+   * @param protocol protocol
+   * @param clientVersion client's version
+   * @param addr server address
+   * @param ticket security ticket
+   * @param conf configuration
+   * @param factory socket factory
+   * @param rpcTimeout max time for each rpc; 0 means no timeout
+   * @param connectionRetryPolicy retry policy
+   * @param fallbackToSimpleAuth set to true or false during calls to indicate
+   *   if a secure client falls back to simple auth
+   * @param alignmentContext state alignment context
+   * @param <T> Generics Type T.
+   * @return the proxy
+   * @throws IOException if any error occurs
+   */
+  public static <T> ProtocolProxy<T> getProtocolProxy(Class<T> protocol,
+                                long clientVersion,
+                                InetSocketAddress addr,
+                                UserGroupInformation ticket,
+                                Configuration conf,
+                                SocketFactory factory,
+                                int rpcTimeout,
+                                RetryPolicy connectionRetryPolicy,
+                                AtomicBoolean fallbackToSimpleAuth,
+                                AlignmentContext alignmentContext)
+       throws IOException {
+    if (UserGroupInformation.isSecurityEnabled()) {
+      SaslRpcServer.init(conf);
+    }
+    return getProtocolEngine(protocol, conf).getProxy(protocol, clientVersion,
+        addr, ticket, conf, factory, rpcTimeout, connectionRetryPolicy,
+        fallbackToSimpleAuth, alignmentContext);
   }
 
    /**
-    * Construct a client-side proxy object with the default SocketFactory
-    * @param <T>
-    * 
-    * @param protocol
-    * @param clientVersion
-    * @param addr
-    * @param conf
+    * Construct a client-side proxy object with the default SocketFactory.
+    *
+    * @param <T> Generics Type T.
+    * @param protocol input protocol.
+    * @param clientVersion input clientVersion.
+    * @param addr input addr.
+    * @param conf input Configuration.
     * @return a proxy instance
-    * @throws IOException
+    * @throws IOException  if the thread is interrupted.
     */
    public static <T> T getProxy(Class<T> protocol,
                                  long clientVersion,
@@ -607,7 +737,8 @@ public class RPC {
    }
   
   /**
-   * Returns the server address for a given proxy.
+   * @return Returns the server address for a given proxy.
+   * @param proxy input proxy.
    */
   public static InetSocketAddress getServerAddress(Object proxy) {
     return getConnectionIdForProxy(proxy).getAddress();
@@ -634,12 +765,13 @@ public class RPC {
    * Get a protocol proxy that contains a proxy connection to a remote server
    * and a set of methods that are supported by the server
    * 
-   * @param protocol
-   * @param clientVersion
-   * @param addr
-   * @param conf
+   * @param protocol input protocol.
+   * @param clientVersion input clientVersion.
+   * @param addr input addr.
+   * @param conf input configuration.
+   * @param <T> Generics Type T.
    * @return a protocol proxy
-   * @throws IOException
+   * @throws IOException if the thread is interrupted.
    */
   public static <T> ProtocolProxy<T> getProtocolProxy(Class<T> protocol,
                                 long clientVersion,
@@ -717,74 +849,129 @@ public class RPC {
     private final Configuration conf;    
     private SecretManager<? extends TokenIdentifier> secretManager = null;
     private String portRangeConfig = null;
+    private AlignmentContext alignmentContext = null;
     
     public Builder(Configuration conf) {
       this.conf = conf;
     }
 
-    /** Mandatory field */
+    /**
+     * @return Mandatory field.
+     * @param protocol input protocol.
+     */
     public Builder setProtocol(Class<?> protocol) {
       this.protocol = protocol;
       return this;
     }
     
-    /** Mandatory field */
+    /**
+     * @return Mandatory field.
+     * @param instance input instance.
+     */
     public Builder setInstance(Object instance) {
       this.instance = instance;
       return this;
     }
     
-    /** Default: 0.0.0.0 */
+    /**
+     * @return Default: 0.0.0.0.
+     * @param bindAddress input bindAddress.
+     */
     public Builder setBindAddress(String bindAddress) {
       this.bindAddress = bindAddress;
       return this;
     }
     
-    /** Default: 0 */
+    /**
+     * @return Default: 0.
+     * @param port input port.
+     */
     public Builder setPort(int port) {
       this.port = port;
       return this;
     }
     
-    /** Default: 1 */
+    /**
+     * @return Default: 1.
+     * @param numHandlers input numHandlers.
+     */
     public Builder setNumHandlers(int numHandlers) {
       this.numHandlers = numHandlers;
       return this;
     }
-    
-    /** Default: -1 */
+
+    /**
+     * @return Default: -1.
+     * @param numReaders input numReaders.
+     * @deprecated call {@link #setNumReaders(int value)} instead.
+     */
+    @Deprecated
     public Builder setnumReaders(int numReaders) {
       this.numReaders = numReaders;
       return this;
     }
+
+    /**
+     * Set the number of reader threads.
+     *
+     * @return this builder.
+     * @param value input numReaders.
+     * @since HADOOP-18625.
+     */
+    public Builder setNumReaders(int value) {
+      this.numReaders = value;
+      return this;
+    }
     
-    /** Default: -1 */
+    /**
+     * @return Default: -1.
+     * @param queueSizePerHandler
+     *        input queueSizePerHandler.
+     */
     public Builder setQueueSizePerHandler(int queueSizePerHandler) {
       this.queueSizePerHandler = queueSizePerHandler;
       return this;
     }
     
-    /** Default: false */
+    /**
+     * @return Default: false.
+     * @param verbose input verbose.
+     */
     public Builder setVerbose(boolean verbose) {
       this.verbose = verbose;
       return this;
     }
     
-    /** Default: null */
+    /**
+     * @return Default: null.
+     * @param secretManager input secretManager.
+     */
     public Builder setSecretManager(
         SecretManager<? extends TokenIdentifier> secretManager) {
       this.secretManager = secretManager;
       return this;
     }
     
-    /** Default: null */
+    /**
+     * @return Default: null.
+     * @param portRangeConfig input portRangeConfig.
+     */
     public Builder setPortRangeConfig(String portRangeConfig) {
       this.portRangeConfig = portRangeConfig;
       return this;
     }
     
     /**
-     * Build the RPC Server. 
+     * @return Default: null.
+     * @param alignmentContext input alignmentContext.
+     */
+    public Builder setAlignmentContext(AlignmentContext alignmentContext) {
+      this.alignmentContext = alignmentContext;
+      return this;
+    }
+
+    /**
+     * @return Build the RPC Server.
      * @throws IOException on error
      * @throws HadoopIllegalArgumentException when mandatory fields are not set
      */
@@ -802,19 +989,52 @@ public class RPC {
       return getProtocolEngine(this.protocol, this.conf).getServer(
           this.protocol, this.instance, this.bindAddress, this.port,
           this.numHandlers, this.numReaders, this.queueSizePerHandler,
-          this.verbose, this.conf, this.secretManager, this.portRangeConfig);
+          this.verbose, this.conf, this.secretManager, this.portRangeConfig,
+          this.alignmentContext);
     }
   }
   
   /** An RPC Server. */
   public abstract static class Server extends org.apache.hadoop.ipc.Server {
-   boolean verbose;
-   static String classNameBase(String className) {
-      String[] names = className.split("\\.", -1);
-      if (names == null || names.length == 0) {
-        return className;
+
+    boolean verbose;
+
+    private static final Pattern COMPLEX_SERVER_NAME_PATTERN =
+        Pattern.compile("(?:[^\\$]*\\$)*([A-Za-z][^\\$]+)(?:\\$\\d+)?");
+
+    /**
+     * Get a meaningful and short name for a server based on a java class.
+     *
+     * The rules are defined to support the current naming schema of the
+     * generated protobuf classes where the final class usually an anonymous
+     * inner class of an inner class.
+     *
+     * 1. For simple classes it returns with the simple name of the classes
+     *     (with the name without package name)
+     *
+     * 2. For inner classes, this is the simple name of the inner class.
+     *
+     * 3.  If it is an Object created from a class factory
+     *   E.g., org.apache.hadoop.ipc.TestRPC$TestClass$2
+     * this method returns parent class TestClass.
+     *
+     * 4. If it is an anonymous class E.g., 'org.apache.hadoop.ipc.TestRPC$10'
+     * serverNameFromClass returns parent class TestRPC.
+     *
+     *
+     */
+    static String serverNameFromClass(Class<?> clazz) {
+      String name = clazz.getName();
+      String[] names = clazz.getName().split("\\.", -1);
+      if (names != null && names.length > 0) {
+        name = names[names.length - 1];
       }
-      return names[names.length-1];
+      Matcher matcher = COMPLEX_SERVER_NAME_PATTERN.matcher(name);
+      if (matcher.find()) {
+        return matcher.group(1);
+      } else {
+        return name;
+      }
     }
    
    /**
@@ -853,26 +1073,47 @@ public class RPC {
     */
    static class ProtoClassProtoImpl {
      final Class<?> protocolClass;
-     final Object protocolImpl; 
+      final Object protocolImpl;
+      private final boolean shadedPBImpl;
+
      ProtoClassProtoImpl(Class<?> protocolClass, Object protocolImpl) {
        this.protocolClass = protocolClass;
        this.protocolImpl = protocolImpl;
+       this.shadedPBImpl = protocolImpl instanceof BlockingService;
      }
+
+      public boolean isShadedPBImpl() {
+        return shadedPBImpl;
+      }
    }
 
    ArrayList<Map<ProtoNameVer, ProtoClassProtoImpl>> protocolImplMapArray = 
-       new ArrayList<Map<ProtoNameVer, ProtoClassProtoImpl>>(RpcKind.MAX_INDEX);
-   
+       new ArrayList<Map<ProtoNameVer, ProtoClassProtoImpl>>(RpcKind.MAX_SIZE);
+
+   @SuppressWarnings("checkstyle:Indentation")
    Map<ProtoNameVer, ProtoClassProtoImpl> getProtocolImplMap(RPC.RpcKind rpcKind) {
      if (protocolImplMapArray.size() == 0) {// initialize for all rpc kinds
-       for (int i=0; i <= RpcKind.MAX_INDEX; ++i) {
+       for (int i = 0; i < RpcKind.MAX_SIZE; ++i) {
          protocolImplMapArray.add(
              new HashMap<ProtoNameVer, ProtoClassProtoImpl>(10));
        }
      }
-     return protocolImplMapArray.get(rpcKind.ordinal());   
+     return protocolImplMapArray.get(rpcKind.ordinal());
    }
-   
+
+    /**
+     * Returns {@code true} only if at least one protocol has been registered
+     * on this server instance for the given {@link RPC.RpcKind}.
+     * Used to reject incoming requests for unsupported RPC kinds before any
+     * deserialization of the request payload takes place.
+     * @param rpcKind the RPC kind from the incoming request header.
+     * @return {@code true} if at least one protocol is registered for this kind.
+     */
+    boolean hasRegisteredProtocols(RPC.RpcKind rpcKind) {
+      Map<ProtoNameVer, ProtoClassProtoImpl> implMap = getProtocolImplMap(rpcKind);
+      return implMap != null && !implMap.isEmpty();
+    }
+
    // Register  protocol and its impl for rpc calls
    void registerProtocolAndImpl(RpcKind rpcKind, Class<?> protocolClass, 
        Object protocolImpl) {
@@ -897,7 +1138,18 @@ public class RPC {
            " ProtocolImpl=" + protocolImpl.getClass().getName() +
            " protocolClass=" + protocolClass.getName());
      }
-   }
+      String client = SecurityUtil.getClientPrincipal(protocolClass, getConf());
+      if (client != null) {
+        // notify the server's rpc scheduler that the protocol user has
+        // highest priority.  the scheduler should exempt the user from
+        // priority calculations.
+        try {
+          setPriorityLevel(UserGroupInformation.createRemoteUser(client), -1);
+        } catch (Exception ex) {
+          LOG.warn("Failed to set scheduling priority for " + client, ex);
+        }
+      }
+    }
    
    static class VerProtocolImpl {
      final long version;
@@ -964,7 +1216,7 @@ public class RPC {
     
     private void initProtocolMetaInfo(Configuration conf) {
       RPC.setProtocolEngine(conf, ProtocolMetaInfoPB.class,
-          ProtobufRpcEngine.class);
+          ProtobufRpcEngine2.class);
       ProtocolMetaInfoServerSideTranslatorPB xlator = 
           new ProtocolMetaInfoServerSideTranslatorPB(this);
       BlockingService protocolInfoBlockingService = ProtocolInfoService
@@ -975,6 +1227,7 @@ public class RPC {
     
     /**
      * Add a protocol to the existing server.
+     * @param rpcKind - input rpcKind
      * @param protocolClass - the protocol class
      * @param protocolImpl - the impl of the protocol that will be called
      * @return the server (for convenience)
@@ -988,7 +1241,7 @@ public class RPC {
     @Override
     public Writable call(RPC.RpcKind rpcKind, String protocol,
         Writable rpcRequest, long receiveTime) throws Exception {
-      return getRpcInvoker(rpcKind).call(this, protocol, rpcRequest,
+      return getServerRpcInvoker(rpcKind).call(this, protocol, rpcRequest,
           receiveTime);
     }
   }

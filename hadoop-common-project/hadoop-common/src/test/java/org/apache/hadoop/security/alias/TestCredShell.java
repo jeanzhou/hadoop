@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.security.alias;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -32,8 +32,9 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.security.ProviderUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Before;
-import org.junit.Test;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestCredShell {
   private final ByteArrayOutputStream outContent = new ByteArrayOutputStream();
@@ -43,7 +44,12 @@ public class TestCredShell {
   /* The default JCEKS provider - for testing purposes */
   private String jceksProvider;
 
-  @Before
+  private void assertOutputContains(String expected) {
+    Assertions.assertThat(outContent.toString())
+      .contains(expected);
+  }
+
+  @BeforeEach
   public void setup() throws Exception {
     System.setOut(new PrintStream(outContent));
     System.setErr(new PrintStream(errContent));
@@ -61,7 +67,7 @@ public class TestCredShell {
     CredentialShell cs = new CredentialShell();
     cs.setConf(new Configuration());
     rc = cs.run(args1);
-    assertEquals(outContent.toString(), 0, rc);
+    assertEquals(0, rc, outContent.toString());
     assertTrue(outContent.toString().contains("credential1 has been successfully " +
     		"created."));
     assertTrue(outContent.toString()
@@ -91,7 +97,7 @@ public class TestCredShell {
         jceksProvider};
     rc = cs.run(args5);
     assertEquals(0, rc);
-    assertFalse(outContent.toString(), outContent.toString().contains("credential1"));
+    assertFalse(outContent.toString().contains("credential1"), outContent.toString());
   }
 
   @Test
@@ -117,13 +123,13 @@ public class TestCredShell {
     CredentialShell cs = new CredentialShell();
     cs.setConf(new Configuration());
     rc = cs.run(args1);
-    assertEquals(outContent.toString(), 0, rc);
+    assertEquals(0, rc, outContent.toString());
     assertTrue(outContent.toString().contains("WARNING: you are modifying a " +
     		"transient provider."));
 
     String[] args2 = {"delete", "credential1", "-f", "-provider", "user:///"};
     rc = cs.run(args2);
-    assertEquals(outContent.toString(), 0, rc);
+    assertEquals(0, rc, outContent.toString());
     assertTrue(outContent.toString().contains("credential1 has been successfully " +
         "deleted."));
   }
@@ -155,8 +161,23 @@ public class TestCredShell {
     shell.setConf(new Configuration());
     shell.setPasswordReader(new MockPasswordReader(passwords));
     rc = shell.run(args1);
-    assertEquals(outContent.toString(), 1, rc);
+    assertEquals(1, rc, outContent.toString());
     assertTrue(outContent.toString().contains("Passwords don't match"));
+  }
+
+  @Test
+  public void testPromptForCredentialNotFound() throws Exception {
+    String[] args1 = {"check", "credential1", "-provider",
+        jceksProvider};
+    ArrayList<String> password = new ArrayList<String>();
+    password.add("p@ssw0rd");
+    int rc = 0;
+    CredentialShell shell = new CredentialShell();
+    shell.setConf(new Configuration());
+    shell.setPasswordReader(new MockPasswordReader(password));
+    rc = shell.run(args1);
+    assertEquals(0, rc);
+    assertOutputContains("Password match failed for credential1.");
   }
 
   @Test
@@ -172,15 +193,28 @@ public class TestCredShell {
     shell.setPasswordReader(new MockPasswordReader(passwords));
     rc = shell.run(args1);
     assertEquals(0, rc);
-    assertTrue(outContent.toString().contains("credential1 has been successfully " +
-        "created."));
-    
-    String[] args2 = {"delete", "credential1", "-f", "-provider",
+    assertOutputContains("credential1 has been successfully created.");
+
+    String[] args2 = {"check", "credential1", "-provider",
         jceksProvider};
+    ArrayList<String> password = new ArrayList<String>();
+    password.add("p@ssw0rd");
+    shell.setPasswordReader(new MockPasswordReader(password));
     rc = shell.run(args2);
     assertEquals(0, rc);
-    assertTrue(outContent.toString().contains("credential1 has been successfully " +
-        "deleted."));
+    assertOutputContains("Password match success for credential1.");
+    ArrayList<String> passwordError = new ArrayList<String>();
+    passwordError.add("p@ssw0rderr");
+    shell.setPasswordReader(new MockPasswordReader(password));
+    rc = shell.run(args2);
+    assertEquals(0, rc);
+    assertOutputContains("Password match failed for credential1.");
+
+    String[] args3 = {"delete", "credential1", "-f", "-provider",
+        jceksProvider};
+    rc = shell.run(args3);
+    assertEquals(0, rc);
+    assertOutputContains("credential1 has been successfully deleted.");
   }
   
   public class MockPasswordReader extends CredentialShell.PasswordReader {
@@ -215,8 +249,8 @@ public class TestCredShell {
     for (String cmd : Arrays.asList("create", "list", "delete")) {
       CredentialShell shell = new CredentialShell();
       shell.setConf(new Configuration());
-      assertEquals("Expected help argument on " + cmd + " to return 0",
-              0, shell.init(new String[] {cmd, "-help"}));
+      assertEquals(0, shell.init(new String[] {cmd, "-help"}),
+          "Expected help argument on " + cmd + " to return 0");
     }
   }
 
@@ -224,13 +258,13 @@ public class TestCredShell {
   public void testEmptyArgForCommands() throws Exception {
     CredentialShell shell = new CredentialShell();
     String[] command = { "list", "-provider" };
-    assertEquals("Expected empty argument on " + command + " to return 1", 1,
-        shell.init(command));
+    assertEquals(1,
+        shell.init(command), "Expected empty argument on " + command + " to return 1");
 
     for (String cmd : Arrays.asList("create", "delete")) {
       shell.setConf(new Configuration());
-      assertEquals("Expected empty argument on " + cmd + " to return 1", 1,
-          shell.init(new String[] { cmd }));
+      assertEquals(1, shell.init(new String[]{cmd}),
+          "Expected empty argument on " + cmd + " to return 1");
     }
   }
 
@@ -243,7 +277,7 @@ public class TestCredShell {
     CredentialShell cs = new CredentialShell();
     cs.setConf(new Configuration());
     rc = cs.run(args1);
-    assertEquals(outContent.toString(), 1, rc);
+    assertEquals(1, rc, outContent.toString());
     assertFalse(outContent.toString().contains("credential1 has been " +
         "successfully created."));
     assertTrue(outContent.toString()
@@ -260,7 +294,7 @@ public class TestCredShell {
     CredentialShell cs = new CredentialShell();
     cs.setConf(new Configuration());
     rc = cs.run(args1);
-    assertEquals(outContent.toString(), 0, rc);
+    assertEquals(0, rc, outContent.toString());
     assertTrue(outContent.toString().contains("Usage"));
   }
 
@@ -272,7 +306,7 @@ public class TestCredShell {
     CredentialShell cs = new CredentialShell();
     cs.setConf(new Configuration());
     rc = cs.run(args1);
-    assertEquals(outContent.toString(), 0, rc);
+    assertEquals(0, rc, outContent.toString());
     assertTrue(outContent.toString().contains("Usage"));
   }
 }

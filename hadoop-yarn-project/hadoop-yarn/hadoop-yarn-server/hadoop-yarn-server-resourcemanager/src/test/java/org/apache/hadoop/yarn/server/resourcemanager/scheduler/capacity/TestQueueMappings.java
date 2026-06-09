@@ -17,22 +17,27 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import java.io.IOException;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.io.IOException;
+import java.util.List;
+
+import org.apache.hadoop.yarn.server.resourcemanager.placement.csmappingrule.MappingRule;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.QueueMapping;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
-import org.apache.hadoop.yarn.server.resourcemanager.placement.UserGroupMappingPlacementRule;
-import org.apache.hadoop.yarn.server.resourcemanager.placement.UserGroupMappingPlacementRule.QueueMapping;
-import org.apache.hadoop.yarn.server.resourcemanager.placement.UserGroupMappingPlacementRule.QueueMapping.MappingType;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestQueueMappings {
 
-  private static final Log LOG = LogFactory.getLog(TestQueueMappings.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestQueueMappings.class);
 
   private static final String Q1 = "q1";
   private static final String Q2 = "q2";
@@ -41,11 +46,14 @@ public class TestQueueMappings {
       CapacitySchedulerConfiguration.ROOT + "." + Q1;
   private final static String Q2_PATH =
       CapacitySchedulerConfiguration.ROOT + "." + Q2;
-  
+  private static final QueuePath ROOT = new QueuePath(CapacitySchedulerConfiguration.ROOT);
+  private static final QueuePath Q1_QUEUE_PATH = new QueuePath(Q1_PATH);
+  private static final QueuePath Q2_QUEUE_PATH = new QueuePath(Q2_PATH);
+
   private CapacityScheduler cs;
   private YarnConfiguration conf;
-  
-  @Before
+
+  @BeforeEach
   public void setup() {
     CapacitySchedulerConfiguration csConf =
         new CapacitySchedulerConfiguration();
@@ -60,16 +68,23 @@ public class TestQueueMappings {
     cs.start();
   }
 
+  @AfterEach
+  public void tearDown() {
+    if (cs != null) {
+      cs.stop();
+    }
+  }
+
   private void setupQueueConfiguration(CapacitySchedulerConfiguration conf) {
     // Define top-level queues
-    conf.setQueues(CapacitySchedulerConfiguration.ROOT, new String[] { Q1, Q2 });
+    conf.setQueues(ROOT, new String[] {Q1, Q2});
 
-    conf.setCapacity(Q1_PATH, 10);
-    conf.setCapacity(Q2_PATH, 90);
+    conf.setCapacity(Q1_QUEUE_PATH, 10);
+    conf.setCapacity(Q2_QUEUE_PATH, 90);
 
     LOG.info("Setup top-level queues q1 and q2");
   }
-  
+
   @Test
   public void testQueueMappingSpecifyingNotExistedQueue() {
     // if the mapping specifies a queue that does not exist, reinitialize will
@@ -82,18 +97,52 @@ public class TestQueueMappings {
     } catch (IOException ioex) {
       fail = true;
     }
-    Assert.assertTrue("queue initialization failed for non-existent q", fail);
+    assertTrue(fail, "queue initialization failed for non-existent q");
   }
-  
+
   @Test
   public void testQueueMappingTrimSpaces() throws IOException {
     // space trimming
     conf.set(CapacitySchedulerConfiguration.QUEUE_MAPPING, "    u : a : " + Q1);
     cs.reinitialize(conf, null);
-    checkQMapping(new QueueMapping(MappingType.USER, "a", Q1));
+
+    List<MappingRule> rules = cs.getConfiguration().getMappingRules();
+
+    String ruleStr = rules.get(0).toString();
+    assert(ruleStr.contains("variable='%user'"));
+    assert(ruleStr.contains("value='a'"));
+    assert(ruleStr.contains("queueName='q1'"));
   }
 
-  @Test (timeout = 60000)
+  @Test
+  public void testQueueMappingPathParsing() {
+    QueueMapping leafOnly = QueueMapping.QueueMappingBuilder.create()
+        .parsePathString("leaf")
+        .build();
+
+    assertEquals("leaf", leafOnly.getQueue());
+    assertEquals(null, leafOnly.getParentQueue());
+    assertEquals("leaf", leafOnly.getFullPath());
+
+    QueueMapping twoLevels = QueueMapping.QueueMappingBuilder.create()
+        .parsePathString("root.leaf")
+        .build();
+
+    assertEquals("leaf", twoLevels.getQueue());
+    assertEquals("root", twoLevels.getParentQueue());
+    assertEquals("root.leaf", twoLevels.getFullPath());
+
+    QueueMapping deep = QueueMapping.QueueMappingBuilder.create()
+        .parsePathString("root.a.b.c.d.e.leaf")
+        .build();
+
+    assertEquals("leaf", deep.getQueue());
+    assertEquals("root.a.b.c.d.e", deep.getParentQueue());
+    assertEquals("root.a.b.c.d.e.leaf", deep.getFullPath());
+  }
+
+  @Test
+  @Timeout(value = 60)
   public void testQueueMappingParsingInvalidCases() throws Exception {
     // configuration parsing tests - negative test cases
     checkInvalidQMapping(conf, cs, "x:a:b", "invalid specifier");
@@ -118,16 +167,7 @@ public class TestQueueMappings {
     } catch (IOException ex) {
       fail = true;
     }
-    Assert.assertTrue("invalid mapping did not throw exception for " + reason,
-        fail);
-  }
-
-  private void checkQMapping(QueueMapping expected)
-          throws IOException {
-    UserGroupMappingPlacementRule rule =
-        (UserGroupMappingPlacementRule) cs.getRMContext()
-            .getQueuePlacementManager().getPlacementRules().get(0);
-    QueueMapping queueMapping = rule.getQueueMappings().get(0);
-    Assert.assertEquals(queueMapping, expected);
+    assertTrue(fail,
+        "invalid mapping did not throw exception for " + reason);
   }
 }

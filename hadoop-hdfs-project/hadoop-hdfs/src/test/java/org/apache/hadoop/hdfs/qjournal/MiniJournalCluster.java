@@ -18,8 +18,8 @@
 package org.apache.hadoop.hdfs.qjournal;
 
 import static org.apache.hadoop.hdfs.qjournal.QJMTestUtil.FAKE_NSINFO;
-import static org.junit.Assert.fail;
 
+import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -28,33 +28,47 @@ import java.net.URISyntaxException;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 
-import com.google.common.base.Supplier;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.function.Supplier;
+
+import org.apache.hadoop.util.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.qjournal.client.QuorumJournalManager;
 import org.apache.hadoop.hdfs.qjournal.server.JournalNode;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.net.NetUtils;
 
-import com.google.common.base.Joiner;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 import org.apache.hadoop.test.GenericTestUtils;
 
-public class MiniJournalCluster {
+public final class MiniJournalCluster implements Closeable {
+
   public static final String CLUSTER_WAITACTIVE_URI = "waitactive";
   public static class Builder {
     private String baseDir;
     private int numJournalNodes = 3;
     private boolean format = true;
     private final Configuration conf;
+    private int[] httpPorts = null;
+    private int[] rpcPorts = null;
+
+    static {
+      DefaultMetricsSystem.setMiniClusterMode(true);
+    }
     
     public Builder(Configuration conf) {
       this.conf = conf;
     }
-    
+
+    public Builder(Configuration conf, File baseDir) {
+      this.conf = conf;
+      baseDir(baseDir.toString());
+    }
+
     public Builder baseDir(String d) {
       this.baseDir = d;
       return this;
@@ -67,6 +81,16 @@ public class MiniJournalCluster {
 
     public Builder format(boolean f) {
       this.format = f;
+      return this;
+    }
+
+    public Builder setHttpPorts(int... ports) {
+      this.httpPorts = ports;
+      return this;
+    }
+
+    public Builder setRpcPorts(int... ports) {
+      this.rpcPorts = ports;
       return this;
     }
 
@@ -87,11 +111,25 @@ public class MiniJournalCluster {
     }
   }
 
-  private static final Log LOG = LogFactory.getLog(MiniJournalCluster.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(MiniJournalCluster.class);
   private final File baseDir;
   private final JNInfo[] nodes;
   
   private MiniJournalCluster(Builder b) throws IOException {
+
+    if (b.httpPorts != null && b.httpPorts.length != b.numJournalNodes) {
+      throw new IllegalArgumentException(
+          "Num of http ports (" + b.httpPorts.length + ") should match num of JournalNodes ("
+              + b.numJournalNodes + ")");
+    }
+
+    if (b.rpcPorts != null && b.rpcPorts.length != b.numJournalNodes) {
+      throw new IllegalArgumentException(
+          "Num of rpc ports (" + b.rpcPorts.length + ") should match num of JournalNodes ("
+              + b.numJournalNodes + ")");
+    }
+
     LOG.info("Starting MiniJournalCluster with " +
         b.numJournalNodes + " journal nodes");
     
@@ -166,8 +204,10 @@ public class MiniJournalCluster {
     Configuration conf = new Configuration(b.conf);
     File logDir = getStorageDir(idx);
     conf.set(DFSConfigKeys.DFS_JOURNALNODE_EDITS_DIR_KEY, logDir.toString());
-    conf.set(DFSConfigKeys.DFS_JOURNALNODE_RPC_ADDRESS_KEY, "localhost:0");
-    conf.set(DFSConfigKeys.DFS_JOURNALNODE_HTTP_ADDRESS_KEY, "localhost:0");
+    int httpPort = b.httpPorts != null ? b.httpPorts[idx] : 0;
+    int rpcPort = b.rpcPorts != null ? b.rpcPorts[idx] : 0;
+    conf.set(DFSConfigKeys.DFS_JOURNALNODE_RPC_ADDRESS_KEY, "localhost:" + rpcPort);
+    conf.set(DFSConfigKeys.DFS_JOURNALNODE_HTTP_ADDRESS_KEY, "localhost:" + httpPort);
     return conf;
   }
 
@@ -190,7 +230,11 @@ public class MiniJournalCluster {
   public JournalNode getJournalNode(int i) {
     return nodes[i].node;
   }
-  
+
+  public String getJournalNodeIpcAddress(int i) {
+    return nodes[i].ipcAddr.toString();
+  }
+
   public void restartJournalNode(int i) throws InterruptedException, IOException {
     JNInfo info = nodes[i];
     JournalNode jn = info.node;
@@ -249,7 +293,8 @@ public class MiniJournalCluster {
           }
         }, 50, 3000);
       } catch (TimeoutException e) {
-        fail("Time out while waiting for journal node " + index + " to start.");
+        throw new AssertionError("Time out while waiting for journal node " + index +
+            " to start.");
       } catch (InterruptedException ite) {
         LOG.warn("Thread interrupted when waiting for node start", ite);
       }
@@ -263,4 +308,10 @@ public class MiniJournalCluster {
           .DFS_NAMENODE_SHARED_EDITS_DIR_KEY, quorumJournalURI.toString());
     }
   }
+
+  @Override
+  public void close() throws IOException {
+    this.shutdown();
+  }
+
 }

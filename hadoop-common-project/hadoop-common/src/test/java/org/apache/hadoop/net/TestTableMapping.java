@@ -19,19 +19,20 @@ package org.apache.hadoop.net;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.NET_TOPOLOGY_TABLE_MAPPING_FILE_KEY;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import com.google.common.base.Charsets;
-import com.google.common.io.Files;
+import org.apache.hadoop.thirdparty.com.google.common.io.Files;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
-import org.junit.Before;
-import org.junit.Test;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestTableMapping {
   private String hostName1 = "1.2.3.4";
@@ -41,8 +42,8 @@ public class TestTableMapping {
   public void testResolve() throws IOException {
     File mapFile = File.createTempFile(getClass().getSimpleName() +
         ".testResolve", ".txt");
-    Files.write(hostName1 + " /rack1\n" +
-                hostName2 + "\t/rack2\n", mapFile, Charsets.UTF_8);
+    Files.asCharSink(mapFile, StandardCharsets.UTF_8).write(
+        hostName1 + " /rack1\n" + hostName2 + "\t/rack2\n");
     mapFile.deleteOnExit();
     TableMapping mapping = new TableMapping();
 
@@ -64,8 +65,8 @@ public class TestTableMapping {
   public void testTableCaching() throws IOException {
     File mapFile = File.createTempFile(getClass().getSimpleName() +
         ".testTableCaching", ".txt");
-    Files.write(hostName1 + " /rack1\n" +
-        hostName2 + "\t/rack2\n", mapFile, Charsets.UTF_8);
+    Files.asCharSink(mapFile, StandardCharsets.UTF_8).write(
+        hostName1 + " /rack1\n" + hostName2 + "\t/rack2\n");
     mapFile.deleteOnExit();
     TableMapping mapping = new TableMapping();
 
@@ -128,8 +129,8 @@ public class TestTableMapping {
   public void testClearingCachedMappings() throws IOException {
     File mapFile = File.createTempFile(getClass().getSimpleName() +
         ".testClearingCachedMappings", ".txt");
-    Files.write(hostName1 + " /rack1\n" +
-                hostName2 + "\t/rack2\n", mapFile, Charsets.UTF_8);
+    Files.asCharSink(mapFile, StandardCharsets.UTF_8).write(
+        hostName1 + " /rack1\n" + hostName2 + "\t/rack2\n");
     mapFile.deleteOnExit();
 
     TableMapping mapping = new TableMapping();
@@ -147,7 +148,7 @@ public class TestTableMapping {
     assertEquals("/rack1", result.get(0));
     assertEquals("/rack2", result.get(1));
 
-    Files.write("", mapFile, Charsets.UTF_8);
+    Files.asCharSink(mapFile, StandardCharsets.UTF_8).write("");
 
     mapping.reloadCachedMappings();
 
@@ -162,11 +163,12 @@ public class TestTableMapping {
   }
 
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testBadFile() throws IOException {
     File mapFile = File.createTempFile(getClass().getSimpleName() +
         ".testBadFile", ".txt");
-    Files.write("bad contents", mapFile, Charsets.UTF_8);
+    Files.asCharSink(mapFile, StandardCharsets.UTF_8).write("bad contents");
     mapFile.deleteOnExit();
     TableMapping mapping = new TableMapping();
 

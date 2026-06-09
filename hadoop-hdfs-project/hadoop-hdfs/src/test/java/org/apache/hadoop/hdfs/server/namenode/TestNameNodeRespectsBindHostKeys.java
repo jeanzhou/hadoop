@@ -17,12 +17,10 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.hamcrest.core.IsNot.not;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -33,11 +31,12 @@ import org.apache.hadoop.test.GenericTestUtils;
 import java.io.File;
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -52,7 +51,8 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
  *  - DFS_NAMENODE_HTTPS_BIND_HOST_KEY
  */
 public class TestNameNodeRespectsBindHostKeys {
-  public static final Log LOG = LogFactory.getLog(TestNameNodeRespectsBindHostKeys.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestNameNodeRespectsBindHostKeys.class);
   private static final String WILDCARD_ADDRESS = "0.0.0.0";
   private static final String LOCALHOST_SERVER_ADDRESS = "127.0.0.1:0";
   private static String keystoresDir;
@@ -74,7 +74,8 @@ public class TestNameNodeRespectsBindHostKeys {
         .toString();
   }
 
-  @Test (timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testRpcBindHostKey() throws IOException {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = null;
@@ -86,8 +87,9 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = getRpcServerAddress(cluster);
-      assertThat("Bind address not expected to be wildcard by default.",
-                 address, not("/" + WILDCARD_ADDRESS));
+      assertThat(address)
+          .as("Bind address not expected to be wildcard by default.")
+          .isNotEqualTo("/" + WILDCARD_ADDRESS);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -105,8 +107,9 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = getRpcServerAddress(cluster);
-      assertThat("Bind address " + address + " is not wildcard.",
-                 address, is("/" + WILDCARD_ADDRESS));
+      assertThat(address)
+          .as("Bind address " + address + " is not wildcard.")
+          .isEqualTo("/" + WILDCARD_ADDRESS);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -114,7 +117,8 @@ public class TestNameNodeRespectsBindHostKeys {
     }    
   }
 
-  @Test (timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testServiceRpcBindHostKey() throws IOException {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = null;
@@ -128,8 +132,9 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = getServiceRpcServerAddress(cluster);
-      assertThat("Bind address not expected to be wildcard by default.",
-                 address, not("/" + WILDCARD_ADDRESS));
+      assertThat(address)
+          .as("Bind address not expected to be wildcard by default.")
+          .isNotEqualTo("/" + WILDCARD_ADDRESS);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -147,8 +152,9 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = getServiceRpcServerAddress(cluster);
-      assertThat("Bind address " + address + " is not wildcard.",
-                 address, is("/" + WILDCARD_ADDRESS));
+      assertThat(address)
+          .as("Bind address " + address + " is not wildcard.")
+          .isEqualTo("/" + WILDCARD_ADDRESS);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -156,7 +162,8 @@ public class TestNameNodeRespectsBindHostKeys {
     }
   }
 
-  @Test (timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testLifelineRpcBindHostKey() throws IOException {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = null;
@@ -170,8 +177,9 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = getLifelineRpcServerAddress(cluster);
-      assertThat("Bind address not expected to be wildcard by default.",
-                 address, not("/" + WILDCARD_ADDRESS));
+      assertThat(address)
+          .as("Bind address not expected to be wildcard by default.")
+          .isNotEqualTo("/" + WILDCARD_ADDRESS);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -189,8 +197,9 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = getLifelineRpcServerAddress(cluster);
-      assertThat("Bind address " + address + " is not wildcard.",
-                 address, is("/" + WILDCARD_ADDRESS));
+      assertThat(address)
+          .as("Bind address " + address + " is not wildcard.")
+          .isEqualTo("/" + WILDCARD_ADDRESS);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -198,7 +207,8 @@ public class TestNameNodeRespectsBindHostKeys {
     }
   }
 
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testHttpBindHostKey() throws IOException {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = null;
@@ -211,8 +221,8 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = cluster.getNameNode().getHttpAddress().toString();
-      assertFalse("HTTP Bind address not expected to be wildcard by default.",
-                  address.startsWith(WILDCARD_ADDRESS));
+      assertFalse(address.startsWith(WILDCARD_ADDRESS),
+          "HTTP Bind address not expected to be wildcard by default.");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -231,8 +241,8 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = cluster.getNameNode().getHttpAddress().toString();
-      assertTrue("HTTP Bind address " + address + " is not wildcard.",
-                 address.startsWith(WILDCARD_ADDRESS));
+      assertTrue(address.startsWith(WILDCARD_ADDRESS),
+          "HTTP Bind address " + address + " is not wildcard.");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -264,7 +274,8 @@ public class TestNameNodeRespectsBindHostKeys {
    * pick a different host/port combination.
    * @throws Exception
    */
-  @Test (timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testHttpsBindHostKey() throws Exception {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = null;
@@ -285,8 +296,8 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = cluster.getNameNode().getHttpsAddress().toString();
-      assertFalse("HTTP Bind address not expected to be wildcard by default.",
-                  address.startsWith(WILDCARD_ADDRESS));
+      assertFalse(address.startsWith(WILDCARD_ADDRESS),
+          "HTTP Bind address not expected to be wildcard by default.");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -305,8 +316,8 @@ public class TestNameNodeRespectsBindHostKeys {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       cluster.waitActive();
       String address = cluster.getNameNode().getHttpsAddress().toString();
-      assertTrue("HTTP Bind address " + address + " is not wildcard.",
-                 address.startsWith(WILDCARD_ADDRESS));
+      assertTrue(address.startsWith(WILDCARD_ADDRESS),
+          "HTTP Bind address " + address + " is not wildcard.");
     } finally {
       if (cluster != null) {
         cluster.shutdown();

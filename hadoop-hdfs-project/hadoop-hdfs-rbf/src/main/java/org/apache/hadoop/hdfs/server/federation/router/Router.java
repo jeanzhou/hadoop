@@ -17,6 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.federation.router;
 
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY;
+import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.DFS_ROUTER_KERBEROS_PRINCIPAL_HOSTNAME_KEY;
+import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.DFS_ROUTER_KERBEROS_PRINCIPAL_KEY;
+import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.DFS_ROUTER_KEYTAB_FILE_KEY;
+
 import static org.apache.hadoop.hdfs.server.federation.router.FederationUtil.newActiveNamenodeResolver;
 import static org.apache.hadoop.hdfs.server.federation.router.FederationUtil.newFileSubclusterResolver;
 
@@ -32,21 +38,32 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSUtil;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.HAUtil;
-import org.apache.hadoop.hdfs.server.federation.metrics.FederationMetrics;
+import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
+import org.apache.hadoop.hdfs.server.common.TokenVerifier;
+import org.apache.hadoop.hdfs.server.federation.metrics.RBFMetrics;
+import org.apache.hadoop.hdfs.server.federation.metrics.NamenodeBeanMetrics;
 import org.apache.hadoop.hdfs.server.federation.resolver.ActiveNamenodeResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.FileSubclusterResolver;
+import org.apache.hadoop.hdfs.server.federation.store.MountTableStore;
 import org.apache.hadoop.hdfs.server.federation.store.RouterStore;
 import org.apache.hadoop.hdfs.server.federation.store.StateStoreService;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.source.JvmMetrics;
+import org.apache.hadoop.net.DomainNameResolver;
+import org.apache.hadoop.net.DomainNameResolverFactory;
+import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.service.CompositeService;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.util.JvmPauseMonitor;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Router that provides a unified view of multiple federated HDFS clusters. It
@@ -69,7 +86,8 @@ import com.google.common.annotations.VisibleForTesting;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
-public class Router extends CompositeService {
+public class Router extends CompositeService implements
+    TokenVerifier<DelegationTokenIdentifier> {
 
   private static final Logger LOG = LoggerFactory.getLogger(Router.class);
 
@@ -144,6 +162,11 @@ public class Router extends CompositeService {
     this.conf = configuration;
     updateRouterState(RouterServiceState.INITIALIZING);
 
+    // Enable the security for the Router
+    UserGroupInformation.setConfiguration(conf);
+    SecurityUtil.login(conf, DFS_ROUTER_KEYTAB_FILE_KEY,
+        DFS_ROUTER_KERBEROS_PRINCIPAL_KEY, getHostName(conf));
+
     if (conf.getBoolean(
         RBFConfigKeys.DFS_ROUTER_STORE_ENABLE,
         RBFConfigKeys.DFS_ROUTER_STORE_ENABLE_DEFAULT)) {
@@ -174,6 +197,8 @@ public class Router extends CompositeService {
       this.setRpcServerAddress(rpcServer.getRpcAddress());
     }
 
+    checkRouterId();
+
     if (conf.getBoolean(
         RBFConfigKeys.DFS_ROUTER_ADMIN_ENABLE,
         RBFConfigKeys.DFS_ROUTER_ADMIN_ENABLE_DEFAULT)) {
@@ -190,21 +215,26 @@ public class Router extends CompositeService {
       addService(this.httpServer);
     }
 
-    if (conf.getBoolean(
+    boolean isRouterHeartbeatEnabled = conf.getBoolean(
         RBFConfigKeys.DFS_ROUTER_HEARTBEAT_ENABLE,
-        RBFConfigKeys.DFS_ROUTER_HEARTBEAT_ENABLE_DEFAULT)) {
+        RBFConfigKeys.DFS_ROUTER_HEARTBEAT_ENABLE_DEFAULT);
+    boolean isNamenodeHeartbeatEnable = conf.getBoolean(
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_HEARTBEAT_ENABLE,
+        isRouterHeartbeatEnabled);
+    if (isNamenodeHeartbeatEnable) {
 
       // Create status updater for each monitored Namenode
       this.namenodeHeartbeatServices = createNamenodeHeartbeatServices();
-      for (NamenodeHeartbeatService hearbeatService :
+      for (NamenodeHeartbeatService heartbeatService :
           this.namenodeHeartbeatServices) {
-        addService(hearbeatService);
+        addService(heartbeatService);
       }
 
       if (this.namenodeHeartbeatServices.isEmpty()) {
         LOG.error("Heartbeat is enabled but there are no namenodes to monitor");
       }
-
+    }
+    if (isRouterHeartbeatEnabled) {
       // Periodically update the router state
       this.routerHeartbeatService = new RouterHeartbeatService(this);
       addService(this.routerHeartbeatService);
@@ -242,7 +272,87 @@ public class Router extends CompositeService {
       addService(this.safemodeService);
     }
 
+    /*
+     * Refresh mount table cache immediately after adding, modifying or deleting
+     * the mount table entries. If this service is not enabled mount table cache
+     * are refreshed periodically by StateStoreCacheUpdateService
+     */
+    if (conf.getBoolean(RBFConfigKeys.MOUNT_TABLE_CACHE_UPDATE,
+        RBFConfigKeys.MOUNT_TABLE_CACHE_UPDATE_DEFAULT)) {
+      // There is no use of starting refresh service if state store and admin
+      // servers are not enabled
+      String disabledDependentServices = getDisabledDependentServices();
+      /*
+       * disabledDependentServices null means all dependent services are
+       * enabled.
+       */
+      if (disabledDependentServices == null) {
+
+        MountTableRefresherService refreshService =
+            new MountTableRefresherService(this);
+        addService(refreshService);
+        LOG.info("Service {} is enabled.",
+            MountTableRefresherService.class.getSimpleName());
+      } else {
+        LOG.warn(
+            "Service {} not enabled: dependent service(s) {} not enabled.",
+            MountTableRefresherService.class.getSimpleName(),
+            disabledDependentServices);
+      }
+    }
+
     super.serviceInit(conf);
+
+    // Set quota manager in mount store to update quota usage in mount table.
+    if (stateStore != null) {
+      MountTableStore mountstore =
+          this.stateStore.getRegisteredRecordStore(MountTableStore.class);
+      mountstore.setQuotaManager(this.quotaManager);
+    }
+  }
+
+  /**
+   * Set the router id if not set to prevent RouterHeartbeatService
+   * update state store with a null router id.
+   */
+  private void checkRouterId() {
+    if (this.routerId == null) {
+      InetSocketAddress confRpcAddress = conf.getSocketAddr(
+          RBFConfigKeys.DFS_ROUTER_RPC_BIND_HOST_KEY,
+          RBFConfigKeys.DFS_ROUTER_RPC_ADDRESS_KEY,
+          RBFConfigKeys.DFS_ROUTER_RPC_ADDRESS_DEFAULT,
+          RBFConfigKeys.DFS_ROUTER_RPC_PORT_DEFAULT);
+      setRpcServerAddress(confRpcAddress);
+    }
+  }
+
+  private String getDisabledDependentServices() {
+    if (this.stateStore == null && this.adminServer == null) {
+      return StateStoreService.class.getSimpleName() + ","
+          + RouterAdminServer.class.getSimpleName();
+    } else if (this.stateStore == null) {
+      return StateStoreService.class.getSimpleName();
+    } else if (this.adminServer == null) {
+      return RouterAdminServer.class.getSimpleName();
+    }
+    return null;
+  }
+
+  /**
+   * Returns the hostname for this Router. If the hostname is not
+   * explicitly configured in the given config, then it is determined.
+   *
+   * @param config configuration
+   * @return the hostname (NB: may not be a FQDN)
+   * @throws UnknownHostException if the hostname cannot be determined
+   */
+  private static String getHostName(Configuration config)
+      throws UnknownHostException {
+    String name = config.get(DFS_ROUTER_KERBEROS_PRINCIPAL_HOSTNAME_KEY);
+    if (name == null) {
+      name = InetAddress.getLocalHost().getHostName();
+    }
+    return name;
   }
 
   @Override
@@ -282,9 +392,9 @@ public class Router extends CompositeService {
    * Shutdown the router.
    */
   public void shutDown() {
-    new Thread() {
+    new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         Router.this.stop();
       }
     }.start();
@@ -300,7 +410,7 @@ public class Router extends CompositeService {
    * @return New Router RPC Server.
    * @throws IOException If the router RPC server was not started.
    */
-  protected RouterRpcServer createRpcServer() throws IOException {
+  public RouterRpcServer createRpcServer() throws IOException {
     return new RouterRpcServer(this.conf, this, this.getNamenodeResolver(),
         this.getSubclusterResolver());
   }
@@ -400,6 +510,12 @@ public class Router extends CompositeService {
     return null;
   }
 
+  @Override
+  public void verifyToken(DelegationTokenIdentifier tokenId, byte[] password)
+      throws IOException {
+    getRpcServer().getRouterSecurityManager().verifyToken(tokenId, password);
+  }
+
   /////////////////////////////////////////////////////////
   // Namenode heartbeat monitors
   /////////////////////////////////////////////////////////
@@ -417,9 +533,9 @@ public class Router extends CompositeService {
     if (conf.getBoolean(
         RBFConfigKeys.DFS_ROUTER_MONITOR_LOCAL_NAMENODE,
         RBFConfigKeys.DFS_ROUTER_MONITOR_LOCAL_NAMENODE_DEFAULT)) {
-      // Create a local heartbet service
+      // Create a local heartbeat service
       NamenodeHeartbeatService localHeartbeatService =
-          createLocalNamenodeHearbeatService();
+          createLocalNamenodeHeartbeatService();
       if (localHeartbeatService != null) {
         String nnDesc = localHeartbeatService.getNamenodeDesc();
         ret.put(nnDesc, localHeartbeatService);
@@ -427,24 +543,46 @@ public class Router extends CompositeService {
     }
 
     // Create heartbeat services for a list specified by the admin
-    String namenodes = this.conf.get(
+    Collection<String> namenodes = this.conf.getTrimmedStringCollection(
         RBFConfigKeys.DFS_ROUTER_MONITOR_NAMENODE);
-    if (namenodes != null) {
-      for (String namenode : namenodes.split(",")) {
-        String[] namenodeSplit = namenode.split("\\.");
-        String nsId = null;
-        String nnId = null;
-        if (namenodeSplit.length == 2) {
-          nsId = namenodeSplit[0];
-          nnId = namenodeSplit[1];
-        } else if (namenodeSplit.length == 1) {
-          nsId = namenode;
+    for (String namenode : namenodes) {
+      String[] namenodeSplit = namenode.split("\\.");
+      String nsId = null;
+      String nnId = null;
+      if (namenodeSplit.length == 2) {
+        nsId = namenodeSplit[0];
+        nnId = namenodeSplit[1];
+      } else if (namenodeSplit.length == 1) {
+        nsId = namenode;
+      } else {
+        LOG.error("Wrong Namenode to monitor: {}", namenode);
+      }
+      if (nsId != null) {
+        String configKeyWithHost =
+            RBFConfigKeys.DFS_ROUTER_MONITOR_NAMENODE_RESOLUTION_ENABLED + "." + nsId;
+        boolean resolveNeeded = conf.getBoolean(configKeyWithHost,
+            RBFConfigKeys.DFS_ROUTER_MONITOR_NAMENODE_RESOLUTION_ENABLED_DEFAULT);
+
+        if (nnId != null && resolveNeeded) {
+          DomainNameResolver dnr = DomainNameResolverFactory.newInstance(
+              conf, nsId, RBFConfigKeys.DFS_ROUTER_MONITOR_NAMENODE_RESOLVER_IMPL);
+
+          Map<String, InetSocketAddress> hosts = Maps.newLinkedHashMap();
+          Map<String, InetSocketAddress> resolvedHosts =
+              DFSUtilClient.getResolvedAddressesForNnId(conf, nsId, nnId, dnr,
+                  null, DFS_NAMENODE_RPC_ADDRESS_KEY,
+                  DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY);
+          hosts.putAll(resolvedHosts);
+          for (InetSocketAddress isa : hosts.values()) {
+            NamenodeHeartbeatService heartbeatService =
+                createNamenodeHeartbeatService(nsId, nnId, isa.getHostName());
+            if (heartbeatService != null) {
+              ret.put(heartbeatService.getNamenodeDesc(), heartbeatService);
+            }
+          }
         } else {
-          LOG.error("Wrong Namenode to monitor: {}", namenode);
-        }
-        if (nsId != null) {
           NamenodeHeartbeatService heartbeatService =
-              createNamenodeHearbeatService(nsId, nnId);
+              createNamenodeHeartbeatService(nsId, nnId);
           if (heartbeatService != null) {
             ret.put(heartbeatService.getNamenodeDesc(), heartbeatService);
           }
@@ -460,18 +598,24 @@ public class Router extends CompositeService {
    *
    * @return Updater of the status for the local Namenode.
    */
-  protected NamenodeHeartbeatService createLocalNamenodeHearbeatService() {
+  @VisibleForTesting
+  public NamenodeHeartbeatService createLocalNamenodeHeartbeatService() {
     // Detect NN running in this machine
     String nsId = DFSUtil.getNamenodeNameServiceId(conf);
+    if (nsId == null) {
+      LOG.error("Cannot find local nameservice id");
+      return null;
+    }
     String nnId = null;
     if (HAUtil.isHAEnabled(conf, nsId)) {
       nnId = HAUtil.getNameNodeId(conf, nsId);
       if (nnId == null) {
         LOG.error("Cannot find namenode id for local {}", nsId);
+        return null;
       }
     }
 
-    return createNamenodeHearbeatService(nsId, nnId);
+    return createNamenodeHeartbeatService(nsId, nnId);
   }
 
   /**
@@ -481,12 +625,22 @@ public class Router extends CompositeService {
    * @param nnId Identifier of the namenode (HA) to monitor.
    * @return Updater of the status for the specified Namenode.
    */
-  protected NamenodeHeartbeatService createNamenodeHearbeatService(
+  protected NamenodeHeartbeatService createNamenodeHeartbeatService(
       String nsId, String nnId) {
 
     LOG.info("Creating heartbeat service for Namenode {} in {}", nnId, nsId);
     NamenodeHeartbeatService ret = new NamenodeHeartbeatService(
         namenodeResolver, nsId, nnId);
+    return ret;
+  }
+
+  protected NamenodeHeartbeatService createNamenodeHeartbeatService(
+      String nsId, String nnId, String resolvedHost) {
+
+    LOG.info("Creating heartbeat service for" +
+        " Namenode {}, resolved host {}, in {}", nnId, resolvedHost, nsId);
+    NamenodeHeartbeatService ret = new NamenodeHeartbeatService(
+        namenodeResolver, nsId, nnId, resolvedHost);
     return ret;
   }
 
@@ -497,7 +651,7 @@ public class Router extends CompositeService {
   /**
    * Update the router state and heartbeat to the state store.
    *
-   * @param state The new router state.
+   * @param newState The new router state.
    */
   public void updateRouterState(RouterServiceState newState) {
     this.state = newState;
@@ -513,6 +667,16 @@ public class Router extends CompositeService {
    */
   public RouterServiceState getRouterState() {
     return this.state;
+  }
+
+  /**
+   * Compare router state.
+   *
+   * @param routerState the router service state.
+   * @return true if the given router state is same as the state maintained by the router object.
+   */
+  public boolean isRouterState(RouterServiceState routerState) {
+    return routerState.equals(this.state);
   }
 
   /////////////////////////////////////////////////////////
@@ -541,15 +705,40 @@ public class Router extends CompositeService {
   }
 
   /**
+   * Get the metrics system for the Router Client.
+   *
+   * @return Router Client metrics.
+   */
+  public RouterClientMetrics getRouterClientMetrics() {
+    if (this.metrics != null) {
+      return this.metrics.getRouterClientMetrics();
+    }
+    return null;
+  }
+
+  /**
    * Get the federation metrics.
    *
    * @return Federation metrics.
    */
-  public FederationMetrics getMetrics() {
+  public RBFMetrics getMetrics() {
     if (this.metrics != null) {
-      return this.metrics.getFederationMetrics();
+      return this.metrics.getRBFMetrics();
     }
     return null;
+  }
+
+  /**
+   * Get the namenode metrics.
+   *
+   * @return the namenode metrics.
+   * @throws IOException if the namenode metrics are not initialized.
+   */
+  public NamenodeBeanMetrics getNamenodeMetrics() throws IOException {
+    if (this.metrics == null) {
+      throw new IOException("Namenode metrics is not initialized");
+    }
+    return this.metrics.getNamenodeMetrics();
   }
 
   /**
@@ -573,7 +762,7 @@ public class Router extends CompositeService {
   /**
    * Get the state store interface for the router heartbeats.
    *
-   * @return FederationRouterStateStore state store API handle.
+   * @return RouterStore state store API handle.
    */
   public RouterStore getRouterStateManager() {
     if (this.routerStateManager == null && this.stateStore != null) {
@@ -623,7 +812,8 @@ public class Router extends CompositeService {
   }
 
   /**
-   * If the quota system is enabled in Router.
+   * Check if the quota system is enabled in Router.
+   * @return True if the quota system is enabled in Router.
    */
   public boolean isQuotaEnabled() {
     return this.quotaManager != null;
@@ -649,7 +839,42 @@ public class Router extends CompositeService {
    * Get the list of namenode heartbeat service.
    */
   @VisibleForTesting
-  Collection<NamenodeHeartbeatService> getNamenodeHearbeatServices() {
+  Collection<NamenodeHeartbeatService> getNamenodeHeartbeatServices() {
     return this.namenodeHeartbeatServices;
   }
+
+  /**
+   * Get this router heartbeat service.
+   */
+  @VisibleForTesting
+  RouterHeartbeatService getRouterHeartbeatService() {
+    return this.routerHeartbeatService;
+  }
+
+  /**
+   * Get the Router safe mode service.
+   */
+  RouterSafemodeService getSafemodeService() {
+    return this.safemodeService;
+  }
+
+  /**
+   * Get router admin server.
+   *
+   * @return Null if admin is not enabled.
+   */
+  public RouterAdminServer getAdminServer() {
+    return adminServer;
+  }
+
+  /**
+   * Set router configuration.
+   *
+   * @param conf the configuration.
+   */
+  @VisibleForTesting
+  public void setConf(Configuration conf) {
+    this.conf = conf;
+  }
+
 }

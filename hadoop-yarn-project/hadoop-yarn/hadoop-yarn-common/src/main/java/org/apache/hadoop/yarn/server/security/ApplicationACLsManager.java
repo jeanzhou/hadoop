@@ -23,11 +23,10 @@ import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -35,13 +34,13 @@ import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.security.AdminACLsManager;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 @InterfaceAudience.Private
 public class ApplicationACLsManager {
 
-  private static final Log LOG = LogFactory
-      .getLog(ApplicationACLsManager.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(ApplicationACLsManager.class);
 
   private static AccessControlList DEFAULT_YARN_APP_ACL 
     = new AccessControlList(YarnConfiguration.DEFAULT_YARN_APP_ACL);
@@ -89,20 +88,18 @@ public class ApplicationACLsManager {
    * <li>For all other users/groups application-acls are checked</li>
    * </ul>
    * 
-   * @param callerUGI
-   * @param applicationAccessType
-   * @param applicationOwner
-   * @param applicationId
+   * @param callerUGI UserGroupInformation for the user.
+   * @param applicationAccessType Application Access Type.
+   * @param applicationOwner Application Owner.
+   * @param applicationId ApplicationId.
+   * @return true if the user has permission, false otherwise.
    */
   public boolean checkAccess(UserGroupInformation callerUGI,
       ApplicationAccessType applicationAccessType, String applicationOwner,
       ApplicationId applicationId) {
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Verifying access-type " + applicationAccessType + " for "
-          + callerUGI + " on application " + applicationId + " owned by "
-          + applicationOwner);
-    }
+    LOG.debug("Verifying access-type {} for {} on application {} owned by {}",
+            applicationAccessType, callerUGI, applicationId, applicationOwner);
 
     String user = callerUGI.getShortUserName();
     if (!areACLsEnabled()) {
@@ -112,21 +109,18 @@ public class ApplicationACLsManager {
     Map<ApplicationAccessType, AccessControlList> acls = this.applicationACLS
         .get(applicationId);
     if (acls == null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("ACL not found for application "
-            + applicationId + " owned by "
-            + applicationOwner + ". Using default ["
-            + YarnConfiguration.DEFAULT_YARN_APP_ACL + "]");
-      }
+      LOG.debug("ACL not found for application {} owned by {}."
+          + " Using default [{}]", applicationId, applicationOwner,
+          YarnConfiguration.DEFAULT_YARN_APP_ACL);
     } else {
       AccessControlList applicationACLInMap = acls.get(applicationAccessType);
       if (applicationACLInMap != null) {
         applicationACL = applicationACLInMap;
-      } else if (LOG.isDebugEnabled()) {
-        LOG.debug("ACL not found for access-type " + applicationAccessType
-            + " for application " + applicationId + " owned by "
-            + applicationOwner + ". Using default ["
-            + YarnConfiguration.DEFAULT_YARN_APP_ACL + "]");
+      } else {
+        LOG.debug("ACL not found for access-type {} for application {}"
+            + " owned by {}. Using default [{}]", applicationAccessType,
+            applicationId, applicationOwner,
+            YarnConfiguration.DEFAULT_YARN_APP_ACL);
       }
     }
 

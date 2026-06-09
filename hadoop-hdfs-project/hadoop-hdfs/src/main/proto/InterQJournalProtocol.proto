@@ -18,10 +18,10 @@
 
 /**
  * These .proto interfaces are private and stable.
- * Please see http://wiki.apache.org/hadoop/Compatibility
+ * Please see https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/Compatibility.html
  * for what changes are allowed for a *stable* .proto interface.
  */
-
+syntax = "proto2";
 option java_package = "org.apache.hadoop.hdfs.qjournal.protocol";
 option java_outer_classname = "InterQJournalProtocolProtos";
 option java_generic_services = true;
@@ -31,8 +31,15 @@ package hadoop.hdfs.qjournal;
 import "HdfsServer.proto";
 import "QJournalProtocol.proto";
 
+message GetStorageInfoRequestProto {
+    required JournalIdProto jid = 1;
+    optional string nameServiceId = 2;
+}
 
 service InterQJournalProtocolService {
     rpc getEditLogManifestFromJournal(GetEditLogManifestRequestProto)
     returns (GetEditLogManifestResponseProto);
+
+    rpc getStorageInfo(GetStorageInfoRequestProto)
+    returns (StorageInfoProto);
 }

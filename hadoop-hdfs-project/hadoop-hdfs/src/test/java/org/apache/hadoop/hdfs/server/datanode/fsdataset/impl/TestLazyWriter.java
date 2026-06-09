@@ -21,9 +21,9 @@ package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -32,9 +32,9 @@ import java.util.concurrent.TimeoutException;
 
 import static org.apache.hadoop.fs.StorageType.DEFAULT;
 import static org.apache.hadoop.fs.StorageType.RAM_DISK;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestLazyWriter extends LazyPersistTestCase {
   @Test
@@ -156,7 +156,6 @@ public class TestLazyWriter extends LazyPersistTestCase {
     for (int i = 0; i < NUM_PATHS; ++i) {
       makeTestFile(paths[i + NUM_PATHS], BLOCK_SIZE, true);
       triggerBlockReport();
-      Thread.sleep(3000);
       ensureFileReplicasOnStorageType(paths[i + NUM_PATHS], RAM_DISK);
       ensureFileReplicasOnStorageType(paths[indexes.get(i)], DEFAULT);
       for (int j = i + 1; j < NUM_PATHS; ++j) {
@@ -183,18 +182,18 @@ public class TestLazyWriter extends LazyPersistTestCase {
       throws Exception {
     getClusterBuilder().build();
     final String METHOD_NAME = GenericTestUtils.getMethodName();
-    FsDatasetTestUtil.stopLazyWriter(cluster.getDataNodes().get(0));
+    final DataNode dn = cluster.getDataNodes().get(0);
+    FsDatasetTestUtil.stopLazyWriter(dn);
 
     Path path = new Path("/" + METHOD_NAME + ".dat");
     makeTestFile(path, BLOCK_SIZE, true);
     LocatedBlocks locatedBlocks =
         ensureFileReplicasOnStorageType(path, RAM_DISK);
-
     // Delete before persist
     client.delete(path.toString(), false);
-    Assert.assertFalse(fs.exists(path));
+    assertFalse(fs.exists(path));
 
-    assertThat(verifyDeletedBlocks(locatedBlocks), is(true));
+    assertThat(verifyDeletedBlocks(locatedBlocks)).isEqualTo(true);
 
     verifyRamDiskJMXMetric("RamDiskBlocksDeletedBeforeLazyPersisted", 1);
   }
@@ -218,9 +217,9 @@ public class TestLazyWriter extends LazyPersistTestCase {
 
     // Delete after persist
     client.delete(path.toString(), false);
-    Assert.assertFalse(fs.exists(path));
+    assertFalse(fs.exists(path));
 
-    assertThat(verifyDeletedBlocks(locatedBlocks), is(true));
+    assertThat(verifyDeletedBlocks(locatedBlocks)).isEqualTo(true);
     verifyRamDiskJMXMetric("RamDiskBlocksLazyPersisted", 1);
     verifyRamDiskJMXMetric("RamDiskBytesLazyPersisted", BLOCK_SIZE);
   }
@@ -243,17 +242,17 @@ public class TestLazyWriter extends LazyPersistTestCase {
     makeTestFile(path, BLOCK_SIZE, true);
     long usedAfterCreate = fs.getUsed();
 
-    assertThat(usedAfterCreate, is((long) BLOCK_SIZE));
+    assertThat(usedAfterCreate).isEqualTo((long) BLOCK_SIZE);
 
     waitForMetric("RamDiskBlocksLazyPersisted", 1);
 
     long usedAfterPersist = fs.getUsed();
-    assertThat(usedAfterPersist, is((long) BLOCK_SIZE));
+    assertThat(usedAfterPersist).isEqualTo((long) BLOCK_SIZE);
 
     // Delete after persist
     client.delete(path.toString(), false);
     long usedAfterDelete = fs.getUsed();
 
-    assertThat(usedBeforeCreate, is(usedAfterDelete));
+    assertThat(usedBeforeCreate).isEqualTo(usedAfterDelete);
   }
 }

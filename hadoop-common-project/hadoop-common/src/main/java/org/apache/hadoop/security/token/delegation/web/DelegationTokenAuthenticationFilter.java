@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.security.token.delegation.web;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -51,7 +51,7 @@ import javax.servlet.http.HttpServletRequestWrapper;
 import javax.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.util.Enumeration;
 import java.util.List;
@@ -60,7 +60,7 @@ import java.util.Properties;
 /**
  *  The <code>DelegationTokenAuthenticationFilter</code> filter is a
  *  {@link AuthenticationFilter} with Hadoop Delegation Token support.
- *  <p/>
+ *  <p>
  *  By default it uses it own instance of the {@link
  *  AbstractDelegationTokenSecretManager}. For situations where an external
  *  <code>AbstractDelegationTokenSecretManager</code> is required (i.e. one that
@@ -86,15 +86,13 @@ public class DelegationTokenAuthenticationFilter
   /**
    * Sets an external <code>DelegationTokenSecretManager</code> instance to
    * manage creation and verification of Delegation Tokens.
-   * <p/>
+   * <p>
    * This is useful for use cases where secrets must be shared across multiple
    * services.
    */
 
   public static final String DELEGATION_TOKEN_SECRET_MANAGER_ATTR =
       "hadoop.http.delegation-token-secret-manager";
-
-  private static final Charset UTF8_CHARSET = Charset.forName("UTF-8");
 
   private static final ThreadLocal<UserGroupInformation> UGI_TL =
       new ThreadLocal<UserGroupInformation>();
@@ -125,6 +123,7 @@ public class DelegationTokenAuthenticationFilter
    * Set AUTH_TYPE property to the name of the corresponding authentication
    * handler class based on the input properties.
    * @param props input properties.
+   * @throws ServletException servlet exception.
    */
   protected void setAuthHandlerClass(Properties props)
       throws ServletException {
@@ -148,7 +147,7 @@ public class DelegationTokenAuthenticationFilter
   /**
    * Returns the proxyuser configuration. All returned properties must start
    * with <code>proxyuser.</code>'
-   * <p/>
+   * <p>
    * Subclasses may override this method if the proxyuser configuration is 
    * read from other place than the filter init parameters.
    *
@@ -225,7 +224,7 @@ public class DelegationTokenAuthenticationFilter
     if (queryString == null) {
       return null;
     }
-    List<NameValuePair> list = URLEncodedUtils.parse(queryString, UTF8_CHARSET);
+    List<NameValuePair> list = URLEncodedUtils.parse(queryString, StandardCharsets.UTF_8);
     if (list != null) {
       for (NameValuePair nv : list) {
         if (DelegationTokenAuthenticatedURL.DO_AS.

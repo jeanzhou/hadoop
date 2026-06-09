@@ -24,6 +24,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.classification.InterfaceAudience;
 
 /**
@@ -48,6 +51,9 @@ import org.apache.hadoop.classification.InterfaceAudience;
  */
 @InterfaceAudience.Private
 public class StartupProgress {
+
+  private static final Logger LOG = LoggerFactory.getLogger(StartupProgress.class);
+
   // package-private for access by StartupProgressView
   final Map<Phase, PhaseTracking> phases =
     new ConcurrentHashMap<Phase, PhaseTracking>();
@@ -81,18 +87,21 @@ public class StartupProgress {
     if (!isComplete()) {
       phases.get(phase).beginTime = monotonicNow();
     }
+    LOG.debug("Beginning of the phase: {}", phase);
   }
 
   /**
-   * Begins execution of the specified step within the specified phase.
+   * Begins execution of the specified step within the specified phase. This is
+   * a no-op if the phase is already completed.
    * 
-   * @param phase Phase to begin
+   * @param phase Phase within which the step should be started
    * @param step Step to begin
    */
   public void beginStep(Phase phase, Step step) {
-    if (!isComplete()) {
+    if (!isComplete(phase)) {
       lazyInitStep(phase, step).beginTime = monotonicNow();
     }
+    LOG.debug("Beginning of the step. Phase: {}, Step: {}", phase, step);
   }
 
   /**
@@ -104,18 +113,21 @@ public class StartupProgress {
     if (!isComplete()) {
       phases.get(phase).endTime = monotonicNow();
     }
+    LOG.debug("End of the phase: {}", phase);
   }
 
   /**
-   * Ends execution of the specified step within the specified phase.
-   * 
-   * @param phase Phase to end
+   * Ends execution of the specified step within the specified phase. This is
+   * a no-op if the phase is already completed.
+   *
+   * @param phase Phase within which the step should be ended
    * @param step Step to end
    */
   public void endStep(Phase phase, Step step) {
-    if (!isComplete()) {
+    if (!isComplete(phase)) {
       lazyInitStep(phase, step).endTime = monotonicNow();
     }
+    LOG.debug("End of the step. Phase: {}, Step: {}", phase, step);
   }
 
   /**
@@ -149,7 +161,7 @@ public class StartupProgress {
    * @return Counter associated with phase and step
    */
   public Counter getCounter(Phase phase, Step step) {
-    if (!isComplete()) {
+    if (!isComplete(phase)) {
       final StepTracking tracking = lazyInitStep(phase, step);
       return new Counter() {
         @Override
@@ -216,7 +228,7 @@ public class StartupProgress {
    * @param total long to set
    */
   public void setTotal(Phase phase, Step step, long total) {
-    if (!isComplete()) {
+    if (!isComplete(phase)) {
       lazyInitStep(phase, step).total = total;
     }
   }
@@ -242,12 +254,17 @@ public class StartupProgress {
    * @return boolean true if the entire startup process has completed
    */
   private boolean isComplete() {
-    for (Phase phase: EnumSet.allOf(Phase.class)) {
-      if (getStatus(phase) != Status.COMPLETE) {
-        return false;
-      }
-    }
-    return true;
+    return EnumSet.allOf(Phase.class).stream().allMatch(this::isComplete);
+  }
+
+  /**
+   * Returns true if the given startup phase has been completed.
+   *
+   * @param phase Which phase to check for completion
+   * @return boolean true if the given startup phase has completed.
+   */
+  private boolean isComplete(Phase phase) {
+    return getStatus(phase) == Status.COMPLETE;
   }
 
   /**

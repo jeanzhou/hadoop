@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.federation.metrics;
 
+import static org.apache.hadoop.hdfs.server.federation.router.async.utils.AsyncUtil.syncReturn;
 import static org.apache.hadoop.util.Time.now;
 
 import java.io.IOException;
@@ -25,6 +26,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -32,15 +36,19 @@ import javax.management.NotCompliantMBeanException;
 import javax.management.ObjectName;
 import javax.management.StandardMBean;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.RollingUpgradeInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
+import org.apache.hadoop.hdfs.server.common.Util;
 import org.apache.hadoop.hdfs.server.federation.resolver.FederationNamespaceInfo;
+import org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys;
 import org.apache.hadoop.hdfs.server.federation.router.Router;
-import org.apache.hadoop.hdfs.server.federation.router.RouterRpcServer;
+import org.apache.hadoop.hdfs.server.federation.router.RouterClientProtocol;
+import org.apache.hadoop.hdfs.server.federation.router.SubClusterTimeoutException;
 import org.apache.hadoop.hdfs.server.federation.store.MembershipStore;
 import org.apache.hadoop.hdfs.server.federation.store.StateStoreService;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetNamespaceInfoRequest;
@@ -48,6 +56,8 @@ import org.apache.hadoop.hdfs.server.federation.store.protocol.GetNamespaceInfoR
 import org.apache.hadoop.hdfs.server.namenode.NameNodeMXBean;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeStatusMXBean;
 import org.apache.hadoop.hdfs.server.namenode.metrics.FSNamesystemMBean;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
+import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.net.NetUtils;
@@ -55,6 +65,10 @@ import org.apache.hadoop.util.VersionInfo;
 import org.eclipse.jetty.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
 
 /**
  * Expose the Namenode metrics as the Router was one.
@@ -65,6 +79,7 @@ public class NamenodeBeanMetrics
   private static final Logger LOG =
       LoggerFactory.getLogger(NamenodeBeanMetrics.class);
 
+  /** Instance of the Router being monitored. */
   private final Router router;
 
   /** FSNamesystem bean. */
@@ -75,6 +90,11 @@ public class NamenodeBeanMetrics
   private ObjectName nnInfoBeanName;
   /** NameNodeStatus bean. */
   private ObjectName nnStatusBeanName;
+
+  /** Timeout to get the DN report. */
+  private final long dnReportTimeOut;
+  /** DN type -> full DN report in JSON. */
+  private final LoadingCache<DatanodeReportType, String> dnCache;
 
 
   public NamenodeBeanMetrics(Router router) {
@@ -114,6 +134,24 @@ public class NamenodeBeanMetrics
     } catch (NotCompliantMBeanException e) {
       throw new RuntimeException("Bad NameNodeStatus MBean setup", e);
     }
+
+    // Initialize the cache for the DN reports
+    Configuration conf = router.getConfig();
+    this.dnReportTimeOut = conf.getTimeDuration(
+        RBFConfigKeys.DN_REPORT_TIME_OUT,
+        RBFConfigKeys.DN_REPORT_TIME_OUT_MS_DEFAULT, TimeUnit.MILLISECONDS);
+    long dnCacheExpire = conf.getTimeDuration(
+        RBFConfigKeys.DN_REPORT_CACHE_EXPIRE,
+        RBFConfigKeys.DN_REPORT_CACHE_EXPIRE_MS_DEFAULT, TimeUnit.MILLISECONDS);
+    this.dnCache = CacheBuilder.newBuilder()
+        .expireAfterWrite(dnCacheExpire, TimeUnit.MILLISECONDS)
+        .build(
+            new CacheLoader<DatanodeReportType, String>() {
+              @Override
+              public String load(DatanodeReportType type) throws Exception {
+                return getNodesImpl(type);
+              }
+            });
   }
 
   /**
@@ -135,8 +173,12 @@ public class NamenodeBeanMetrics
     }
   }
 
-  private FederationMetrics getFederationMetrics() {
-    return this.router.getMetrics();
+  private RBFMetrics getRBFMetrics() throws IOException {
+    RBFMetrics metrics = getRouter().getMetrics();
+    if (metrics == null) {
+      throw new IOException("Federated metrics is not initialized");
+    }
+    return metrics;
   }
 
   /////////////////////////////////////////////////////////
@@ -155,28 +197,52 @@ public class NamenodeBeanMetrics
 
   @Override
   public long getUsed() {
-    return getFederationMetrics().getUsedCapacity();
+    try {
+      return getRBFMetrics().getUsedCapacity();
+    } catch (IOException e) {
+      LOG.debug("Failed to get the used capacity", e);
+    }
+    return 0;
   }
 
   @Override
   public long getFree() {
-    return getFederationMetrics().getRemainingCapacity();
+    try {
+      return getRBFMetrics().getRemainingCapacity();
+    } catch (IOException e) {
+      LOG.debug("Failed to get remaining capacity", e);
+    }
+    return 0;
   }
 
   @Override
   public long getTotal() {
-    return getFederationMetrics().getTotalCapacity();
+    try {
+      return getRBFMetrics().getTotalCapacity();
+    } catch (IOException e) {
+      LOG.debug("Failed to Get total capacity", e);
+    }
+    return 0;
   }
 
   @Override
   public long getProvidedCapacity() {
-    return getFederationMetrics().getProvidedSpace();
+    try {
+      return getRBFMetrics().getProvidedSpace();
+    } catch (IOException e) {
+      LOG.debug("Failed to get provided capacity", e);
+    }
+    return 0;
   }
 
   @Override
   public String getSafemode() {
-    // We assume that the global federated view is never in safe mode
-    return "";
+    try {
+      return getRBFMetrics().getSafemode();
+    } catch (IOException e) {
+      return "Failed to get safemode status. Please check router"
+          + "log for more detail.";
+    }
   }
 
   @Override
@@ -228,54 +294,142 @@ public class NamenodeBeanMetrics
 
   @Override
   public long getTotalBlocks() {
-    return getFederationMetrics().getNumBlocks();
+    try {
+      return getRBFMetrics().getNumBlocks();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of blocks", e);
+    }
+    return 0;
   }
 
   @Override
   public long getNumberOfMissingBlocks() {
-    return getFederationMetrics().getNumOfMissingBlocks();
+    try {
+      return getRBFMetrics().getNumOfMissingBlocks();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of missing blocks", e);
+    }
+    return 0;
   }
 
   @Override
   @Deprecated
   public long getPendingReplicationBlocks() {
-    return getFederationMetrics().getNumOfBlocksPendingReplication();
+    try {
+      return getRBFMetrics().getNumOfBlocksPendingReplication();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of blocks pending replica", e);
+    }
+    return 0;
   }
 
   @Override
   public long getPendingReconstructionBlocks() {
-    return getFederationMetrics().getNumOfBlocksPendingReplication();
+    try {
+      return getRBFMetrics().getNumOfBlocksPendingReplication();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of blocks pending replica", e);
+    }
+    return 0;
   }
 
   @Override
   @Deprecated
   public long getUnderReplicatedBlocks() {
-    return getFederationMetrics().getNumOfBlocksUnderReplicated();
+    try {
+      return getRBFMetrics().getNumOfBlocksUnderReplicated();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of blocks under replicated", e);
+    }
+    return 0;
   }
 
   @Override
   public long getLowRedundancyBlocks() {
-    return getFederationMetrics().getNumOfBlocksUnderReplicated();
+    try {
+      return getRBFMetrics().getNumOfBlocksUnderReplicated();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of blocks under replicated", e);
+    }
+    return 0;
   }
 
   @Override
   public long getPendingDeletionBlocks() {
-    return getFederationMetrics().getNumOfBlocksPendingDeletion();
+    try {
+      return getRBFMetrics().getNumOfBlocksPendingDeletion();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of blocks pending deletion", e);
+    }
+    return 0;
   }
 
   @Override
   public long getScheduledReplicationBlocks() {
-    return -1;
+    try {
+      return getRBFMetrics().getScheduledReplicationBlocks();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of scheduled replication blocks", e);
+    }
+    return 0;
   }
 
   @Override
   public long getNumberOfMissingBlocksWithReplicationFactorOne() {
+    try {
+      return getRBFMetrics().getNumberOfMissingBlocksWithReplicationFactorOne();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of missing blocks with replication "
+          + "factor one.", e);
+    }
+    return 0;
+  }
+
+  @Override
+  public long getNumberOfBadlyDistributedBlocks() {
+    try {
+      return getRBFMetrics().getNumberOfBadlyDistributedBlocks();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of badly distributed blocks", e);
+    }
+    return 0;
+  }
+
+  @Override
+  public long getHighestPriorityLowRedundancyReplicatedBlocks() {
+    try {
+      return getRBFMetrics().getHighestPriorityLowRedundancyReplicatedBlocks();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of highest priority low redundancy "
+          + "replicated blocks.", e);
+    }
+    return 0;
+  }
+
+  @Override
+  public long getHighestPriorityLowRedundancyECBlocks() {
+    try {
+      return getRBFMetrics().getHighestPriorityLowRedundancyECBlocks();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of highest priority low redundancy EC "
+          + "blocks.", e);
+    }
     return 0;
   }
 
   @Override
   public String getCorruptFiles() {
     return "N/A";
+  }
+
+  @Override
+  public int getCorruptFilesCount() {
+    try {
+      return getRBFMetrics().getCorruptFilesCount();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of corrupt files", e);
+    }
+    return 0;
   }
 
   @Override
@@ -299,28 +453,51 @@ public class NamenodeBeanMetrics
   }
 
   /**
-   * Get all the nodes in the federation from a particular type.
-   * TODO this is expensive, we may want to cache it.
+   * Get all the nodes in the federation from a particular type. Getting this
+   * information is expensive and we use a cache.
    * @param type Type of the datanodes to check.
    * @return JSON with the nodes.
    */
-  private String getNodes(DatanodeReportType type) {
+  private String getNodes(final DatanodeReportType type) {
+    try {
+      return this.dnCache.get(type);
+    } catch (ExecutionException e) {
+      LOG.error("Cannot get the DN storage report for {}", type, e);
+    }
+    // If we cannot get the report, return empty JSON
+    return "{}";
+  }
+
+  /**
+   * Get all the nodes in the federation from a particular type.
+   * @param type Type of the datanodes to check.
+   * @return JSON with the nodes.
+   */
+  private String getNodesImpl(final DatanodeReportType type) {
     final Map<String, Map<String, Object>> info = new HashMap<>();
     try {
-      RouterRpcServer rpcServer = this.router.getRpcServer();
-      DatanodeInfo[] datanodes = rpcServer.getDatanodeReport(type);
-      for (DatanodeInfo node : datanodes) {
+      RouterClientProtocol clientProtocol =
+          this.router.getRpcServer().getClientProtocolModule();
+      DatanodeStorageReport[] datanodeStorageReports =
+          clientProtocol.getDatanodeStorageReport(type, false, dnReportTimeOut);
+      if (router.getRpcServer().isAsync()) {
+        datanodeStorageReports = syncReturn(DatanodeStorageReport[].class);
+      }
+      for (DatanodeStorageReport datanodeStorageReport : datanodeStorageReports) {
+        DatanodeInfo node = datanodeStorageReport.getDatanodeInfo();
+        StorageReport[] storageReports = datanodeStorageReport.getStorageReports();
         Map<String, Object> innerinfo = new HashMap<>();
         innerinfo.put("infoAddr", node.getInfoAddr());
         innerinfo.put("infoSecureAddr", node.getInfoSecureAddr());
         innerinfo.put("xferaddr", node.getXferAddr());
         innerinfo.put("location", node.getNetworkLocation());
+        innerinfo.put("uuid", Optional.ofNullable(node.getDatanodeUuid()).orElse(""));
         innerinfo.put("lastContact", getLastContact(node));
         innerinfo.put("usedSpace", node.getDfsUsed());
         innerinfo.put("adminState", node.getAdminState().toString());
         innerinfo.put("nonDfsUsedSpace", node.getNonDfsUsed());
         innerinfo.put("capacity", node.getCapacity());
-        innerinfo.put("numBlocks", -1); // node.numBlocks()
+        innerinfo.put("numBlocks", node.getNumBlocks());
         innerinfo.put("version", (node.getSoftwareVersion() == null ?
                         "UNKNOWN" : node.getSoftwareVersion()));
         innerinfo.put("used", node.getDfsUsed());
@@ -329,12 +506,17 @@ public class NamenodeBeanMetrics
         innerinfo.put("blockPoolUsed", node.getBlockPoolUsed());
         innerinfo.put("blockPoolUsedPercent", node.getBlockPoolUsedPercent());
         innerinfo.put("volfails", -1); // node.getVolumeFailures()
-        info.put(node.getHostName() + ":" + node.getXferPort(),
+        innerinfo.put("blockPoolUsedPercentStdDev",
+            Util.getBlockPoolUsedPercentStdDev(storageReports));
+        innerinfo.put("lastBlockReport", getLastBlockReport(node));
+        info.put(node.getXferAddrWithHostname(),
             Collections.unmodifiableMap(innerinfo));
       }
     } catch (StandbyException e) {
       LOG.error("Cannot get {} nodes, Router in safe mode", type);
-    } catch (IOException e) {
+    } catch (SubClusterTimeoutException e) {
+      LOG.error("Cannot get {} nodes, subclusters timed out responding", type);
+    } catch (Exception e) {
       LOG.error("Cannot get " + type + " nodes", e);
     }
     return JSON.toString(info);
@@ -405,7 +587,12 @@ public class NamenodeBeanMetrics
 
   @Override
   public long getNNStartedTimeInMillis() {
-    return this.router.getStartTime();
+    try {
+      return getRouter().getStartTime();
+    } catch (IOException e) {
+      LOG.debug("Failed to get the router startup time", e);
+    }
+    return 0;
   }
 
   @Override
@@ -461,7 +648,12 @@ public class NamenodeBeanMetrics
 
   @Override
   public long getFilesTotal() {
-    return getFederationMetrics().getNumFiles();
+    try {
+      return getRBFMetrics().getNumFiles();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of files", e);
+    }
+    return 0;
   }
 
   @Override
@@ -471,46 +663,98 @@ public class NamenodeBeanMetrics
 
   @Override
   public int getNumLiveDataNodes() {
-    return this.router.getMetrics().getNumLiveNodes();
+    try {
+      return getRBFMetrics().getNumLiveNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of live nodes", e);
+    }
+    return 0;
   }
 
   @Override
   public int getNumDeadDataNodes() {
-    return this.router.getMetrics().getNumDeadNodes();
+    try {
+      return getRBFMetrics().getNumDeadNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of dead nodes", e);
+    }
+    return 0;
   }
 
   @Override
   public int getNumStaleDataNodes() {
-    return -1;
+    try {
+      return getRBFMetrics().getNumStaleNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of stale nodes", e);
+    }
+    return 0;
   }
 
   @Override
   public int getNumDecomLiveDataNodes() {
-    return this.router.getMetrics().getNumDecomLiveNodes();
+    try {
+      return getRBFMetrics().getNumDecomLiveNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get the number of live decommissioned datanodes",
+          e);
+    }
+    return 0;
   }
 
   @Override
   public int getNumDecomDeadDataNodes() {
-    return this.router.getMetrics().getNumDecomDeadNodes();
+    try {
+      return getRBFMetrics().getNumDecomDeadNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get the number of dead decommissioned datanodes",
+          e);
+    }
+    return 0;
   }
 
   @Override
   public int getNumDecommissioningDataNodes() {
-    return this.router.getMetrics().getNumDecommissioningNodes();
+    try {
+      return getRBFMetrics().getNumDecommissioningNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of decommissioning nodes", e);
+    }
+    return 0;
   }
 
   @Override
   public int getNumInMaintenanceLiveDataNodes() {
+    try {
+      return getRBFMetrics().getNumInMaintenanceLiveDataNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of live in maintenance nodes", e);
+    }
     return 0;
   }
 
   @Override
   public int getNumInMaintenanceDeadDataNodes() {
+    try {
+      return getRBFMetrics().getNumInMaintenanceDeadDataNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of dead in maintenance nodes", e);
+    }
     return 0;
   }
 
   @Override
   public int getNumEnteringMaintenanceDataNodes() {
+    try {
+      return getRBFMetrics().getNumEnteringMaintenanceDataNodes();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of entering maintenance nodes", e);
+    }
+    return 0;
+  }
+
+  @Override
+  public int getNumInServiceLiveDataNodes() {
     return 0;
   }
 
@@ -568,6 +812,10 @@ public class NamenodeBeanMetrics
     return (now() - node.getLastUpdate()) / 1000;
   }
 
+  private long getLastBlockReport(DatanodeInfo node) {
+    return (now() - node.getLastBlockReportTime()) / 60000;
+  }
+
   /////////////////////////////////////////////////////////
   // NameNodeStatusMXBean
   /////////////////////////////////////////////////////////
@@ -589,6 +837,11 @@ public class NamenodeBeanMetrics
 
   @Override
   public boolean isSecurityEnabled() {
+    try {
+      return getRBFMetrics().isSecurityEnabled();
+    } catch (IOException e) {
+      LOG.debug("Failed to get security status", e);
+    }
     return false;
   }
 
@@ -619,7 +872,7 @@ public class NamenodeBeanMetrics
 
   @Override
   public String getEnteringMaintenanceNodes() {
-    return "N/A";
+    return "{}";
   }
 
   @Override
@@ -630,5 +883,37 @@ public class NamenodeBeanMetrics
   @Override
   public int getNumEncryptionZones() {
     return 0;
+  }
+
+  @Override
+  public String getVerifyECWithTopologyResult() {
+    return null;
+  }
+
+  @Override
+  public long getCurrentTokensCount() {
+    return 0;
+  }
+
+  @Override
+  public int getPendingSPSPaths() {
+    try {
+      return getRBFMetrics().getPendingSPSPaths();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of paths to be processed by sps", e);
+    }
+    return 0;
+  }
+
+  @Override
+  public float getReconstructionQueuesInitProgress() {
+    return 0;
+  }
+
+  private Router getRouter() throws IOException {
+    if (this.router == null) {
+      throw new IOException("Router is not initialized");
+    }
+    return this.router;
   }
 }

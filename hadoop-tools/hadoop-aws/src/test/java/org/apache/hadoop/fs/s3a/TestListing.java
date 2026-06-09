@@ -18,101 +18,37 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.LocatedFileStatus;
+import java.util.NoSuchElementException;
+
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
-import org.junit.Assert;
-import org.junit.Test;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.Set;
-
-import static org.apache.hadoop.fs.s3a.S3AUtils.ACCEPT_ALL;
-import static org.apache.hadoop.fs.s3a.Listing.ProvidedFileStatusIterator;
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 
 /**
  * Place for the S3A listing classes; keeps all the small classes under control.
  */
 public class TestListing extends AbstractS3AMockTest {
 
-  private static class MockRemoteIterator<FileStatus> implements
-      RemoteIterator<FileStatus> {
-    private Iterator<FileStatus> iterator;
-
-    MockRemoteIterator(Collection<FileStatus> source) {
-      iterator = source.iterator();
-    }
-
-    public boolean hasNext() {
-      return iterator.hasNext();
-    }
-
-    public FileStatus next() {
-      return iterator.next();
-    }
-  }
-
-  private FileStatus blankFileStatus(Path path) {
-    return new FileStatus(0, true, 0, 0, 0, path);
-  }
-
-  @Test
-  public void testTombstoneReconcilingIterator() throws Exception {
-    Path parent = new Path("/parent");
-    Path liveChild = new Path(parent, "/liveChild");
-    Path deletedChild = new Path(parent, "/deletedChild");
-    Path[] allFiles = {parent, liveChild, deletedChild};
-    Path[] liveFiles = {parent, liveChild};
-
-    Listing listing = new Listing(fs);
-    Collection<FileStatus> statuses = new ArrayList<>();
-    statuses.add(blankFileStatus(parent));
-    statuses.add(blankFileStatus(liveChild));
-    statuses.add(blankFileStatus(deletedChild));
-
-    Set<Path> tombstones = new HashSet<>();
-    tombstones.add(deletedChild);
-
-    RemoteIterator<FileStatus> sourceIterator = new MockRemoteIterator(
-        statuses);
-    RemoteIterator<LocatedFileStatus> locatedIterator =
-        listing.createLocatedFileStatusIterator(sourceIterator);
-    RemoteIterator<LocatedFileStatus> reconcilingIterator =
-        listing.createTombstoneReconcilingIterator(locatedIterator, tombstones);
-
-    Set<Path> expectedPaths = new HashSet<>();
-    expectedPaths.add(parent);
-    expectedPaths.add(liveChild);
-
-    Set<Path> actualPaths = new HashSet<>();
-    while (reconcilingIterator.hasNext()) {
-      actualPaths.add(reconcilingIterator.next().getPath());
-    }
-    Assert.assertTrue(actualPaths.equals(expectedPaths));
-  }
-
   @Test
   public void testProvidedFileStatusIteratorEnd() throws Exception {
-    FileStatus[] statuses = {
-        new FileStatus(100, false, 1, 8192, 0, new Path("s3a://blah/blah"))
-    };
-    ProvidedFileStatusIterator it = new ProvidedFileStatusIterator(statuses,
-        ACCEPT_ALL, new Listing.AcceptAllButS3nDirs());
+    S3AFileStatus s3aStatus = new S3AFileStatus(
+        100, 0, new Path("s3a://blah/blah"),
+        8192, null, null, null);
 
-    Assert.assertTrue("hasNext() should return true first time", it.hasNext());
-    Assert.assertNotNull("first element should not be null", it.next());
-    Assert.assertFalse("hasNext() should now be false", it.hasNext());
-    try {
-      it.next();
-      Assert.fail("next() should have thrown exception");
-    } catch (NoSuchElementException e) {
-      // Correct behavior.  Any other exceptions are propagated as failure.
-      return;
-    }
+    S3AFileStatus[] statuses = {
+        s3aStatus
+    };
+    RemoteIterator<S3AFileStatus> it = Listing.toProvidedFileStatusIterator(
+        statuses);
+
+    Assertions.assertTrue(it.hasNext(), "hasNext() should return true first time");
+    Assertions.assertEquals(s3aStatus, it.next(),
+        "first element from iterator");
+    Assertions.assertFalse(it.hasNext(), "hasNext() should now be false");
+    intercept(NoSuchElementException.class, it::next);
   }
 }

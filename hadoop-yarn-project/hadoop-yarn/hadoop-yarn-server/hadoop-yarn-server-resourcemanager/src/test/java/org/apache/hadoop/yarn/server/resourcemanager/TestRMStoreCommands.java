@@ -18,9 +18,11 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.test.TestingServer;
@@ -32,7 +34,7 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.TestZKRMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.ZKRMStateStore;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestRMStoreCommands {
 
@@ -50,9 +52,10 @@ public class TestRMStoreCommands {
       rm.start();
       rm.getRMContext().getRMAdminService().transitionToActive(req);
       String zkStateRoot = ZKRMStateStore.ROOT_ZNODE_NAME;
-      assertEquals("RM State store parent path should have a child node " +
-          zkStateRoot, zkStateRoot, curatorFramework.getChildren().forPath(
-              YarnConfiguration.DEFAULT_ZK_RM_STATE_STORE_PARENT_PATH).get(0));
+      assertEquals(zkStateRoot, curatorFramework.getChildren().forPath(
+          YarnConfiguration.DEFAULT_ZK_RM_STATE_STORE_PARENT_PATH).get(0),
+          "RM State store parent path should have a child node " +
+          zkStateRoot);
       rm.close();
       try {
         ResourceManager.deleteRMStateStore(conf);
@@ -60,9 +63,42 @@ public class TestRMStoreCommands {
         fail("Exception should not be thrown during format rm state store" +
             " operation.");
       }
-      assertTrue("After store format parent path should have no child nodes",
-          curatorFramework.getChildren().forPath(
-          YarnConfiguration.DEFAULT_ZK_RM_STATE_STORE_PARENT_PATH).isEmpty());
+      assertTrue(curatorFramework.getChildren().forPath(
+          YarnConfiguration.DEFAULT_ZK_RM_STATE_STORE_PARENT_PATH).isEmpty(),
+          "After store format parent path should have no child nodes");
+    }
+  }
+
+  @Test
+  public void testFormatConfStoreCmdForZK() throws Exception {
+    try (TestingServer curatorTestingServer =
+        TestZKRMStateStore.setupCuratorServer();
+        CuratorFramework curatorFramework = TestZKRMStateStore.
+            setupCuratorFramework(curatorTestingServer)) {
+      Configuration conf = TestZKRMStateStore.createHARMConf("rm1,rm2", "rm1",
+          1234, false, curatorTestingServer);
+      conf.set(YarnConfiguration.SCHEDULER_CONFIGURATION_STORE_CLASS,
+          YarnConfiguration.ZK_CONFIGURATION_STORE);
+
+      ResourceManager rm = new MockRM(conf);
+      rm.start();
+
+      String confStorePath = conf.get(
+          YarnConfiguration.RM_SCHEDCONF_STORE_ZK_PARENT_PATH,
+          YarnConfiguration.DEFAULT_RM_SCHEDCONF_STORE_ZK_PARENT_PATH)
+          + "/CONF_STORE";
+      assertNotNull(curatorFramework.checkExists().forPath(confStorePath),
+          "Failed to initialize ZKConfigurationStore");
+
+      rm.close();
+      try {
+        ResourceManager.deleteRMConfStore(conf);
+      } catch (Exception e) {
+        fail("Exception should not be thrown during format rm conf store" +
+            " operation.");
+      }
+      assertNull(curatorFramework.checkExists().forPath(confStorePath),
+          "Failed to format ZKConfigurationStore");
     }
   }
 
@@ -91,8 +127,8 @@ public class TestRMStoreCommands {
         if (path.equals(ZKRMStateStore.RM_APP_ROOT_HIERARCHIES)) {
           continue;
         }
-        assertEquals("Application node for " + appId + " should exist",
-            appId, path);
+        assertEquals(appId, path,
+            "Application node for " + appId + " should exist");
       }
       try {
         ResourceManager.removeApplication(conf, appId);
@@ -100,11 +136,12 @@ public class TestRMStoreCommands {
         fail("Exception should not be thrown while removing app from " +
             "rm state store.");
       }
-      assertTrue("After remove app from store there should be no child nodes" +
-          " for application in app root path",
+      assertTrue(
           curatorFramework.getChildren().forPath(appRootPath).size() == 1 &&
           curatorFramework.getChildren().forPath(appRootPath).get(0).equals(
-              ZKRMStateStore.RM_APP_ROOT_HIERARCHIES));
+          ZKRMStateStore.RM_APP_ROOT_HIERARCHIES),
+          "After remove app from store there should be no child nodes" +
+          " for application in app root path");
     }
   }
 }

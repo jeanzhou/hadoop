@@ -37,8 +37,8 @@ import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.util.SystemClock;
 
-import org.junit.Test;
-import static org.junit.Assert.assertTrue;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -51,7 +51,7 @@ public class TestTaskAttemptFinishingMonitor {
     Configuration conf = new Configuration();
     conf.setInt(MRJobConfig.TASK_EXIT_TIMEOUT, 100);
     conf.setInt(MRJobConfig.TASK_EXIT_TIMEOUT_CHECK_INTERVAL_MS, 10);
-
+    conf.setDouble(MRJobConfig.TASK_LOG_PROGRESS_DELTA_THRESHOLD, 0.01);
     AppContext appCtx = mock(AppContext.class);
     JobTokenSecretManager secret = mock(JobTokenSecretManager.class);
     RMHeartbeatHandler rmHeartbeatHandler =
@@ -87,7 +87,7 @@ public class TestTaskAttemptFinishingMonitor {
     }
     taskAttemptFinishingMonitor.stop();
 
-    assertTrue("Finishing attempt didn't time out.", eventHandler.timedOut);
+    assertTrue(eventHandler.timedOut, "Finishing attempt didn't time out.");
 
   }
 

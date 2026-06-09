@@ -27,7 +27,7 @@ import java.util.List;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -76,13 +76,12 @@ public class Cluster {
     if (providerList == null) {
       synchronized (frameworkLoader) {
         if (providerList == null) {
-          List<ClientProtocolProvider> localProviderList =
-              new ArrayList<ClientProtocolProvider>();
+          List<ClientProtocolProvider> localProviderList = new ArrayList<>();
           try {
             for (ClientProtocolProvider provider : frameworkLoader) {
               localProviderList.add(provider);
             }
-          } catch(ServiceConfigurationError e) {
+          } catch(ServiceConfigurationError | LinkageError e) {
             LOG.info("Failed to instantiate ClientProtocolProvider, please "
                          + "check the /META-INF/services/org.apache."
                          + "hadoop.mapreduce.protocol.ClientProtocolProvider "

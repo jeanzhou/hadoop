@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -37,12 +37,12 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
-import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapterMockitoUtil;
 import org.apache.hadoop.test.MockitoUtil;
 import org.apache.hadoop.util.Time;
-import org.junit.Assert;
-import org.junit.Test;
-import org.mockito.Mockito;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * This class tests the access time on files.
@@ -107,7 +107,7 @@ public class TestSetTimes {
                                                    cluster.getNameNodePort());
     DFSClient client = new DFSClient(addr, conf);
     DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
-    assertEquals("Number of Datanodes ", numDatanodes, info.length);
+    assertEquals(numDatanodes, info.length, "Number of Datanodes ");
     FileSystem fileSys = cluster.getFileSystem();
     int replicas = 1;
     assertTrue(fileSys instanceof DistributedFileSystem);
@@ -138,6 +138,13 @@ public class TestSetTimes {
       System.out.println("mtime on " + file1 + " is " + mdate + 
                          " (" + mtime1 + ")");
       assertTrue(atime1 != 0);
+
+      // check setting negative value for atime and mtime.
+      fileSys.setTimes(file1, -2, -2);
+      // The values shouldn't change.
+      stat = fileSys.getFileStatus(file1);
+      assertEquals(mtime1, stat.getModificationTime());
+      assertEquals(atime1, stat.getAccessTime());
 
       //
       // record dir times
@@ -177,10 +184,8 @@ public class TestSetTimes {
       fileSys.setTimes(dir1, mtime4, atime4);
       // check new modification time on file
       stat = fileSys.getFileStatus(dir1);
-      assertTrue("Not matching the modification times", mtime4 == stat
-          .getModificationTime());
-      assertTrue("Not matching the access times", atime4 == stat
-          .getAccessTime());
+      assertTrue(mtime4 == stat.getModificationTime(), "Not matching the modification times");
+      assertTrue(atime4 == stat.getAccessTime(), "Not matching the access times");
 
       Path nonExistingDir = new Path(dir1, "/nonExistingDir/");
       try {
@@ -240,7 +245,7 @@ public class TestSetTimes {
                                                      cluster.getNameNodePort());
     DFSClient client = new DFSClient(addr, conf);
     DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
-    assertEquals("Number of Datanodes ", numDatanodes, info.length);
+    assertEquals(numDatanodes, info.length, "Number of Datanodes ");
     FileSystem fileSys = cluster.getFileSystem();
     assertTrue(fileSys instanceof DistributedFileSystem);
 
@@ -284,14 +289,16 @@ public class TestSetTimes {
    * write lock is not taken by getBlockLocations.
    * Regression test for HDFS-3981.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testGetBlockLocationsOnlyUsesReadLock() throws IOException {
     Configuration conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_KEY, 100*1000);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
       .numDataNodes(0)
       .build();
-    ReentrantReadWriteLock spyLock = NameNodeAdapter.spyOnFsLock(cluster.getNamesystem());
+    ReentrantReadWriteLock spyLock =
+        NameNodeAdapterMockitoUtil.spyOnFsLock(cluster.getNamesystem());
     try {
       // Create empty file in the FSN.
       Path p = new Path("/empty-file");
@@ -332,7 +339,7 @@ public class TestSetTimes {
       DFSTestUtil.createFile(cluster.getFileSystem(), p, 0, (short)1, 0L);
 
       fs.setTimes(p, -1L, 123456L);
-      Assert.assertEquals(123456L, fs.getFileStatus(p).getAccessTime());
+      Assertions.assertEquals(123456L, fs.getFileStatus(p).getAccessTime());
     } finally {
       if (cluster != null) {
         cluster.shutdown();

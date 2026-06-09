@@ -17,13 +17,14 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockStoragePolicySuite;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.security.AccessControlException;
@@ -48,8 +49,8 @@ public class ContentSummaryComputationContext {
   private int sleepNanoSec = 0;
 
   public static final String REPLICATED = "Replicated";
-  public static final Log LOG = LogFactory
-      .getLog(ContentSummaryComputationContext.class);
+  public static final Logger LOG = LoggerFactory
+      .getLogger(ContentSummaryComputationContext.class);
 
   private FSPermissionChecker pc;
   /**
@@ -118,27 +119,26 @@ public class ContentSummaryComputationContext {
 
     boolean hadDirReadLock = dir.hasReadLock();
     boolean hadDirWriteLock = dir.hasWriteLock();
-    boolean hadFsnReadLock = fsn.hasReadLock();
-    boolean hadFsnWriteLock = fsn.hasWriteLock();
+    boolean hadFsnReadLock = fsn.hasReadLock(RwLockMode.GLOBAL);
+    boolean hadFsnWriteLock = fsn.hasWriteLock(RwLockMode.GLOBAL);
 
     // sanity check.
     if (!hadDirReadLock || !hadFsnReadLock || hadDirWriteLock ||
-        hadFsnWriteLock || dir.getReadHoldCount() != 1 ||
-        fsn.getReadHoldCount() != 1) {
+        hadFsnWriteLock || fsn.getReadHoldCount() != 1) {
       // cannot relinquish
       return false;
     }
 
     // unlock
     dir.readUnlock();
-    fsn.readUnlock("contentSummary");
+    fsn.readUnlock(RwLockMode.GLOBAL, "contentSummary");
 
     try {
       Thread.sleep(sleepMilliSec, sleepNanoSec);
     } catch (InterruptedException ie) {
     } finally {
       // reacquire
-      fsn.readLock();
+      fsn.readLock(RwLockMode.GLOBAL);
       dir.readLock();
     }
     yieldCount++;
@@ -188,9 +188,11 @@ public class ContentSummaryComputationContext {
           String ecPolicyName = WritableUtils.readString(din);
           return dir.getFSNamesystem()
               .getErasureCodingPolicyManager()
-              .getEnabledPolicyByName(ecPolicyName)
+              .getErasureCodingPolicyByName(ecPolicyName)
               .getName();
         }
+      } else if (inode.getParent() != null) {
+          return getErasureCodingPolicyName(inode.getParent());
       }
     } catch (IOException ioe) {
       LOG.warn("Encountered error getting ec policy for "
@@ -203,8 +205,13 @@ public class ContentSummaryComputationContext {
   void checkPermission(INodeDirectory inode, int snapshotId, FsAction access)
       throws AccessControlException {
     if (dir != null && dir.isPermissionEnabled()
-        && pc != null && !pc.isSuperUser()) {
-      pc.checkPermission(inode, snapshotId, access);
+        && pc != null) {
+      if (pc.isSuperUser()) {
+        // call external enforcer for audit
+        pc.checkSuperuserPrivilege(inode.getFullPathName());
+      } else {
+        pc.checkPermission(inode, snapshotId, access);
+      }
     }
   }
 }

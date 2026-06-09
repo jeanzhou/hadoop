@@ -30,12 +30,14 @@ import java.util.Random;
 
 import javax.crypto.SecretKey;
 
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.FloatWritable;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
@@ -45,16 +47,17 @@ import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.mapred.TaskAttemptID;
 import org.apache.hadoop.mapred.TaskLog;
-import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
-import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.security.SecureShuffleUtils;
 import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.mapreduce.security.token.JobTokenIdentifier;
 import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
+import org.apache.hadoop.mapreduce.task.JobContextImpl;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,6 +70,7 @@ class Application<K1 extends WritableComparable, V1 extends Writable,
   private static final Logger LOG =
       LoggerFactory.getLogger(Application.class.getName());
   private ServerSocket serverSocket;
+  private PingSocketCleaner socketCleaner;
   private Process process;
   private Socket clientSocket;
   private OutputHandler<K2, V2> handler;
@@ -104,17 +108,18 @@ class Application<K1 extends WritableComparable, V1 extends Writable,
     // This password is used as shared secret key between this application and
     // child pipes process
     byte[]  password = jobToken.getPassword();
-    String localPasswordFile = new File(conf.get(MRConfig.LOCAL_DIR))
-        + Path.SEPARATOR + "jobTokenPassword";
+    String localPasswordFile = new File(".") + Path.SEPARATOR
+        + "jobTokenPassword";
     writePasswordToLocalFile(localPasswordFile, password, conf);
-    env.put("hadoop.pipes.shared.secret.location", localPasswordFile);
+    // FIXME This doesn't seem to be read anywhere
+    env.put("hadoop_pipes_shared_secret_location", localPasswordFile);
  
     List<String> cmd = new ArrayList<String>();
     String interpretor = conf.get(Submitter.INTERPRETOR);
     if (interpretor != null) {
       cmd.add(interpretor);
     }
-    String executable = DistributedCache.getLocalCacheFiles(conf)[0].toString();
+    String executable = JobContextImpl.getLocalCacheFiles(conf)[0].toString();
     if (!FileUtil.canExecute(new File(executable))) {
       // LinuxTaskController sets +x permissions on all distcache files already.
       // In case of DefaultTaskController, set permissions here.
@@ -134,6 +139,13 @@ class Application<K1 extends WritableComparable, V1 extends Writable,
     
     process = runClient(cmd, env);
     clientSocket = serverSocket.accept();
+    // start ping socket cleaner
+    int soTimeout = conf.getInt(CommonConfigurationKeys.IPC_PING_INTERVAL_KEY,
+        CommonConfigurationKeys.IPC_PING_INTERVAL_DEFAULT);
+    socketCleaner = new PingSocketCleaner("ping-socket-cleaner", serverSocket,
+                                          soTimeout);
+    socketCleaner.setDaemon(true);
+    socketCleaner.start();
     
     String challenge = getSecurityChallenge();
     String digestToSend = createDigest(password, challenge);
@@ -238,6 +250,7 @@ class Application<K1 extends WritableComparable, V1 extends Writable,
     serverSocket.close();
     try {
       downlink.close();
+      socketCleaner.interrupt();
     } catch (InterruptedException ie) {
       Thread.currentThread().interrupt();
     }      
@@ -267,4 +280,44 @@ class Application<K1 extends WritableComparable, V1 extends Writable,
     return SecureShuffleUtils.hashFromString(data, key);
   }
 
+  @VisibleForTesting
+  public static class PingSocketCleaner extends SubjectInheritingThread {
+    private final ServerSocket serverSocket;
+    private final int soTimeout;
+
+    PingSocketCleaner(String name, ServerSocket serverSocket, int soTimeout) {
+      super(name);
+      this.serverSocket = serverSocket;
+      this.soTimeout = soTimeout;
+    }
+
+    @Override
+    public void work() {
+      LOG.info("PingSocketCleaner started...");
+      while (!Thread.currentThread().isInterrupted()) {
+        Socket clientSocket = null;
+        try {
+          clientSocket = serverSocket.accept();
+          clientSocket.setSoTimeout(soTimeout);
+          LOG.debug("Connection received from {}",
+                    clientSocket.getInetAddress());
+          int readData = 0;
+          while (readData != -1) {
+            readData = clientSocket.getInputStream().read();
+          }
+          LOG.debug("close socket cause client has closed.");
+          closeSocketInternal(clientSocket);
+        } catch (IOException exception) {
+          LOG.error("PingSocketCleaner exception", exception);
+        } finally {
+          closeSocketInternal(clientSocket);
+        }
+      }
+    }
+
+    @VisibleForTesting
+    protected void closeSocketInternal(Socket clientSocket) {
+      IOUtils.closeSocket(clientSocket);
+    }
+  }
 }

@@ -52,10 +52,7 @@ public class DockerContainerDeletionTask extends DeletionTask
    */
   @Override
   public void run() {
-    if (LOG.isDebugEnabled()) {
-      String msg = String.format("Running DeletionTask : %s", toString());
-      LOG.debug(msg);
-    }
+    LOG.debug("Running DeletionTask : {}", this);
     LinuxContainerExecutor exec = ((LinuxContainerExecutor)
         getDeletionService().getContainerExecutor());
     exec.removeDockerContainer(containerId);
@@ -68,7 +65,7 @@ public class DockerContainerDeletionTask extends DeletionTask
    */
   @Override
   public String toString() {
-    StringBuffer sb = new StringBuffer("DockerContainerDeletionTask : ");
+    StringBuilder sb = new StringBuilder("DockerContainerDeletionTask : ");
     sb.append("  id : ").append(this.getTaskId());
     sb.append("  containerId : ").append(this.containerId);
     return sb.toString().trim();

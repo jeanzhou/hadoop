@@ -43,7 +43,8 @@ public class VersionInfo {
     String versionInfoFile = component + "-version-info.properties";
     InputStream is = null;
     try {
-      is = ThreadUtil.getResourceAsStream(versionInfoFile);
+      is = ThreadUtil.getResourceAsStream(VersionInfo.class.getClassLoader(),
+          versionInfoFile);
       info.load(is);
     } catch (IOException ex) {
       LoggerFactory.getLogger(getClass()).warn("Could not read '" +
@@ -90,6 +91,10 @@ public class VersionInfo {
 
   protected String _getProtocVersion() {
     return info.getProperty("protocVersion", "Unknown");
+  }
+
+  protected String _getCompilePlatform() {
+    return info.getProperty("compilePlatform", "Unknown");
   }
 
   private static VersionInfo COMMON_VERSION_INFO = new VersionInfo("common");
@@ -166,12 +171,21 @@ public class VersionInfo {
     return COMMON_VERSION_INFO._getProtocVersion();
   }
 
+  /**
+   * Returns the OS platform used for the build.
+   * @return the OS platform
+   */
+  public static String getCompilePlatform() {
+    return COMMON_VERSION_INFO._getCompilePlatform();
+  }
+
   public static void main(String[] args) {
     LOG.debug("version: "+ getVersion());
     System.out.println("Hadoop " + getVersion());
     System.out.println("Source code repository " + getUrl() + " -r " +
         getRevision());
     System.out.println("Compiled by " + getUser() + " on " + getDate());
+    System.out.println("Compiled on platform " + getCompilePlatform());
     System.out.println("Compiled with protoc " + getProtocVersion());
     System.out.println("From source with checksum " + getSrcChecksum());
     System.out.println("This command was run using " + 

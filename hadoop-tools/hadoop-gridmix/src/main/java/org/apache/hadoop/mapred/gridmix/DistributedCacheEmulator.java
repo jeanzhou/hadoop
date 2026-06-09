@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.mapred.gridmix;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -42,6 +42,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -83,8 +84,8 @@ import java.util.Map;
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
 class DistributedCacheEmulator {
-  private static final Log LOG =
-      LogFactory.getLog(DistributedCacheEmulator.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(DistributedCacheEmulator.class);
 
   static final long AVG_BYTES_PER_MAP = 128 * 1024 * 1024L;// 128MB
 
@@ -113,7 +114,7 @@ class DistributedCacheEmulator {
 
   Configuration conf; // gridmix configuration
 
-  private static final Charset charsetUTF8 = Charset.forName("UTF-8");
+  private static final Charset charsetUTF8 = StandardCharsets.UTF_8;
 
   // Pseudo local file system where local FS based distributed cache files are
   // created by gridmix.

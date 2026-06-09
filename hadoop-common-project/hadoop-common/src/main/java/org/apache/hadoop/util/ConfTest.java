@@ -20,9 +20,9 @@ package org.apache.hadoop.util;
 
 import java.io.File;
 import java.io.FileFilter;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -46,7 +46,6 @@ import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.MissingArgumentException;
 import org.apache.commons.cli.Option;
-import org.apache.commons.cli.OptionBuilder;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -84,7 +83,7 @@ public final class ConfTest {
     QName property = new QName("property");
 
     List<NodeInfo> nodes = new ArrayList<NodeInfo>();
-    Stack<NodeInfo> parsed = new Stack<NodeInfo>();
+    Stack<NodeInfo> parsed = new Stack<>();
 
     XMLInputFactory factory = XMLInputFactory.newInstance();
     XMLEventReader reader = factory.createXMLEventReader(in);
@@ -230,8 +229,8 @@ public final class ConfTest {
     GenericOptionsParser genericParser = new GenericOptionsParser(args);
     String[] remainingArgs = genericParser.getRemainingArgs();
 
-    Option conf = OptionBuilder.hasArg().create("conffile");
-    Option help = OptionBuilder.withLongOpt("help").create('h');
+    Option conf = Option.builder("conffile").hasArg().build();
+    Option help = Option.builder("h").longOpt("help").hasArg().build();
     Options opts = new Options().addOption(conf).addOption(help);
     CommandLineParser specificParser = new GnuParser();
     CommandLine cmd = null;
@@ -258,9 +257,7 @@ public final class ConfTest {
         if (confFile.isFile()) {
           files.add(confFile);
         } else if (confFile.isDirectory()) {
-          for (File file : listFiles(confFile)) {
-            files.add(file);
-          }
+          files.addAll(Arrays.asList(listFiles(confFile)));
         } else {
           terminate(1, confFile.getAbsolutePath()
               + " is neither a file nor directory");
@@ -284,7 +281,7 @@ public final class ConfTest {
     boolean ok = true;
     for (File file : files) {
       String path = file.getAbsolutePath();
-      List<String> errors = checkConf(new FileInputStream(file));
+      List<String> errors = checkConf(Files.newInputStream(file.toPath()));
       if (errors.isEmpty()) {
         System.out.println(path + ": valid");
       } else {
@@ -313,9 +310,9 @@ class NodeInfo {
   private StartElement startElement;
   private List<Attribute> attributes = new ArrayList<Attribute>();
   private Map<StartElement, Characters> elements =
-      new HashMap<StartElement, Characters>();
+      new HashMap<>();
   private Map<QName, List<XMLEvent>> qNameXMLEventsMap =
-      new HashMap<QName, List<XMLEvent>>();
+      new HashMap<>();
 
   public NodeInfo(StartElement startElement) {
     this.startElement = startElement;

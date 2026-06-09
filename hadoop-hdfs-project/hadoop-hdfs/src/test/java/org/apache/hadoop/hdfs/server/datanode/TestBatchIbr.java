@@ -19,6 +19,8 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_INCREMENTAL_INTERVAL_MSEC_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_MIN_BLOCK_SIZE_KEY;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.List;
@@ -30,8 +32,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -44,16 +46,15 @@ import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.MetricsAsserts;
 import org.apache.hadoop.util.Time;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.Test;
 
 /**
  * This test verifies that incremental block reports are sent in batch mode
  * and the namenode allows closing a file with COMMITTED blocks.
  */
 public class TestBatchIbr {
-  public static final Log LOG = LogFactory.getLog(TestBatchIbr.class);
+  public static final Logger LOG = LoggerFactory.getLogger(TestBatchIbr.class);
 
   private static final short NUM_DATANODES = 4;
   private static final int BLOCK_SIZE = 1024;
@@ -66,7 +67,8 @@ public class TestBatchIbr {
 
   static {
     GenericTestUtils.setLogLevel(
-        LogFactory.getLog(IncrementalBlockReportManager.class), Level.ALL);
+        LoggerFactory.getLogger(IncrementalBlockReportManager.class),
+        Level.TRACE);
   }
 
   static HdfsConfiguration newConf(long ibrInterval) throws IOException {
@@ -160,7 +162,7 @@ public class TestBatchIbr {
         });
       }
       for(int i = 0; i < NUM_FILES; i++) {
-        Assert.assertTrue(verifyService.take().get());
+        assertTrue(verifyService.take().get());
       }
       final long testEndTime = Time.monotonicNow();
 
@@ -246,7 +248,7 @@ public class TestBatchIbr {
       for(int i = 0; i < numBlocks; i++) {
         in.read(computed);
         nextBytes(i, seed, expected);
-        Assert.assertArrayEquals(expected, computed);
+        assertArrayEquals(expected, computed);
       }
       return true;
     } catch(Exception e) {

@@ -19,7 +19,9 @@
 package org.apache.hadoop.fs;
 
 import java.io.File;
-import static org.junit.Assert.fail;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -37,12 +39,10 @@ import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifie
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
-import org.apache.hadoop.test.PathUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests whether FileContext can resolve an hdfs path that has a symlink to
@@ -53,7 +53,7 @@ public class TestResolveHdfsSymlink {
   private static final FileContextTestHelper helper = new FileContextTestHelper();
   private static MiniDFSCluster cluster = null;
 
-  @BeforeClass
+  @BeforeAll
   public static void setUp() throws IOException {
     Configuration conf = new HdfsConfiguration();
     conf.setBoolean(
@@ -63,7 +63,7 @@ public class TestResolveHdfsSymlink {
 
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -84,7 +84,7 @@ public class TestResolveHdfsSymlink {
 
     final String localTestRoot = helper.getAbsoluteTestRootDir(fcLocal);
     Path alphaLocalPath = new Path(fcLocal.getDefaultFileSystem().getUri()
-        .toString(), new File(localTestRoot, "alpha").getAbsolutePath());
+        .toString(), new File(localTestRoot, "alpha").getPath());
     DFSTestUtil.createFile(FileSystem.getLocal(conf), alphaLocalPath, 16,
         (short) 1, 2);
 
@@ -100,11 +100,11 @@ public class TestResolveHdfsSymlink {
 
     Set<AbstractFileSystem> afsList = fcHdfs
         .resolveAbstractFileSystems(alphaHdfsPathViaLink);
-    Assert.assertEquals(2, afsList.size());
+    assertEquals(2, afsList.size());
     for (AbstractFileSystem afs : afsList) {
       if ((!afs.equals(fcHdfs.getDefaultFileSystem()))
           && (!afs.equals(fcLocal.getDefaultFileSystem()))) {
-        Assert.fail("Failed to resolve AFS correctly");
+        fail("Failed to resolve AFS correctly");
       }
     }
   }

@@ -17,7 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -25,40 +27,49 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.net.MockDomainNameResolver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.Whitebox;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 
 public class TestBlockPoolManager {
-  private final Log LOG = LogFactory.getLog(TestBlockPoolManager.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestBlockPoolManager.class);
   private final DataNode mockDN = Mockito.mock(DataNode.class);
   private BlockPoolManager bpm;
   private final StringBuilder log = new StringBuilder();
   private int mockIdx = 1;
   
-  @Before
+  @BeforeEach
   public void setupBPM() {
     bpm = new BlockPoolManager(mockDN){
 
       @Override
       protected BPOfferService createBPOS(
           final String nameserviceId,
+          List<String> nnIds,
           List<InetSocketAddress> nnAddrs,
           List<InetSocketAddress> lifelineNnAddrs) {
         final int idx = mockIdx++;
         doLog("create #" + idx);
         final BPOfferService bpos = Mockito.mock(BPOfferService.class);
         Mockito.doReturn("Mock BPOS #" + idx).when(bpos).toString();
+        List<BPServiceActor> bpsa = new ArrayList<>(nnIds.size());
+        for (int i = 0; i < nnIds.size(); i++) {
+          BPServiceActor actor = Mockito.mock(BPServiceActor.class);
+          Mockito.doReturn(nnIds.get(i)).when(actor).getNnId();
+          Mockito.doReturn(nnAddrs.get(i)).when(actor).getNNSocketAddress();
+          bpsa.add(actor);
+        }
+        Mockito.doReturn(bpsa).when(bpos).getBPServiceActors();
         // Log refreshes
         try {
           Mockito.doAnswer(
@@ -68,7 +79,8 @@ public class TestBlockPoolManager {
                   doLog("refresh #" + idx);
                   return null;
                 }
-              }).when(bpos).refreshNNList(
+              }).when(bpos).refreshNNList(Mockito.anyString(),
+                  Mockito.<List<String>>any(),
                   Mockito.<ArrayList<InetSocketAddress>>any(),
                   Mockito.<ArrayList<InetSocketAddress>>any());
         } catch (IOException e) {
@@ -147,13 +159,57 @@ public class TestBlockPoolManager {
     conf.set(DFSConfigKeys.DFS_INTERNAL_NAMESERVICES_KEY, "ns1");
     bpm.refreshNamenodes(conf);
     assertEquals("create #1\n", log.toString());
-    @SuppressWarnings("unchecked")
-    Map<String, BPOfferService> map = (Map<String, BPOfferService>) Whitebox
-            .getInternalState(bpm, "bpByNameserviceId");
-    Assert.assertFalse(map.containsKey("ns2"));
-    Assert.assertFalse(map.containsKey("ns3"));
-    Assert.assertTrue(map.containsKey("ns1"));
+    Map<String, BPOfferService> map = bpm.getBpByNameserviceId();
+    assertFalse(map.containsKey("ns2"));
+    assertFalse(map.containsKey("ns3"));
+    assertTrue(map.containsKey("ns1"));
     log.setLength(0);
+  }
+
+  @Test
+  public void testNameServiceNeedToBeResolved() throws Exception {
+    Configuration conf = new Configuration();
+    conf.set(DFSConfigKeys.DFS_NAMESERVICES, "ns1,ns2,ns3");
+    addNN(conf, "ns1", "mock1:8020");
+    addNN(conf, "ns2", "mock1:8020");
+    addNN(conf, "ns3", MockDomainNameResolver.DOMAIN + ":8020");
+    addDNSSettings(conf, "ns3");
+    bpm.refreshNamenodes(conf);
+    assertEquals(
+        "create #1\n" +
+            "create #2\n" +
+            "create #3\n", log.toString());
+    Map<String, BPOfferService> map = bpm.getBpByNameserviceId();
+    assertTrue(map.containsKey("ns1"));
+    assertTrue(map.containsKey("ns2"));
+    assertTrue(map.containsKey("ns3"));
+    assertEquals(2, map.get("ns3").getBPServiceActors().size());
+    assertEquals("ns3-" + MockDomainNameResolver.FQDN_1 + "-8020",
+        map.get("ns3").getBPServiceActors().get(0).getNnId());
+    assertEquals("ns3-" + MockDomainNameResolver.FQDN_2 + "-8020",
+        map.get("ns3").getBPServiceActors().get(1).getNnId());
+    assertEquals(
+        new InetSocketAddress(MockDomainNameResolver.FQDN_1, 8020),
+        map.get("ns3").getBPServiceActors().get(0).getNNSocketAddress());
+    assertEquals(
+        new InetSocketAddress(MockDomainNameResolver.FQDN_2, 8020),
+        map.get("ns3").getBPServiceActors().get(1).getNNSocketAddress());
+    log.setLength(0);
+  }
+
+
+  /**
+   * Add more DNS related settings to the passed in configuration.
+   * @param config Configuration file to add settings to.
+   */
+  private void addDNSSettings(Configuration config,
+      String nameservice) {
+    config.setBoolean(
+        DFSConfigKeys.DFS_NAMESERVICES_RESOLUTION_ENABLED + "."
+            + nameservice, true);
+    config.set(
+        DFSConfigKeys.DFS_NAMESERVICES_RESOLVER_IMPL + "." + nameservice,
+        MockDomainNameResolver.class.getName());
   }
 
   private static void addNN(Configuration conf, String ns, String addr) {

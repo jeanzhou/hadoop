@@ -18,10 +18,18 @@
 
 package org.apache.hadoop.fs.s3a.commit.magic;
 
+import java.io.IOException;
+import java.net.URI;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileStatus;
+
+import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.contract.ContractTestUtils;
+import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.fs.s3a.commit.AbstractITCommitProtocol;
 import org.apache.hadoop.fs.s3a.commit.AbstractS3ACommitter;
 import org.apache.hadoop.fs.s3a.commit.CommitConstants;
@@ -31,35 +39,32 @@ import org.apache.hadoop.fs.s3a.commit.CommitterFaultInjectionImpl;
 import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.JobStatus;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
 
-import java.io.IOException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
 
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.removeBaseAndBucketOverrides;
+import static org.apache.hadoop.fs.s3a.S3AUtils.listAndFilter;
 import static org.apache.hadoop.fs.s3a.commit.CommitConstants.*;
+import static org.apache.hadoop.fs.s3a.commit.impl.CommitUtilsWithMR.getMagicJobPath;
+import static org.apache.hadoop.util.functional.RemoteIterators.toList;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test the magic committer's commit protocol.
  */
+@ParameterizedClass(name="track-commit-in-memory-{0}")
+@MethodSource("params")
 public class ITestMagicCommitProtocol extends AbstractITCommitProtocol {
+
+  private boolean trackCommitsInMemory;
 
   @Override
   protected String suitename() {
     return "ITestMagicCommitProtocol";
-  }
-
-  /**
-   * Need consistency here.
-   * @return false
-   */
-  @Override
-  public boolean useInconsistentClient() {
-    return false;
-  }
-
-  @Override
-  protected Configuration createConfiguration() {
-    Configuration conf = super.createConfiguration();
-    conf.setBoolean(MAGIC_COMMITTER_ENABLED, true);
-    return conf;
   }
 
   @Override
@@ -73,47 +78,171 @@ public class ITestMagicCommitProtocol extends AbstractITCommitProtocol {
   }
 
   @Override
+  @BeforeEach
   public void setup() throws Exception {
     super.setup();
     CommitUtils.verifyIsMagicCommitFS(getFileSystem());
+  }
+
+  public static Collection<Object[]> params() {
+    return Arrays.asList(new Object[][]{
+        {false},
+        {true}
+    });
+  }
+
+  public ITestMagicCommitProtocol(boolean trackCommitsInMemory) {
+    this.trackCommitsInMemory = trackCommitsInMemory;
+  }
+
+  @Override
+  protected Configuration createConfiguration() {
+    Configuration conf = super.createConfiguration();
+    removeBaseAndBucketOverrides(conf, FS_S3A_COMMITTER_MAGIC_TRACK_COMMITS_IN_MEMORY_ENABLED);
+    conf.setBoolean(FS_S3A_COMMITTER_MAGIC_TRACK_COMMITS_IN_MEMORY_ENABLED, trackCommitsInMemory);
+
+    return conf;
   }
 
   @Override
   public void assertJobAbortCleanedUp(JobData jobData)
       throws Exception {
     // special handling of magic directory; harmless in staging
-    Path magicDir = new Path(getOutDir(), MAGIC);
+    Path magicDir = getMagicJobPath(jobData.getCommitter().getUUID(), getOutDir());
     ContractTestUtils.assertPathDoesNotExist(getFileSystem(),
         "magic dir ", magicDir);
     super.assertJobAbortCleanedUp(jobData);
   }
 
   @Override
-  protected AbstractS3ACommitter createCommitter(
+  protected MagicS3GuardCommitter createCommitter(
       Path outputPath,
       TaskAttemptContext context)
       throws IOException {
     return new MagicS3GuardCommitter(outputPath, context);
   }
 
-  public AbstractS3ACommitter createFailingCommitter(
+  public MagicS3GuardCommitter createFailingCommitter(
       TaskAttemptContext tContext) throws IOException {
     return new CommitterWithFailedThenSucceed(getOutDir(), tContext);
   }
 
-  protected void validateTaskAttemptPathDuringWrite(Path p) throws IOException {
+  protected void validateTaskAttemptPathDuringWrite(Path p,
+      final long expectedLength,
+      String jobId) throws IOException {
     String pathStr = p.toString();
-    assertTrue("not magic " + pathStr,
-        pathStr.contains(MAGIC));
+    assertThat(pathStr)
+        .describedAs("Magic path")
+        .contains("/" + MAGIC_PATH_PREFIX + jobId + "/");
     assertPathDoesNotExist("task attempt visible", p);
   }
 
-  protected void validateTaskAttemptPathAfterWrite(Path p) throws IOException {
-    FileStatus st = getFileSystem().getFileStatus(p);
-    assertEquals("file length in " + st, 0, st.getLen());
-    Path pendingFile = new Path(p.toString() + PENDING_SUFFIX);
+  protected void validateTaskAttemptPathAfterWrite(Path marker,
+      final long expectedLength) throws IOException {
+    // the pending file exists
+    Path pendingFile = new Path(marker.toString() + PENDING_SUFFIX);
     assertPathExists("pending file", pendingFile);
+    S3AFileSystem fs = getFileSystem();
+
+    // THIS SEQUENCE MUST BE RUN IN ORDER ON A S3GUARDED
+    // STORE
+    // if you list the parent dir and find the marker, it
+    // is really 0 bytes long
+    String name = marker.getName();
+    List<LocatedFileStatus> filtered = toList(listAndFilter(fs,
+        marker.getParent(), false,
+        (path) -> path.getName().equals(name)));
+    assertThat(filtered)
+        .hasSize(1);
+    assertThat(filtered.get(0))
+        .matches(lst -> lst.getLen() == 0,
+            "Listing should return 0 byte length");
+
+    // marker file is empty
+    getTestHelper().assertIsMarkerFile(marker, expectedLength);
   }
+
+  /**
+   * The magic committer paths are always on S3, and always have
+   * "MAGIC PATH" in the path.
+   * @param committer committer instance
+   * @param context task attempt context
+   * @throws IOException IO failure
+   */
+  @Override
+  protected void validateTaskAttemptWorkingDirectory(
+      final AbstractS3ACommitter committer,
+      final TaskAttemptContext context) throws IOException {
+    URI wd = committer.getWorkPath().toUri();
+    assertEquals("s3a", wd.getScheme(),
+        "Wrong schema for working dir " + wd
+        + " with committer " + committer);
+    assertThat(wd.getPath())
+        .contains("/" + MAGIC_PATH_PREFIX + committer.getUUID() + "/");
+  }
+
+  /**
+   * Verify that the "MAGIC PATH" for the application/tasks use the
+   * committer UUID to ensure uniqueness in the case of more than
+   * one job writing to the same destination path.
+   */
+  @Test
+  public void testCommittersPathsHaveUUID() throws Throwable {
+    TaskAttemptContext tContext = new TaskAttemptContextImpl(
+        getConfiguration(),
+        getTaskAttempt0());
+    MagicS3GuardCommitter committer = createCommitter(getOutDir(), tContext);
+
+    String ta0 = getTaskAttempt0().toString();
+    // magic path for the task attempt
+    Path taskAttemptPath = committer.getTaskAttemptPath(tContext);
+    assertThat(taskAttemptPath.toString())
+        .describedAs("task path of %s", committer)
+        .contains(committer.getUUID())
+        .contains("/" + MAGIC_PATH_PREFIX + committer.getUUID() + "/")
+        .doesNotContain(TEMP_DATA)
+        .endsWith(BASE)
+        .contains(ta0);
+
+    // temp path for files which the TA will create with an absolute path
+    // and which need renaming into place.
+    Path tempTaskAttemptPath = committer.getTempTaskAttemptPath(tContext);
+    assertThat(tempTaskAttemptPath.toString())
+        .describedAs("Temp task path of %s", committer)
+        .contains(committer.getUUID())
+        .contains(TEMP_DATA)
+        .doesNotContain("/" + MAGIC_PATH_PREFIX + committer.getUUID() + "/")
+        .doesNotContain(BASE)
+        .contains(ta0);
+  }
+
+  /**
+   * Verify that the magic committer cleanup
+   */
+  @Test
+  public void testCommitterCleanup() throws Throwable {
+    describe("Committer cleanup enabled. hence it should delete the task attempt path after commit");
+    JobData jobData = startJob(true);
+    JobContext jContext = jobData.getJContext();
+    TaskAttemptContext tContext = jobData.getTContext();
+    AbstractS3ACommitter committer = jobData.getCommitter();
+
+    commit(committer, jContext, tContext);
+    assertJobAttemptPathDoesNotExist(committer, jContext);
+
+    describe("Committer cleanup is disabled. hence it should not delete the task attempt path after commit");
+    JobData jobData2 = startJob(true);
+    JobContext jContext2 = jobData2.getJContext();
+    TaskAttemptContext tContext2 = jobData2.getTContext();
+    AbstractS3ACommitter committer2 = jobData2.getCommitter();
+
+    committer2.getConf().setBoolean(FS_S3A_COMMITTER_MAGIC_CLEANUP_ENABLED, false);
+
+
+    commit(committer2, jContext2, tContext2);
+    assertJobAttemptPathExists(committer2, jContext2);
+  }
+
 
   /**
    * The class provides a overridden implementation of commitJobInternal which

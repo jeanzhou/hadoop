@@ -23,7 +23,6 @@ import java.security.PrivilegedExceptionAction;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ipc.StandbyException;
-import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.client.ClientRMProxy;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
@@ -32,6 +31,8 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.AddToClusterNodeLabelsR
 import org.apache.hadoop.yarn.server.api.protocolrecords.AddToClusterNodeLabelsResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.CheckForDecommissioningNodesRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.CheckForDecommissioningNodesResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.NodesToAttributesMappingRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.NodesToAttributesMappingResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshAdminAclsRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshAdminAclsResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshClusterMaxPriorityRequest;
@@ -54,10 +55,24 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeRequ
 import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeregisterSubClusterRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeregisterSubClusterResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.SaveFederationQueuePolicyRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.SaveFederationQueuePolicyResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.BatchSaveFederationQueuePoliciesRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.BatchSaveFederationQueuePoliciesResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.QueryFederationQueuePoliciesRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.QueryFederationQueuePoliciesResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeleteFederationApplicationRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeleteFederationApplicationResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.GetSubClustersRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.GetSubClustersResponse;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeleteFederationQueuePoliciesRequest;
+import org.apache.hadoop.yarn.server.api.protocolrecords.DeleteFederationQueuePoliciesResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Extends the {@link AbstractRMAdminRequestInterceptor} class and provides an
@@ -70,43 +85,23 @@ public class DefaultRMAdminRequestInterceptor
   private static final Logger LOG =
       LoggerFactory.getLogger(DefaultRMAdminRequestInterceptor.class);
   private ResourceManagerAdministrationProtocol rmAdminProxy;
-  private UserGroupInformation user = null;
 
   @Override
   public void init(String userName) {
     super.init(userName);
     try {
-      // Do not create a proxy user if user name matches the user name on
-      // current UGI
-      if (userName.equalsIgnoreCase(
-          UserGroupInformation.getCurrentUser().getUserName())) {
-        user = UserGroupInformation.getCurrentUser();
-      } else {
-        user = UserGroupInformation.createProxyUser(userName,
-            UserGroupInformation.getCurrentUser());
-      }
-
       final Configuration conf = this.getConf();
-
       rmAdminProxy = user.doAs(
-          new PrivilegedExceptionAction<ResourceManagerAdministrationProtocol>() {
-            @Override
-            public ResourceManagerAdministrationProtocol run()
-                throws Exception {
-              return ClientRMProxy.createRMProxy(conf,
-                  ResourceManagerAdministrationProtocol.class);
-            }
-          });
-    } catch (IOException e) {
-      String message = "Error while creating Router RMAdmin Service for user:";
-      if (user != null) {
-        message += ", user: " + user;
-      }
-
-      LOG.info(message);
-      throw new YarnRuntimeException(message, e);
+          (PrivilegedExceptionAction<ResourceManagerAdministrationProtocol>) () ->
+               ClientRMProxy.createRMProxy(conf, ResourceManagerAdministrationProtocol.class));
     } catch (Exception e) {
-      throw new YarnRuntimeException(e);
+      StringBuilder message = new StringBuilder();
+      message.append("Error while creating Router RMAdmin Service");
+      if (user != null) {
+        message.append(", user: " + user);
+      }
+      LOG.error(message.toString(), e);
+      throw new YarnRuntimeException(message.toString(), e);
     }
   }
 
@@ -121,7 +116,6 @@ public class DefaultRMAdminRequestInterceptor
   @VisibleForTesting
   public void setRMAdmin(ResourceManagerAdministrationProtocol rmAdmin) {
     this.rmAdminProxy = rmAdmin;
-
   }
 
   @Override
@@ -211,5 +205,55 @@ public class DefaultRMAdminRequestInterceptor
   @Override
   public String[] getGroupsForUser(String userName) throws IOException {
     return rmAdminProxy.getGroupsForUser(userName);
+  }
+
+  @Override
+  public NodesToAttributesMappingResponse mapAttributesToNodes(
+      NodesToAttributesMappingRequest request)
+      throws YarnException, IOException {
+    return rmAdminProxy.mapAttributesToNodes(request);
+  }
+
+  @Override
+  public DeregisterSubClusterResponse deregisterSubCluster(DeregisterSubClusterRequest request)
+      throws YarnException, IOException {
+    return rmAdminProxy.deregisterSubCluster(request);
+  }
+
+  @Override
+  public SaveFederationQueuePolicyResponse saveFederationQueuePolicy(
+      SaveFederationQueuePolicyRequest request) throws YarnException, IOException {
+    return rmAdminProxy.saveFederationQueuePolicy(request);
+  }
+
+  @Override
+  public BatchSaveFederationQueuePoliciesResponse batchSaveFederationQueuePolicies(
+      BatchSaveFederationQueuePoliciesRequest request) throws YarnException, IOException {
+    return rmAdminProxy.batchSaveFederationQueuePolicies(request);
+  }
+
+  @Override
+  public QueryFederationQueuePoliciesResponse listFederationQueuePolicies(
+      QueryFederationQueuePoliciesRequest request) throws YarnException, IOException {
+    return rmAdminProxy.listFederationQueuePolicies(request);
+  }
+
+  @Override
+  public DeleteFederationApplicationResponse deleteFederationApplication(
+      DeleteFederationApplicationRequest request)
+      throws YarnException, IOException {
+    return rmAdminProxy.deleteFederationApplication(request);
+  }
+
+  @Override
+  public GetSubClustersResponse getFederationSubClusters(
+      GetSubClustersRequest request) throws YarnException, IOException {
+    return rmAdminProxy.getFederationSubClusters(request);
+  }
+
+  @Override
+  public DeleteFederationQueuePoliciesResponse deleteFederationPoliciesByQueues(
+      DeleteFederationQueuePoliciesRequest request) throws YarnException, IOException {
+    return rmAdminProxy.deleteFederationPoliciesByQueues(request);
   }
 }

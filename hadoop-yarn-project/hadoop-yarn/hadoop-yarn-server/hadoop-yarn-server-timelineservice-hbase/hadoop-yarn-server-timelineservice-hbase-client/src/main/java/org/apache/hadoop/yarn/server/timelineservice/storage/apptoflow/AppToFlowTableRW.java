@@ -26,7 +26,7 @@ import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.regionserver.BloomType;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.timelineservice.storage.common.BaseTableRW;
-import org.apache.hadoop.yarn.server.timelineservice.storage.common.TimelineHBaseSchemaConstants;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -79,13 +79,7 @@ public class AppToFlowTableRW extends BaseTableRW<AppToFlowTable> {
     mappCF.setBloomFilterType(BloomType.ROWCOL);
     appToFlowTableDescp.addFamily(mappCF);
 
-    appToFlowTableDescp
-        .setRegionSplitPolicyClassName(
-            "org.apache.hadoop.hbase.regionserver.KeyPrefixRegionSplitPolicy");
-    appToFlowTableDescp.setValue("KeyPrefixRegionSplitPolicy.prefix_length",
-        TimelineHBaseSchemaConstants.USERNAME_SPLIT_KEY_PREFIX_LENGTH);
-    admin.createTable(appToFlowTableDescp,
-        TimelineHBaseSchemaConstants.getUsernameSplits());
+    admin.createTable(appToFlowTableDescp);
     LOG.info("Status of table creation for " + table.getNameAsString() + "="
         + admin.tableExists(table));
   }

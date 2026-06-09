@@ -18,16 +18,29 @@
 
 package org.apache.hadoop.test;
 
-import com.google.common.base.Preconditions;
-import org.junit.Assert;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.Time;
 
+import java.io.IOException;
+import java.security.PrivilegedExceptionAction;
+import java.util.Collection;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
 /**
  * Class containing methods and associated classes to make the most of Lambda
@@ -399,7 +412,7 @@ public final class LambdaTestUtils {
       throws Exception {
     try {
       eval.call();
-      throw new AssertionError("Expected an exception");
+      throw new AssertionError("Expected an exception of type " + clazz);
     } catch (Throwable e) {
       if (clazz.isAssignableFrom(e.getClass())) {
         return (E)e;
@@ -469,7 +482,7 @@ public final class LambdaTestUtils {
    * <i>or a subclass</i>.
    * @param contained string which must be in the {@code toString()} value
    * of the exception
-   * @param message any message tho include in exception/log messages
+   * @param message any message to include in exception/log messages
    * @param eval expression to eval
    * @param <T> return type of expression
    * @param <E> exception class
@@ -521,7 +534,7 @@ public final class LambdaTestUtils {
       throws Exception {
     return intercept(clazz, contained,
         "Expecting " + clazz.getName()
-        + (contained != null? (" with text " + contained) : "")
+        + (contained != null ? (" with text " + contained) : "")
         + " but got ",
         () -> {
           eval.call();
@@ -536,7 +549,7 @@ public final class LambdaTestUtils {
    * <i>or a subclass</i>.
    * @param contained string which must be in the {@code toString()} value
    * of the exception
-   * @param message any message tho include in exception/log messages
+   * @param message any message to include in exception/log messages
    * @param eval expression to eval
    * @param <E> exception class
    * @return the caught exception if it was of the expected type
@@ -557,6 +570,105 @@ public final class LambdaTestUtils {
   }
 
   /**
+   * Intercept an exception; throw an {@code AssertionError} if one not raised.
+   * The caught exception is rethrown if it is of the wrong class or
+   * does not contain the text defined in {@code contained}.
+   * <p>
+   * Example: expect deleting a nonexistent file to raise a
+   * {@code FileNotFoundException} with the {@code toString()} value
+   * containing the text {@code "missing"}.
+   * <pre>
+   * FileNotFoundException ioe = interceptAndValidateMessageContains(
+   *   FileNotFoundException.class,
+   *   "missing",
+   *   "path should not be found",
+   *   () -> {
+   *     filesystem.delete(new Path("/missing"), false);
+   *   });
+   * </pre>
+   *
+   * @param clazz class of exception; the raised exception must be this class
+   * <i>or a subclass</i>.
+   * @param contains strings which must be in the {@code toString()} value
+   * of the exception (order does not matter)
+   * @param eval expression to eval
+   * @param <T> return type of expression
+   * @param <E> exception class
+   * @return the caught exception if it was of the expected type and contents
+   * @throws Exception any other exception raised
+   * @throws AssertionError if the evaluation call didn't raise an exception.
+   * The error includes the {@code toString()} value of the result, if this
+   * can be determined.
+   * @see GenericTestUtils#assertExceptionContains(String, Throwable)
+   */
+  public static <T, E extends Throwable> E interceptAndValidateMessageContains(
+          Class<E> clazz,
+          Collection<String> contains,
+          VoidCallable eval)
+          throws Exception {
+    String message = "Expecting " + clazz.getName()
+            + (contains.isEmpty() ? "" : (" with text values " + toString(contains)))
+            + " but got ";
+    return interceptAndValidateMessageContains(clazz, contains, message, eval);
+  }
+
+  /**
+   * Intercept an exception; throw an {@code AssertionError} if one not raised.
+   * The caught exception is rethrown if it is of the wrong class or
+   * does not contain the text defined in {@code contained}.
+   * <p>
+   * Example: expect deleting a nonexistent file to raise a
+   * {@code FileNotFoundException} with the {@code toString()} value
+   * containing the text {@code "missing"}.
+   * <pre>
+   * FileNotFoundException ioe = interceptAndValidateMessageContains(
+   *   FileNotFoundException.class,
+   *   "missing",
+   *   "path should not be found",
+   *   () -> {
+   *     filesystem.delete(new Path("/missing"), false);
+   *   });
+   * </pre>
+   *
+   * @param clazz class of exception; the raised exception must be this class
+   * <i>or a subclass</i>.
+   * @param contains strings which must be in the {@code toString()} value
+   * of the exception (order does not matter)
+   * @param message any message to include in exception/log messages
+   * @param eval expression to eval
+   * @param <T> return type of expression
+   * @param <E> exception class
+   * @return the caught exception if it was of the expected type and contents
+   * @throws Exception any other exception raised
+   * @throws AssertionError if the evaluation call didn't raise an exception.
+   * The error includes the {@code toString()} value of the result, if this
+   * can be determined.
+   * @see GenericTestUtils#assertExceptionContains(String, Throwable)
+   */
+  public static <T, E extends Throwable> E interceptAndValidateMessageContains(
+          Class<E> clazz,
+          Collection<String> contains,
+          String message,
+          VoidCallable eval)
+          throws Exception {
+    E ex;
+    try {
+      eval.call();
+      throw new AssertionError(message);
+    } catch (Throwable e) {
+      if (!clazz.isAssignableFrom(e.getClass())) {
+        throw e;
+      } else {
+        ex = (E) e;
+      }
+    }
+    for (String contained : contains) {
+      GenericTestUtils.assertExceptionContains(contained, ex, message);
+    }
+    return ex;
+  }
+
+  /**
    * Robust string converter for exception messages; if the {@code toString()}
    * method throws an exception then that exception is caught and logged,
    * then a simple string of the classname logged.
@@ -568,6 +680,9 @@ public final class LambdaTestUtils {
     if (o == null) {
       return NULL_RESULT;
     } else {
+      if (o instanceof String) {
+        return '"' + (String)o + '"';
+      }
       try {
         return o.toString();
       } catch (Exception e) {
@@ -588,24 +703,23 @@ public final class LambdaTestUtils {
   public static <T> void assertOptionalEquals(String message,
       T expected,
       Optional<T> actual) {
-    Assert.assertNotNull(message, actual);
-    Assert.assertTrue(message +" -not present", actual.isPresent());
-    Assert.assertEquals(message, expected, actual.get());
+    assertNotNull(actual, message);
+    assertTrue(actual.isPresent(), message +" -not present");
+    assertEquals(expected, actual.get(), message);
   }
 
   /**
    * Assert that an optional value matches an expected one;
    * checks include null and empty on the actual value.
    * @param message message text
-   * @param expected expected value
    * @param actual actual optional value
    * @param <T> type
    */
   public static <T> void assertOptionalUnset(String message,
       Optional<T> actual) {
-    Assert.assertNotNull(message, actual);
+    assertNotNull(actual, message);
     actual.ifPresent(
-        t -> Assert.fail("Expected empty option, got " + t.toString()));
+        t -> fail("Expected empty option, got " + t.toString()));
   }
 
   /**
@@ -631,7 +745,6 @@ public final class LambdaTestUtils {
    * Invoke a callable; wrap all checked exceptions with an
    * AssertionError.
    * @param closure closure to execute
-   * @return the value of the closure
    * @throws AssertionError if the operation raised an IOE or
    * other checked exception.
    */
@@ -643,6 +756,179 @@ public final class LambdaTestUtils {
     } catch (Exception e) {
       throw new AssertionError(e.toString(), e);
     }
+  }
+
+  /**
+   * Evaluate a closure and return the result, after verifying that it is
+   * not null.
+   * @param message message to use in assertion text if the result is null
+   * @param eval closure to evaluate
+   * @param <T> type of response
+   * @return the evaluated result
+   * @throws Exception on any problem
+   */
+  public static<T> T notNull(String message, Callable<T> eval)
+      throws Exception {
+    T t = eval.call();
+    assertNotNull(t, message);
+    return t;
+  }
+
+  /**
+   * Execute a closure as the given user.
+   * @param user user to invoke the closure as
+   * @param eval closure to evaluate
+   * @param <T> return type
+   * @return the result of calling the closure under the identity of the user.
+   * @throws IOException IO failure
+   * @throws InterruptedException interrupted operation.
+   */
+  public static<T> T doAs(UserGroupInformation user, Callable<T> eval)
+      throws IOException, InterruptedException {
+    return user.doAs(new PrivilegedOperation<>(eval));
+  }
+
+  /**
+   * Execute a closure as the given user.
+   * @param user user to invoke the closure as
+   * @param eval closure to evaluate
+   * @throws IOException IO failure
+   * @throws InterruptedException interrupted operation.
+   */
+  public static void doAs(UserGroupInformation user, VoidCallable eval)
+      throws IOException, InterruptedException {
+    user.doAs(new PrivilegedVoidOperation(eval));
+  }
+
+  /**
+   * Expect a future to raise a specific exception class when evaluated,
+   * <i>looking inside the raised {@code ExecutionException}</i> for it.
+   * @param clazz class of exception; the nested exception must be this class
+   * <i>or a subclass</i>.
+   *
+   * This is simply an unwrapping of the outcome of the future.
+   *
+   * If an exception is not raised, the return value of the {@code get()}
+   * call is included in the exception string.
+   *
+   * If the nested cause of the raised ExecutionException is not an
+   * Exception (i.e its an error), then the outer ExecutionException is
+   * rethrown.
+   * This keeps the operation signatures in sync.
+   *
+   * @param contained string which must be in the {@code toString()} value
+   * of the exception
+   * @param future future to get
+   * @param <T> return type of expression
+   * @param <E> exception class
+   * @return the caught exception if it was of the expected type and contents
+   * @throws AssertionError if the evaluation call didn't raise an exception.
+   * The error includes the {@code toString()} value of the result, if this
+   * can be determined.
+   * @throws CancellationException if the computation was cancelled
+   * @throws ExecutionException if the raised exception didn't contain an
+   * exception.
+   * @throws InterruptedException if the current thread was interrupted
+   * @throws TimeoutException if the wait timed out
+   * @throws Exception if the wrong exception was raised, or there was
+   * a text mismatch.
+   */
+  public static <T, E extends Throwable> E interceptFuture(
+      Class<E> clazz,
+      String contained,
+      Future<T> future) throws Exception {
+    return intercept(clazz,
+        contained,
+        () -> {
+          try {
+            return future.get();
+          } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception) {
+              throw (Exception) cause;
+            } else {
+              throw e;
+            }
+          }
+        });
+  }
+
+  /**
+   * Expect a future to raise a specific exception class when evaluated,
+   * <i>looking inside the raised {@code ExecutionException}</i> for it.
+   * @param clazz class of exception; the nested exception must be this class
+   * <i>or a subclass</i>.
+   *
+   * This is simply an unwrapping of the outcome of the future.
+   *
+   * If an exception is not raised, the return value of the {@code get()}
+   * call is included in the exception string.
+   *
+   * If the nested cause of the raised ExecutionException is not an
+   * Exception (i.e its an error), then the outer ExecutionException is
+   * rethrown.
+   * This keeps the operation signatures in sync.
+   *
+   * @param contained string which must be in the {@code toString()} value
+   * of the exception
+   * @param future future to get
+   * @param <T> return type of expression
+   * @param <E> exception class
+   * @return the caught exception if it was of the expected type and contents
+   * @throws AssertionError if the evaluation call didn't raise an exception.
+   * The error includes the {@code toString()} value of the result, if this
+   * can be determined.
+   * @throws CancellationException if the computation was cancelled
+   * @throws ExecutionException if the raised exception didn't contain an
+   * exception.
+   * @throws InterruptedException if the current thread was interrupted
+   * @throws TimeoutException if the wait timed out
+   * @throws Exception if the wrong exception was raised, or there was
+   * a text mismatch.
+   */
+  public static <T, E extends Throwable> E interceptFuture(
+      final Class<E> clazz,
+      final String contained,
+      final long timeout,
+      final TimeUnit tu,
+      final Future<T> future) throws Exception {
+    return intercept(clazz,
+        contained,
+        () -> {
+          try {
+            return future.get(timeout, tu);
+          } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception) {
+              throw (Exception) cause;
+            } else {
+              throw e;
+            }
+          }
+        });
+   }
+
+  /**
+   * Verify that the cause of an exception is of the given type.
+   * @param <E> exception class
+   * @param caught caught exception
+   * @return the extracted exception if it is of the expect type.
+   * @throws Exception the outer exception if there is no inner/wrong type
+   */
+  public static <E extends Throwable> E verifyCause(
+      Class<E> clazz,
+      final Throwable caught) throws Throwable {
+    Throwable cause = caught.getCause();
+    if (cause == null || !clazz.isAssignableFrom(cause.getClass())) {
+      throw caught;
+    } else {
+      return (E) cause;
+    }
+  }
+
+  private static String toString(Collection<String> strings) {
+    return strings.stream()
+        .collect(Collectors.joining(",", "[", "]"));
   }
 
   /**
@@ -812,4 +1098,51 @@ public final class LambdaTestUtils {
     }
   }
 
+  /**
+   * A lambda-invoker for doAs use; invokes the callable provided
+   * in the constructor.
+   * @param <T> return type.
+   */
+  public static class PrivilegedOperation<T>
+      implements PrivilegedExceptionAction<T> {
+
+    private final Callable<T> callable;
+
+    /**
+     * Constructor.
+     * @param callable a non-null callable/closure.
+     */
+    public PrivilegedOperation(final Callable<T> callable) {
+      this.callable = Preconditions.checkNotNull(callable);
+    }
+
+    @Override
+    public T run() throws Exception {
+      return callable.call();
+    }
+  }
+
+  /**
+   * VoidCaller variant of {@link PrivilegedOperation}: converts
+   * a void-returning closure to an action which {@code doAs} can call.
+   */
+  public static class PrivilegedVoidOperation
+      implements PrivilegedExceptionAction<Void> {
+
+    private final Callable<Void> callable;
+
+    /**
+     * Constructor.
+     * @param callable a non-null callable/closure.
+     */
+    public PrivilegedVoidOperation(final VoidCallable callable) {
+      this.callable = new VoidCaller(callable);
+    }
+
+    @Override
+    public Void run() throws Exception {
+      return callable.call();
+    }
+  }
 }
+

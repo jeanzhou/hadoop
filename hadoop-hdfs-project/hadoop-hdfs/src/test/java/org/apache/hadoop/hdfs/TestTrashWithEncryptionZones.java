@@ -18,7 +18,7 @@
 package org.apache.hadoop.hdfs;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
@@ -34,11 +34,13 @@ import org.apache.hadoop.hdfs.client.CreateEncryptionZoneFlag;
 import org.apache.hadoop.hdfs.client.HdfsAdmin;
 import org.apache.hadoop.hdfs.server.namenode.EncryptionZoneManager;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.ToolRunner;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 import java.io.File;
 import java.security.PrivilegedExceptionAction;
@@ -76,7 +78,7 @@ public class TestTrashWithEncryptionZones {
         new Path(testRootDir.toString(), "test.jks").toUri();
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     conf = new HdfsConfiguration();
     fsHelper = new FileSystemTestHelper();
@@ -91,8 +93,8 @@ public class TestTrashWithEncryptionZones {
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_LIST_ENCRYPTION_ZONES_NUM_RESPONSES,
         2);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
-    org.apache.log4j.Logger
-        .getLogger(EncryptionZoneManager.class).setLevel(Level.TRACE);
+    GenericTestUtils.setLogLevel(
+        LoggerFactory.getLogger(EncryptionZoneManager.class), Level.TRACE);
     fs = cluster.getFileSystem();
     fsWrapper = new FileSystemTestWrapper(fs);
     dfsAdmin = new HdfsAdmin(cluster.getURI(), conf);
@@ -112,7 +114,7 @@ public class TestTrashWithEncryptionZones {
         .getProvider());
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -176,9 +178,9 @@ public class TestTrashWithEncryptionZones {
         // Delete /zones/zone1 should not succeed as current user is not admin
         String[] argv = new String[]{"-rm", "-r", zone1.toString()};
         int res = ToolRunner.run(shell, argv);
-        assertEquals("Non-admin could delete an encryption zone with multiple" +
-            " users : " + zone1, 1, res);
-        return null;
+            assertEquals(1, res,
+                "Non-admin could delete an encryption zone with multiple" + " users : " + zone1);
+            return null;
       }
     });
 

@@ -21,7 +21,7 @@ package org.apache.hadoop.yarn.api.protocolrecords;
 import java.util.EnumSet;
 import java.util.Set;
 
-import org.apache.commons.lang.math.LongRange;
+import org.apache.commons.lang3.Range;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Stable;
@@ -80,8 +80,8 @@ public abstract class GetApplicationsRequest {
       Set<String> applicationTypes,
       Set<String> applicationTags,
       EnumSet<YarnApplicationState> applicationStates,
-      LongRange startRange,
-      LongRange finishRange,
+      Range<Long> startRange,
+      Range<Long> finishRange,
       Long limit) {
     GetApplicationsRequest request =
         Records.newRecord(GetApplicationsRequest.class);
@@ -95,11 +95,11 @@ public abstract class GetApplicationsRequest {
     request.setApplicationStates(applicationStates);
     if (startRange != null) {
       request.setStartRange(
-          startRange.getMinimumLong(), startRange.getMaximumLong());
+          startRange.getMinimum(), startRange.getMaximum());
     }
     if (finishRange != null) {
       request.setFinishRange(
-          finishRange.getMinimumLong(), finishRange.getMaximumLong());
+          finishRange.getMinimum(), finishRange.getMaximum());
     }
     if (limit != null) {
       request.setLimit(limit);
@@ -137,6 +137,7 @@ public abstract class GetApplicationsRequest {
    *
    *
    * @see ApplicationClientProtocol#getApplications(GetApplicationsRequest)
+   * @param applicationTypes application types.
    * @return a report of Applications in {@link GetApplicationsRequest}
    */
   @Public
@@ -158,6 +159,7 @@ public abstract class GetApplicationsRequest {
    *
    *
    * @see ApplicationClientProtocol#getApplications(GetApplicationsRequest)
+   * @param applicationStates application states.
    * @return  a report of Applications in {@link GetApplicationsRequest}
    */
   @Public
@@ -173,12 +175,14 @@ public abstract class GetApplicationsRequest {
   /**
    * <p>
    * The request from clients to get a report of Applications matching the
-   * giving and application types and application types in the cluster from the
+   * giving and application types and application states in the cluster from the
    * <code>ResourceManager</code>.
    * </p>
    *
    *
    * @see ApplicationClientProtocol#getApplications(GetApplicationsRequest)
+   * @param applicationStates application states.
+   * @param applicationTypes application types.
    * @return  a report of Applications in <code>GetApplicationsRequest</code>
    */
   @Public
@@ -302,27 +306,27 @@ public abstract class GetApplicationsRequest {
   /**
    * Get the range of start times to filter applications on
    *
-   * @return {@link LongRange} of start times to filter applications on
+   * @return {@link Range} of start times to filter applications on
    */
   @Private
   @Unstable
-  public abstract LongRange getStartRange();
+  public abstract Range<Long> getStartRange();
 
   /**
-   * Set the range of start times to filter applications on
+   * Set the range of start times to filter applications.
    *
-   * @param range
+   * @param range range of start times.
    */
   @Private
   @Unstable
-  public abstract void setStartRange(LongRange range);
+  public abstract void setStartRange(Range<Long> range);
 
   /**
-   * Set the range of start times to filter applications on
+   * Set the range of start times to filter applications.
    *
    * @param begin beginning of the range
    * @param end end of the range
-   * @throws IllegalArgumentException
+   * @throws IllegalArgumentException if an argument is invalid.
    */
   @Private
   @Unstable
@@ -330,47 +334,47 @@ public abstract class GetApplicationsRequest {
       throws IllegalArgumentException;
 
   /**
-   * Get the range of finish times to filter applications on
+   * Get the range of finish times to filter applications.
    *
-   * @return {@link LongRange} of finish times to filter applications on
+   * @return {@link Range} of finish times to filter applications on
    */
   @Private
   @Unstable
-  public abstract LongRange getFinishRange();
+  public abstract Range<Long> getFinishRange();
 
   /**
-   * Set the range of finish times to filter applications on
+   * Set the range of finish times to filter applications.
    *
-   * @param range
+   * @param range range of finish times.
    */
   @Private
   @Unstable
-  public abstract void setFinishRange(LongRange range);
+  public abstract void setFinishRange(Range<Long> range);
 
   /**
-   * Set the range of finish times to filter applications on
+   * Set the range of finish times to filter applications.
    *
    * @param begin beginning of the range
    * @param end end of the range
-   * @throws IllegalArgumentException
+   * @throws IllegalArgumentException if an argument is invalid.
    */
   @Private
   @Unstable
   public abstract void setFinishRange(long begin, long end);
 
   /**
-   * Get the tags to filter applications on
+   * Get the tags to filter applications.
    *
-   * @return list of tags to filter on
+   * @return list of tags to filter.
    */
   @Private
   @Unstable
   public abstract Set<String> getApplicationTags();
 
   /**
-   * Set the list of tags to filter applications on
+   * Set the list of tags to filter applications.
    *
-   * @param tags list of tags to filter on
+   * @param tags list of tags to filter.
    */
   @Private
   @Unstable
@@ -393,4 +397,22 @@ public abstract class GetApplicationsRequest {
   @Private
   @Unstable
   public abstract void setScope(ApplicationsRequestScope scope);
+
+  /**
+   * Get the name to filter applications.
+   *
+   * @return the name
+   */
+  @Private
+  @Unstable
+  public abstract String getName();
+
+  /**
+   * Set the name to filter applications.
+   *
+   * @param name of the application
+   */
+  @Private
+  @Unstable
+  public abstract void setName(String name);
 }

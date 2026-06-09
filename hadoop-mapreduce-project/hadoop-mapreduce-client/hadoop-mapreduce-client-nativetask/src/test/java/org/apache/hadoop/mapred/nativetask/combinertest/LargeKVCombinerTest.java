@@ -17,41 +17,38 @@
  */
 package org.apache.hadoop.mapred.nativetask.combinertest;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapred.Task;
 import org.apache.hadoop.mapred.nativetask.NativeRuntime;
 import org.apache.hadoop.mapred.nativetask.kvtest.TestInputFile;
 import org.apache.hadoop.mapred.nativetask.testutil.ResultVerifier;
 import org.apache.hadoop.mapred.nativetask.testutil.ScenarioConfiguration;
 import org.apache.hadoop.mapred.nativetask.testutil.TestConstants;
-import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.mapreduce.TaskCounter;
-import org.junit.AfterClass;
+import org.junit.jupiter.api.AfterAll;
 import org.apache.hadoop.util.NativeCodeLoader;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
 public class LargeKVCombinerTest {
   private static final Logger LOG =
       LoggerFactory.getLogger(LargeKVCombinerTest.class);
 
-  @Before
+  @BeforeEach
   public void startUp() throws Exception {
-    Assume.assumeTrue(NativeCodeLoader.isNativeCodeLoaded());
-    Assume.assumeTrue(NativeRuntime.isNativeLibraryLoaded());
+    assumeTrue(NativeCodeLoader.isNativeCodeLoaded());
+    assumeTrue(NativeRuntime.isNativeLibraryLoaded());
   }
 
   @Test
@@ -90,9 +87,9 @@ public class LargeKVCombinerTest {
       final Job nativejob = CombinerTest.getJob("nativewordcount", nativeConf,
                                                 inputPath, nativeOutputPath);
 
-      assertTrue(nativejob.waitForCompletion(true));
+      assertThat(nativejob.waitForCompletion(true)).isTrue();
 
-      assertTrue(normaljob.waitForCompletion(true));
+      assertThat(normaljob.waitForCompletion(true)).isTrue();
 
       final boolean compareRet = ResultVerifier.verify(nativeOutputPath, hadoopOutputPath);
 
@@ -100,13 +97,13 @@ public class LargeKVCombinerTest {
         ", max size: " + max + ", normal out: " + hadoopOutputPath +
         ", native Out: " + nativeOutputPath;
 
-      assertEquals(reason, true, compareRet);
+      assertThat(compareRet).withFailMessage(reason).isTrue();
       ResultVerifier.verifyCounters(normaljob, nativejob, true);
     }
     fs.close();
   }
 
-  @AfterClass
+  @AfterAll
   public static void cleanUp() throws IOException {
     final FileSystem fs = FileSystem.get(new ScenarioConfiguration());
     fs.delete(new Path(TestConstants.NATIVETASK_COMBINER_TEST_DIR), true);

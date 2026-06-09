@@ -21,16 +21,19 @@ package org.apache.hadoop.yarn.client;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.protocolrecords.FinishApplicationMasterRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.FinishApplicationMasterResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
 import org.apache.hadoop.yarn.api.records.CollectorInfo;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -38,7 +41,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hadoop.yarn.server.resourcemanager.HATestUtil;
-import org.junit.Assert;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.ClientBaseWithFixes;
@@ -126,8 +128,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSe
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMDelegationTokenSecretManager;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.util.Records;
-import org.junit.After;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 
 /**
@@ -162,13 +164,13 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
   protected Thread failoverThread = null;
   private volatile boolean keepRunning;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     failoverThread = null;
     keepRunning = true;
     conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
-    conf.setInt(YarnConfiguration.CLIENT_FAILOVER_MAX_ATTEMPTS, 5);
+    conf.setInt(YarnConfiguration.CLIENT_FAILOVER_MAX_ATTEMPTS, 10);
     conf.set(YarnConfiguration.RM_HA_IDS, RM1_NODE_ID + "," + RM2_NODE_ID);
     HATestUtil.setRpcAddressForRM(RM1_NODE_ID, RM1_PORT_BASE, conf);
     HATestUtil.setRpcAddressForRM(RM2_NODE_ID, RM2_PORT_BASE, conf);
@@ -179,7 +181,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
     conf.setBoolean(YarnConfiguration.YARN_MINICLUSTER_USE_RPC, true);
   }
 
-  @After
+  @AfterEach
   public void teardown() throws Exception {
     keepRunning = false;
     if (failoverThread != null) {
@@ -203,8 +205,8 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
     int newActiveRMIndex = (activeRMIndex + 1) % 2;
     getAdminService(activeRMIndex).transitionToStandby(req);
     getAdminService(newActiveRMIndex).transitionToActive(req);
-    assertEquals("Failover failed", newActiveRMIndex,
-        cluster.getActiveRMIndex());
+    assertEquals(newActiveRMIndex,
+        cluster.getActiveRMIndex(), "Failover failed");
   }
 
   protected YarnClient createAndStartYarnClient(Configuration conf) {
@@ -217,32 +219,34 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
 
   protected void verifyConnections() throws InterruptedException,
       YarnException {
-    assertTrue("NMs failed to connect to the RM",
-        cluster.waitForNodeManagersToConnect(5000));
+    assertTrue(cluster.waitForNodeManagersToConnect(5000),
+        "NMs failed to connect to the RM");
     verifyClientConnection();
   }
 
-  protected void verifyClientConnection() {
-    int numRetries = 3;
-    while(numRetries-- > 0) {
-      Configuration conf = new YarnConfiguration(this.conf);
-      YarnClient client = createAndStartYarnClient(conf);
-      try {
-        Thread.sleep(100);
-        client.getApplications();
-        return;
-      } catch (Exception e) {
-        LOG.error(e.getMessage());
-      } finally {
-        client.stop();
-      }
+  protected void verifyClientConnection() throws InterruptedException {
+    try {
+      GenericTestUtils.waitFor(() -> {
+        Configuration yarnConf = new YarnConfiguration(conf);
+        YarnClient client = createAndStartYarnClient(yarnConf);
+        try {
+          client.getApplications();
+          return true;
+        } catch (YarnException | IOException ex) {
+          LOG.error(ex.getMessage());
+        } finally {
+          client.stop();
+        }
+        return false;
+      }, 50, 500);
+    } catch (TimeoutException e) {
+      fail("Client couldn't connect to the Active RM");
     }
-    fail("Client couldn't connect to the Active RM");
   }
 
   protected Thread createAndStartFailoverThread() {
-    Thread failoverThread = new Thread() {
-      public void run() {
+    SubjectInheritingThread failoverThread = new SubjectInheritingThread() {
+      public void work() {
         keepRunning = true;
         while (keepRunning) {
           if (cluster.getStartFailoverFlag()) {
@@ -280,7 +284,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
     cluster.resetStartFailoverFlag(false);
     cluster.init(conf);
     cluster.start();
-    assertFalse("RM never turned active", -1 == cluster.getActiveRMIndex());
+    assertFalse(-1 == cluster.getActiveRMIndex(), "RM never turned active");
     verifyConnections();
 
     // Do the failover
@@ -327,11 +331,11 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
     }
 
     private boolean waittingForFailOver() {
-      int maximumWaittingTime = 50;
+      int maximumWaittingTime = 200;
       int count = 0;
       while (!failoverTriggered.get() && count <= maximumWaittingTime) {
         try {
-          Thread.sleep(100);
+          Thread.sleep(25);
         } catch (InterruptedException e) {
           // DO NOTHING
         }
@@ -402,7 +406,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // create the GetNewApplicationResponse with fake applicationId
         GetNewApplicationResponse response =
@@ -417,7 +421,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // create a fake application report
         ApplicationReport report = createFakeAppReport();
@@ -432,7 +436,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // create GetClusterMetricsResponse with fake YarnClusterMetrics
         GetClusterMetricsResponse response =
@@ -447,7 +451,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // create GetApplicationsResponse with fake applicationList
         GetApplicationsResponse response =
@@ -462,7 +466,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // create GetClusterNodesResponse with fake ClusterNodeLists
         GetClusterNodesResponse response =
@@ -476,7 +480,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // return fake QueueInfo
         return GetQueueInfoResponse.newInstance(createFakeQueueInfo());
@@ -488,7 +492,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // return fake queueUserAcls
         return GetQueueUserAclsInfoResponse
@@ -502,7 +506,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // return fake ApplicationAttemptReport
         return GetApplicationAttemptReportResponse
@@ -516,7 +520,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // return fake ApplicationAttemptReports
         return GetApplicationAttemptsResponse
@@ -530,7 +534,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // return fake containerReport
         return GetContainerReportResponse
@@ -543,7 +547,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         // return fake ContainerReports
         return GetContainersResponse.newInstance(createFakeContainerReports());
@@ -555,7 +559,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         return super.submitApplication(request);
       }
@@ -566,7 +570,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         return KillApplicationResponse.newInstance(true);
       }
@@ -577,7 +581,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         return Records.newRecord(MoveApplicationAcrossQueuesResponse.class);
       }
@@ -588,7 +592,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         return GetDelegationTokenResponse.newInstance(createFakeToken());
       }
@@ -599,7 +603,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         return RenewDelegationTokenResponse
             .newInstance(createNextExpirationTime());
@@ -611,7 +615,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
         resetStartFailoverFlag(true);
 
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
 
         return CancelDelegationTokenResponse.newInstance();
       }
@@ -626,7 +630,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
           ApplicationReport.newInstance(appId, attemptId, "fakeUser",
               "fakeQueue", "fakeApplicationName", "localhost", 0, null,
               YarnApplicationState.FINISHED, "fake an application report", "",
-              1000L, 1200L, FinalApplicationStatus.FAILED, null, "", 50f,
+              1000L, 1000L, 1200L, FinalApplicationStatus.FAILED, null, "", 50f,
               "fakeApplicationType", null);
       return report;
     }
@@ -664,9 +668,10 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
     }
 
     public QueueInfo createFakeQueueInfo() {
-      return QueueInfo.newInstance("root", 100f, 100f, 50f, null,
-          createFakeAppReports(), QueueState.RUNNING, null, null, null, false,
-          null, false);
+      return QueueInfo.newInstance("root", "root", 100f, 100f, 50f, null,
+          createFakeAppReports(), QueueState.RUNNING, null,
+          null, null, false, -1.0f, 10,
+           null, false);
     }
 
     public List<QueueUserACLInfo> createFakeQueueUserACLInfoList() {
@@ -736,7 +741,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
           IOException {
         resetStartFailoverFlag(true);
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
         return super.registerNodeManager(request);
       }
 
@@ -745,7 +750,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
           throws YarnException, IOException {
         resetStartFailoverFlag(true);
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
         return super.nodeHeartbeat(request);
       }
     }
@@ -762,7 +767,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
           throws YarnException, IOException {
         resetStartFailoverFlag(true);
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
         return createFakeAllocateResponse();
       }
 
@@ -772,7 +777,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
           IOException {
         resetStartFailoverFlag(true);
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
         return createFakeRegisterApplicationMasterResponse();
       }
 
@@ -782,7 +787,7 @@ public abstract class ProtocolHATestBase extends ClientBaseWithFixes {
           IOException {
         resetStartFailoverFlag(true);
         // make sure failover has been triggered
-        Assert.assertTrue(waittingForFailOver());
+        assertTrue(waittingForFailOver());
         return createFakeFinishApplicationMasterResponse();
       }
     }

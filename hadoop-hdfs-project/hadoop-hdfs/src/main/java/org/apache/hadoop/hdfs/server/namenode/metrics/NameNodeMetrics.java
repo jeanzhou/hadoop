@@ -32,6 +32,7 @@ import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import org.apache.hadoop.metrics2.lib.MutableGaugeInt;
 import org.apache.hadoop.metrics2.lib.MutableQuantiles;
 import org.apache.hadoop.metrics2.lib.MutableRate;
+import org.apache.hadoop.metrics2.lib.MutableStat;
 import org.apache.hadoop.metrics2.source.JvmMetrics;
 
 /**
@@ -76,6 +77,8 @@ public class NameNodeMetrics {
   MutableCounterLong renameSnapshotOps;
   @Metric("Number of listSnapshottableDirectory operations")
   MutableCounterLong listSnapshottableDirOps;
+  @Metric("Number of listSnapshots operations")
+  MutableCounterLong listSnapshotOps;
   @Metric("Number of snapshotDiffReport operations")
   MutableCounterLong snapshotDiffReportOps;
   @Metric("Number of blockReceivedAndDeleted calls")
@@ -84,6 +87,12 @@ public class NameNodeMetrics {
   MutableGaugeInt blockOpsQueued;
   @Metric("Number of blockReports and blockReceivedAndDeleted batch processed")
   MutableCounterLong blockOpsBatched;
+  @Metric("Number of pending edits")
+  MutableGaugeInt pendingEditsCount;
+  @Metric("Number of delete blocks Queued")
+  MutableGaugeInt deleteBlocksQueued;
+  @Metric("Number of pending deletion blocks")
+  MutableGaugeInt pendingDeleteBlocksCount;
 
   @Metric("Number of file system operations")
   public long totalFileOps(){
@@ -105,6 +114,7 @@ public class NameNodeMetrics {
       disallowSnapshotOps.value() +
       renameSnapshotOps.value() +
       listSnapshottableDirOps.value() +
+      listSnapshotOps.value() +
       createSymlinkOps.value() +
       snapshotDiffReportOps.value();
   }
@@ -134,10 +144,24 @@ public class NameNodeMetrics {
   @Metric("Time loading FS Image at startup in msec")
   MutableGaugeInt fsImageLoadTime;
 
+  @Metric("Time tailing edit logs in msec")
+  MutableRate editLogTailTime;
+  private final MutableQuantiles[] editLogTailTimeQuantiles;
+  @Metric MutableRate editLogFetchTime;
+  private final MutableQuantiles[] editLogFetchTimeQuantiles;
+  @Metric(value = "Number of edits loaded", valueName = "Count")
+  MutableStat numEditLogLoaded;
+  private final MutableQuantiles[] numEditLogLoadedQuantiles;
+  @Metric("Time between edit log tailing in msec")
+  MutableRate editLogTailInterval;
+  private final MutableQuantiles[] editLogTailIntervalQuantiles;
+
   @Metric("GetImageServlet getEdit")
   MutableRate getEdit;
   @Metric("GetImageServlet getImage")
   MutableRate getImage;
+  @Metric("GetImageServlet getAliasMap")
+  MutableRate getAliasMap;
   @Metric("GetImageServlet putImage")
   MutableRate putImage;
 
@@ -156,7 +180,11 @@ public class NameNodeMetrics {
     generateEDEKTimeQuantiles = new MutableQuantiles[len];
     warmUpEDEKTimeQuantiles = new MutableQuantiles[len];
     resourceCheckTimeQuantiles = new MutableQuantiles[len];
-    
+    editLogTailTimeQuantiles = new MutableQuantiles[len];
+    editLogFetchTimeQuantiles = new MutableQuantiles[len];
+    numEditLogLoadedQuantiles = new MutableQuantiles[len];
+    editLogTailIntervalQuantiles = new MutableQuantiles[len];
+
     for (int i = 0; i < len; i++) {
       int interval = intervals[i];
       syncsQuantiles[i] = registry.newQuantiles(
@@ -181,6 +209,18 @@ public class NameNodeMetrics {
       resourceCheckTimeQuantiles[i] = registry.newQuantiles(
           "resourceCheckTime" + interval + "s",
           "resource check time", "ops", "latency", interval);
+      editLogTailTimeQuantiles[i] = registry.newQuantiles(
+          "editLogTailTime" + interval + "s",
+          "Edit log tailing time", "ops", "latency", interval);
+      editLogFetchTimeQuantiles[i] = registry.newQuantiles(
+          "editLogFetchTime" + interval + "s",
+          "Edit log fetch time", "ops", "latency", interval);
+      numEditLogLoadedQuantiles[i] = registry.newQuantiles(
+          "numEditLogLoaded" + interval + "s",
+          "Number of edits loaded", "ops", "count", interval);
+      editLogTailIntervalQuantiles[i] = registry.newQuantiles(
+          "editLogTailInterval" + interval + "s",
+          "Edit log tailing interval", "ops", "latency", interval);
     }
   }
 
@@ -288,6 +328,10 @@ public class NameNodeMetrics {
   public void incrListSnapshottableDirOps() {
     listSnapshottableDirOps.incr();
   }
+
+  public void incrListSnapshotsOps() {
+    listSnapshotOps.incr();
+  }
   
   public void incrSnapshotDiffReportOps() {
     snapshotDiffReportOps.incr();
@@ -301,8 +345,24 @@ public class NameNodeMetrics {
     blockOpsQueued.set(size);
   }
 
+  public void setDeleteBlocksQueued(int size) {
+    deleteBlocksQueued.set(size);
+  }
+
+  public void incrPendingDeleteBlocksCount(int size) {
+    pendingDeleteBlocksCount.incr(size);
+  }
+
+  public void decrPendingDeleteBlocksCount() {
+    pendingDeleteBlocksCount.decr();
+  }
+
   public void addBlockOpsBatched(int count) {
     blockOpsBatched.incr(count);
+  }
+
+  public void setPendingEditsCount(int size) {
+    pendingEditsCount.set(size);
   }
 
   public void addTransaction(long latency) {
@@ -365,6 +425,10 @@ public class NameNodeMetrics {
     getImage.add(latency);
   }
 
+  public void addGetAliasMap(long latency) {
+    getAliasMap.add(latency);
+  }
+
   public void addPutImage(long latency) {
     putImage.add(latency);
   }
@@ -387,6 +451,34 @@ public class NameNodeMetrics {
     resourceCheckTime.add(latency);
     for (MutableQuantiles q : resourceCheckTimeQuantiles) {
       q.add(latency);
+    }
+  }
+
+  public void addEditLogTailTime(long elapsed) {
+    editLogTailTime.add(elapsed);
+    for (MutableQuantiles q : editLogTailTimeQuantiles) {
+      q.add(elapsed);
+    }
+  }
+
+  public void addEditLogFetchTime(long elapsed) {
+    editLogFetchTime.add(elapsed);
+    for (MutableQuantiles q : editLogFetchTimeQuantiles) {
+      q.add(elapsed);
+    }
+  }
+
+  public void addNumEditLogLoaded(long loaded) {
+    numEditLogLoaded.add(loaded);
+    for (MutableQuantiles q : numEditLogLoadedQuantiles) {
+      q.add(loaded);
+    }
+  }
+
+  public void addEditLogTailInterval(long elapsed) {
+    editLogTailInterval.add(elapsed);
+    for (MutableQuantiles q : editLogTailIntervalQuantiles) {
+      q.add(elapsed);
     }
   }
 }

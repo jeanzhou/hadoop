@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -42,7 +42,7 @@ import java.io.InterruptedIOException;
  */
 public class RecoverPausedContainerLaunch extends ContainerLaunch {
 
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       RecoveredContainerLaunch.class);
 
   public RecoverPausedContainerLaunch(Context context,
@@ -68,7 +68,7 @@ public class RecoverPausedContainerLaunch extends ContainerLaunch {
 
     dispatcher.getEventHandler().handle(new ContainerEvent(containerId,
         ContainerEventType.RECOVER_PAUSED_CONTAINER));
-    boolean notInterrupted = true;
+    boolean interrupted = false;
     try {
       File pidFile = locatePidFile(appIdStr, containerIdStr);
       if (pidFile != null) {
@@ -87,11 +87,11 @@ public class RecoverPausedContainerLaunch extends ContainerLaunch {
 
     } catch (InterruptedException | InterruptedIOException e) {
       LOG.warn("Interrupted while waiting for exit code from " + containerId);
-      notInterrupted = false;
+      interrupted = true;
     } catch (IOException e) {
       LOG.error("Unable to kill the paused container " + containerIdStr, e);
     } finally {
-      if (notInterrupted) {
+      if (!interrupted) {
         this.completed.set(true);
         exec.deactivateContainer(containerId);
         try {

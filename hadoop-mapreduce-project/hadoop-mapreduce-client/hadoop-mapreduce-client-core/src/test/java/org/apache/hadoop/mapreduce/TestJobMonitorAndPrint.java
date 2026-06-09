@@ -18,12 +18,12 @@
 
 package org.apache.hadoop.mapreduce;
 
-
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.isA;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.isA;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
@@ -33,9 +33,8 @@ import java.io.IOException;
 import java.io.LineNumberReader;
 import java.io.StringReader;
 
-import org.junit.Before;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.TaskReport;
@@ -45,7 +44,6 @@ import org.apache.log4j.Layout;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 import org.apache.log4j.WriterAppender;
-import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 /**
@@ -58,7 +56,7 @@ public class TestJobMonitorAndPrint {
   private Configuration conf;
   private ClientProtocol clientProtocol;
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     conf = new Configuration();
     clientProtocol = mock(ClientProtocol.class);
@@ -81,15 +79,9 @@ public class TestJobMonitorAndPrint {
         1f, 1f, State.SUCCEEDED, JobPriority.HIGH, "tmp-user", "tmp-jobname",
         "tmp-queue", "tmp-jobfile", "tmp-url", true);
 
-    doAnswer(
-        new Answer<TaskCompletionEvent[]>() {
-          @Override
-          public TaskCompletionEvent[] answer(InvocationOnMock invocation)
-              throws Throwable {
-            return new TaskCompletionEvent[0];
-          }
-        }
-        ).when(job).getTaskCompletionEvents(anyInt(), anyInt());
+    doAnswer((Answer<TaskCompletionEvent[]>) invocation ->
+        TaskCompletionEvent.EMPTY_ARRAY).when(job)
+        .getTaskCompletionEvents(anyInt(), anyInt());
 
     doReturn(new TaskReport[5]).when(job).getTaskReports(isA(TaskType.class));
     when(clientProtocol.getJobStatus(any(JobID.class))).thenReturn(jobStatus_1, jobStatus_2);

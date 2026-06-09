@@ -40,7 +40,7 @@ public interface DNSToSwitchMapping {
    * Note the hostname/ip-address is not part of the returned path.
    * The network topology of the cluster would determine the number of
    * components in the network path.
-   * <p/>
+   * <p>
    *
    * If a name cannot be resolved to a rack, the implementation
    * should return {@link NetworkTopology#DEFAULT_RACK}. This
@@ -65,6 +65,8 @@ public interface DNSToSwitchMapping {
    *
    * If there is a cache on these nodes, this method will clear it, so that 
    * future accesses will see updated data.
+   *
+   * @param names input names.
    */
   public void reloadCachedMappings(List<String> names);
 }

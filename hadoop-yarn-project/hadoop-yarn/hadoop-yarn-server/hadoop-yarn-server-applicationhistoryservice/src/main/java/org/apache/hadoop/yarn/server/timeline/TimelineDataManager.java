@@ -42,7 +42,7 @@ import org.apache.hadoop.yarn.server.timeline.TimelineReader.Field;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineACLsManager;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -219,7 +219,12 @@ public class TimelineDataManager extends AbstractService {
       // check ACLs
       if (!timelineACLsManager.checkAccess(
           callerUGI, ApplicationAccessType.VIEW_APP, entity)) {
-        entity = null;
+        final String user = callerUGI != null ? callerUGI.getShortUserName():
+            null;
+        throw new YarnException(
+            user + " is not allowed to get the timeline entity "
+            + "{ id: " + entity.getEntityId() + ", type: "
+            + entity.getEntityType() + " }.");
       }
     }
     return entity;

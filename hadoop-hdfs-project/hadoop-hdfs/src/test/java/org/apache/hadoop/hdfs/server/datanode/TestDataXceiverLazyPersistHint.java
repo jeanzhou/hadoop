@@ -29,28 +29,31 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.util.DataChecksum;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.ArgumentCaptor;
 
-import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.Arrays;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
 
 /**
  * Mock-based unit test to verify that the DataXceiver correctly handles the
  * LazyPersist hint from clients.
  */
+@Timeout(300)
 public class TestDataXceiverLazyPersistHint {
-  @Rule
-  public Timeout timeout = new Timeout(300000);
 
   private enum PeerLocality {
     LOCAL,
@@ -74,7 +77,7 @@ public class TestDataXceiverLazyPersistHint {
 
     for (Boolean lazyPersistSetting : Arrays.asList(true, false)) {
       issueWriteBlockCall(xceiver, lazyPersistSetting);
-      assertThat(captor.getValue(), is(lazyPersistSetting));
+      assertThat(captor.getValue()).isEqualTo(lazyPersistSetting);
     }
   }
 
@@ -89,7 +92,7 @@ public class TestDataXceiverLazyPersistHint {
 
     for (Boolean lazyPersistSetting : Arrays.asList(true, false)) {
       issueWriteBlockCall(xceiver, lazyPersistSetting);
-      assertThat(captor.getValue(), is(false));
+      assertThat(captor.getValue()).isEqualTo(false);
     }
   }
 
@@ -106,7 +109,7 @@ public class TestDataXceiverLazyPersistHint {
 
     for (Boolean lazyPersistSetting : Arrays.asList(true, false)) {
       issueWriteBlockCall(xceiver, lazyPersistSetting);
-      assertThat(captor.getValue(), is(lazyPersistSetting));
+      assertThat(captor.getValue()).isEqualTo(lazyPersistSetting);
     }
   }
 
@@ -121,8 +124,8 @@ public class TestDataXceiverLazyPersistHint {
         StorageType.RAM_DISK,
         null,
         "Dummy-Client",
-        new DatanodeInfo[0],
-        new StorageType[0],
+        DatanodeInfo.EMPTY_ARRAY,
+        StorageType.EMPTY_ARRAY,
         mock(DatanodeInfo.class),
         BlockConstructionStage.PIPELINE_SETUP_CREATE,
         0, 0, 0, 0,
@@ -146,12 +149,10 @@ public class TestDataXceiverLazyPersistHint {
             getMockDn(nonLocalLazyPersist),
             mock(DataXceiverServer.class)));
     doReturn(mockBlockReceiver).when(xceiverSpy).getBlockReceiver(
-        any(ExtendedBlock.class), any(StorageType.class),
-        any(DataInputStream.class), anyString(), anyString(),
-        any(BlockConstructionStage.class), anyLong(), anyLong(), anyLong(),
-        anyString(), any(DatanodeInfo.class), any(DataNode.class),
-        any(DataChecksum.class), any(CachingStrategy.class),
-        captor.capture(), anyBoolean(), any(String.class));
+        any(), any(), any(), anyString(), anyString(),
+        any(), anyLong(), anyLong(), anyLong(),
+        anyString(), any(), any(), any(), any(),
+        captor.capture(), anyBoolean(), any());
     doReturn(mock(DataOutputStream.class)).when(xceiverSpy)
         .getBufferedOutputStream();
     return xceiverSpy;

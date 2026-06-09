@@ -24,10 +24,17 @@ import java.io.InterruptedIOException;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.net.URI;
 import java.security.PrivilegedExceptionAction;
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.WebTarget;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import net.jodah.failsafe.Failsafe;
+import net.jodah.failsafe.RetryPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -37,13 +44,13 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelineEntities;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntityGroupId;
 import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
+import org.apache.hadoop.yarn.api.records.timeline.writer.TimelineDomainWriter;
+import org.apache.hadoop.yarn.api.records.timeline.writer.TimelineEntitiesWriter;
+import org.apache.hadoop.yarn.api.records.timeline.reader.TimelinePutResponseReader;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.sun.jersey.api.client.Client;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.WebResource;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Base writer class to write the Timeline data.
@@ -52,18 +59,20 @@ import com.sun.jersey.api.client.WebResource;
 @Unstable
 public abstract class TimelineWriter implements Flushable {
 
-  private static final Log LOG = LogFactory
-      .getLog(TimelineWriter.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TimelineWriter.class);
 
-  private UserGroupInformation authUgi;
-  private Client client;
-  private URI resURI;
+  private final UserGroupInformation authUgi;
+  private final Client client;
+  private final URI resURI;
+  private final RetryPolicy<Object> retryPolicy;
 
   public TimelineWriter(UserGroupInformation authUgi, Client client,
-      URI resURI) {
+      URI resURI, RetryPolicy<Object> retryPolicy) {
     this.authUgi = authUgi;
     this.client = client;
     this.resURI = resURI;
+    this.retryPolicy = retryPolicy;
   }
 
   public void close() throws Exception {
@@ -89,8 +98,8 @@ public abstract class TimelineWriter implements Flushable {
       }
       entitiesContainer.addEntity(entity);
     }
-    ClientResponse resp = doPosting(entitiesContainer, null);
-    return resp.getEntity(TimelinePutResponse.class);
+    Response resp = doPosting(entitiesContainer, null);
+    return resp.readEntity(TimelinePutResponse.class);
   }
 
   public void putDomain(TimelineDomain domain) throws IOException,
@@ -105,16 +114,12 @@ public abstract class TimelineWriter implements Flushable {
   public abstract void putDomain(ApplicationAttemptId appAttemptId,
       TimelineDomain domain) throws IOException, YarnException;
 
-  private ClientResponse doPosting(final Object obj, final String path)
+  private Response doPosting(final Object obj, final String path)
       throws IOException, YarnException {
-    ClientResponse resp;
+    Response resp;
     try {
-      resp = authUgi.doAs(new PrivilegedExceptionAction<ClientResponse>() {
-        @Override
-        public ClientResponse run() throws Exception {
-          return doPostingObject(obj, path);
-        }
-      });
+      resp = authUgi.doAs((PrivilegedExceptionAction<Response>)
+          () -> doPostingObject(obj, path));
     } catch (UndeclaredThrowableException e) {
       Throwable cause = e.getCause();
       if (cause instanceof IOException) {
@@ -127,17 +132,14 @@ public abstract class TimelineWriter implements Flushable {
     }
     if (resp == null ||
         resp.getStatusInfo().getStatusCode()
-            != ClientResponse.Status.OK.getStatusCode()) {
+            != Response.Status.OK.getStatusCode()) {
       String msg =
           "Failed to get the response from the timeline server.";
       LOG.error(msg);
       if (resp != null) {
         msg += " HTTP error code: " + resp.getStatus();
-        if (LOG.isDebugEnabled()) {
-          String output = resp.getEntity(String.class);
-          LOG.debug("HTTP error code: " + resp.getStatus()
-              + " Server response : \n" + output);
-        }
+        LOG.debug("HTTP error code: {} Server response : \n{}",
+            resp.getStatus(), resp.readEntity(String.class));
       }
       throw new YarnException(msg);
     }
@@ -146,24 +148,25 @@ public abstract class TimelineWriter implements Flushable {
 
   @Private
   @VisibleForTesting
-  public ClientResponse doPostingObject(Object object, String path) {
-    WebResource webResource = client.resource(resURI);
+  public Response doPostingObject(Object object, String path) throws JsonProcessingException {
+    final WebTarget webTarget = client
+        .register(TimelineEntitiesWriter.class)
+        .register(TimelineDomainWriter.class)
+        .register(TimelinePutResponseReader.class)
+        .target(resURI);
+
     if (path == null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("POST to " + resURI);
-      }
-      ClientResponse r = webResource.accept(MediaType.APPLICATION_JSON)
-          .type(MediaType.APPLICATION_JSON)
-          .post(ClientResponse.class, object);
+      LOG.debug("POST to {}", resURI);
+      Response r = Failsafe.with(retryPolicy).get(
+          () -> webTarget.request(MediaType.APPLICATION_JSON)
+          .post(Entity.entity(object, MediaType.APPLICATION_JSON), Response.class));
       r.bufferEntity();
       return r;
     } else if (path.equals("domain")) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("PUT to " + resURI +"/" + path);
-      }
-      ClientResponse r = webResource.path(path).accept(MediaType.APPLICATION_JSON)
-          .type(MediaType.APPLICATION_JSON)
-          .put(ClientResponse.class, object);
+      LOG.debug("PUT to {}/{}", resURI, path);
+      Response r = Failsafe.with(retryPolicy).get(
+          () -> webTarget.path(path).request(MediaType.APPLICATION_JSON)
+          .put(Entity.entity(object, MediaType.APPLICATION_JSON), Response.class));
       r.bufferEntity();
       return r;
     } else {

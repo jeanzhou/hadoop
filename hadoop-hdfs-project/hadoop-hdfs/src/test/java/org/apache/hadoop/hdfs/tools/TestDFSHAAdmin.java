@@ -18,17 +18,18 @@
 
 package org.apache.hadoop.hdfs.tools;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
@@ -43,16 +44,16 @@ import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.test.MockitoUtil;
 import org.apache.hadoop.util.Shell;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
-import com.google.common.base.Charsets;
-import com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 
 public class TestDFSHAAdmin {
-  private static final Log LOG = LogFactory.getLog(TestDFSHAAdmin.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDFSHAAdmin.class);
   
   private DFSHAAdmin tool;
   private final ByteArrayOutputStream errOutBytes = new ByteArrayOutputStream();
@@ -111,7 +112,7 @@ public class TestDFSHAAdmin {
         FENCER_FALSE_COMMAND_WINDOWS : FENCER_FALSE_COMMAND_UNIX;
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     mockProtocol = MockitoUtil.mockProtocol(HAServiceProtocol.class);
     mockZkfcProtocol = MockitoUtil.mockProtocol(ZKFCProtocol.class);
@@ -215,11 +216,16 @@ public class TestDFSHAAdmin {
     assertTrue(errOutput.contains("Refusing to manually manage"));
     assertEquals(-1, runTool("-transitionToStandby", "nn1"));
     assertTrue(errOutput.contains("Refusing to manually manage"));
+    assertEquals(-1, runTool("-transitionToObserver", "nn1"));
+    assertTrue(errOutput.contains("Refusing to manually manage"));
 
     Mockito.verify(mockProtocol, Mockito.never())
       .transitionToActive(anyReqInfo());
     Mockito.verify(mockProtocol, Mockito.never())
-      .transitionToStandby(anyReqInfo());
+        .transitionToStandby(anyReqInfo());
+    Mockito.verify(mockProtocol, Mockito.never())
+        .transitionToObserver(anyReqInfo());
+
 
     // Force flag should bypass the check and change the request source
     // for the RPC
@@ -227,12 +233,16 @@ public class TestDFSHAAdmin {
     assertEquals(0, runTool("-transitionToActive", "-forcemanual", "nn1"));
     setupConfirmationOnSystemIn();
     assertEquals(0, runTool("-transitionToStandby", "-forcemanual", "nn1"));
+    setupConfirmationOnSystemIn();
+    assertEquals(0, runTool("-transitionToObserver", "-forcemanual", "nn1"));
 
     Mockito.verify(mockProtocol, Mockito.times(1)).transitionToActive(
         reqInfoCaptor.capture());
     Mockito.verify(mockProtocol, Mockito.times(1)).transitionToStandby(
         reqInfoCaptor.capture());
-    
+    Mockito.verify(mockProtocol, Mockito.times(1)).transitionToObserver(
+        reqInfoCaptor.capture());
+
     // All of the RPCs should have had the "force" source
     for (StateChangeRequestInfo ri : reqInfoCaptor.getAllValues()) {
       assertEquals(RequestSource.REQUEST_BY_USER_FORCED, ri.getSource());
@@ -272,6 +282,12 @@ public class TestDFSHAAdmin {
   public void testTransitionToStandby() throws Exception {
     assertEquals(0, runTool("-transitionToStandby", "nn1"));
     Mockito.verify(mockProtocol).transitionToStandby(anyReqInfo());
+  }
+
+  @Test
+  public void testTransitionToObserver() throws Exception {
+    assertEquals(0, runTool("-transitionToObserver", "nn1"));
+    Mockito.verify(mockProtocol).transitionToObserver(anyReqInfo());
   }
 
   @Test
@@ -419,8 +435,8 @@ public class TestDFSHAAdmin {
     outBytes.reset();
     LOG.info("Running: DFSHAAdmin " + Joiner.on(" ").join(args));
     int ret = tool.run(args);
-    errOutput = new String(errOutBytes.toByteArray(), Charsets.UTF_8);
-    output = new String(outBytes.toByteArray(), Charsets.UTF_8);
+    errOutput = new String(errOutBytes.toByteArray(), StandardCharsets.UTF_8);
+    output = new String(outBytes.toByteArray(), StandardCharsets.UTF_8);
     LOG.info("Err_output:\n" + errOutput + "\nOutput:\n" + output);
     return ret;
   }

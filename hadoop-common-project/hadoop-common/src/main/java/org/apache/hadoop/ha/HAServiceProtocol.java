@@ -51,6 +51,7 @@ public interface HAServiceProtocol {
     INITIALIZING("initializing"),
     ACTIVE("active"),
     STANDBY("standby"),
+    OBSERVER("observer"),
     STOPPING("stopping");
 
     private String name;
@@ -117,7 +118,8 @@ public interface HAServiceProtocol {
   /**
    * Request service to transition to active state. No operation, if the
    * service is already in active state.
-   * 
+   *
+   * @param reqInfo reqInfo.
    * @throws ServiceFailedException
    *           if transition from standby to active fails.
    * @throws AccessControlException
@@ -134,7 +136,8 @@ public interface HAServiceProtocol {
   /**
    * Request service to transition to standby state. No operation, if the
    * service is already in standby state.
-   * 
+   *
+   * @param reqInfo reqInfo.
    * @throws ServiceFailedException
    *           if transition from active to standby fails.
    * @throws AccessControlException
@@ -149,6 +152,24 @@ public interface HAServiceProtocol {
                                            IOException;
 
   /**
+   * Request service to transition to observer state. No operation, if the
+   * service is already in observer state.
+   *
+   * @param reqInfo reqInfo.
+   * @throws ServiceFailedException
+   *           if transition from standby to observer fails.
+   * @throws AccessControlException
+   *           if access is denied.
+   * @throws IOException
+   *           if other errors happen
+   */
+  @Idempotent
+  void transitionToObserver(StateChangeRequestInfo reqInfo)
+                              throws ServiceFailedException,
+                                     AccessControlException,
+                                     IOException;
+
+  /**
    * Return the current status of the service. The status indicates
    * the current <em>state</em> (e.g ACTIVE/STANDBY) as well as
    * some additional information.
@@ -158,6 +179,7 @@ public interface HAServiceProtocol {
    * @throws IOException
    *           if other errors happen
    * @see HAServiceStatus
+   * @return HAServiceStatus.
    */
   @Idempotent
   public HAServiceStatus getServiceStatus() throws AccessControlException,

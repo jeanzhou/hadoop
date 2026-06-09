@@ -18,7 +18,9 @@
 
 package org.apache.hadoop.io;
 
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,6 +29,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalFileSystem;
@@ -40,22 +44,24 @@ import org.apache.hadoop.io.compress.Compressor;
 import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Progressable;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestBloomMapFile {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestBloomMapFile.class);
   private static Configuration conf = new Configuration();
   private static final Path TEST_ROOT = new Path(GenericTestUtils.getTempPath(
       TestMapFile.class.getSimpleName()));
   private static final Path TEST_DIR = new Path(TEST_ROOT, "testfile");
   private static final Path TEST_FILE = new Path(TEST_ROOT, "testfile");
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     LocalFileSystem fs = FileSystem.getLocal(conf);
     if (fs.exists(TEST_ROOT) && !fs.delete(TEST_ROOT, true)) {
@@ -107,7 +113,7 @@ public class TestBloomMapFile {
       System.out.println("False positives: " + falsePos);
       assertTrue(falsePos < 2);
     } finally {
-      IOUtils.cleanup(null, writer, reader);
+      IOUtils.cleanupWithLogger(LOG, writer, reader);
     }
   }
 
@@ -130,13 +136,13 @@ public class TestBloomMapFile {
       reader = new BloomMapFile.Reader(fs, qualifiedDirName.toString(), conf);
       Collections.reverse(keys);
       for (Text key : keys) {
-        assertTrue("False negative for existing key " + key,
-          reader.probablyHasKey(key));
+        assertTrue(reader.probablyHasKey(key),
+            "False negative for existing key " + key);
       }
       reader.close();
       fs.delete(qualifiedDirName, true);
     } finally {
-      IOUtils.cleanup(null, writer, reader);
+      IOUtils.cleanupWithLogger(LOG, writer, reader);
     }
   }
 
@@ -167,13 +173,13 @@ public class TestBloomMapFile {
       writer = new BloomMapFile.Writer(conf, TEST_FILE,
           MapFile.Writer.keyClass(IntWritable.class),
           MapFile.Writer.valueClass(Text.class));
-      assertNotNull("testDeleteFile error !!!", writer);
+      assertNotNull(writer, "testDeleteFile error !!!");
       writer.close();
       BloomMapFile.delete(fs, TEST_FILE.toString());
     } catch (Exception ex) {
       fail("unexpect ex in testDeleteFile !!!");
     } finally {
-      IOUtils.cleanup(null, writer);
+      IOUtils.cleanupWithLogger(LOG, writer);
     }
   }
   
@@ -197,12 +203,12 @@ public class TestBloomMapFile {
       reader = new BloomMapFile.Reader(dirNameSpy, conf,
           MapFile.Reader.comparator(new WritableComparator(IntWritable.class)));
 
-      assertNull("testIOExceptionInWriterConstructor error !!!",
-          reader.getBloomFilter());
+      assertNull(reader.getBloomFilter(),
+          "testIOExceptionInWriterConstructor error !!!");
     } catch (Exception ex) {
       fail("unexpect ex in testIOExceptionInWriterConstructor !!!");
     } finally {
-      IOUtils.cleanup(null, writer, reader);
+      IOUtils.cleanupWithLogger(LOG, writer, reader);
     }
   }
 
@@ -228,16 +234,16 @@ public class TestBloomMapFile {
           MapFile.Reader.comparator(new WritableComparator(IntWritable.class)));
 
       for (int i = 0; i < SIZE; i++) {
-        assertNotNull("testGetBloomMapFile error !!!",
-            reader.get(new IntWritable(i), new Text()));
+        assertNotNull(reader.get(new IntWritable(i), new Text()),
+            "testGetBloomMapFile error !!!");
       }
             
-      assertNull("testGetBloomMapFile error !!!",
-          reader.get(new IntWritable(SIZE + 5), new Text()));
+      assertNull(reader.get(new IntWritable(SIZE + 5), new Text()),
+          "testGetBloomMapFile error !!!");
     } catch (Exception ex) {
       fail("unexpect ex in testGetBloomMapFile !!!");
     } finally {
-      IOUtils.cleanup(null, writer, reader);
+      IOUtils.cleanupWithLogger(LOG, writer, reader);
     }
   }
 
@@ -254,39 +260,39 @@ public class TestBloomMapFile {
       writer = new BloomMapFile.Writer(conf, ts,
           testFileName, IntWritable.class, Text.class, CompressionType.BLOCK,
           defaultCodec, defaultProgress);
-      assertNotNull("testBloomMapFileConstructors error !!!", writer);
+      assertNotNull(writer, "testBloomMapFileConstructors error !!!");
       writer.close();
       writer = new BloomMapFile.Writer(conf, ts,
           testFileName, IntWritable.class, Text.class, CompressionType.BLOCK,
           defaultProgress);
-      assertNotNull("testBloomMapFileConstructors error !!!", writer);
+      assertNotNull(writer, "testBloomMapFileConstructors error !!!");
       writer.close();
       writer = new BloomMapFile.Writer(conf, ts,
           testFileName, IntWritable.class, Text.class, CompressionType.BLOCK);
-      assertNotNull("testBloomMapFileConstructors error !!!", writer);
+      assertNotNull(writer, "testBloomMapFileConstructors error !!!");
       writer.close();
       writer = new BloomMapFile.Writer(conf, ts,
           testFileName, IntWritable.class, Text.class, CompressionType.RECORD,
           defaultCodec, defaultProgress);
-      assertNotNull("testBloomMapFileConstructors error !!!", writer);
+      assertNotNull(writer, "testBloomMapFileConstructors error !!!");
       writer.close();
       writer = new BloomMapFile.Writer(conf, ts,
           testFileName, IntWritable.class, Text.class, CompressionType.RECORD,
           defaultProgress);
-      assertNotNull("testBloomMapFileConstructors error !!!", writer);
+      assertNotNull(writer, "testBloomMapFileConstructors error !!!");
       writer.close();
       writer = new BloomMapFile.Writer(conf, ts,
           testFileName, IntWritable.class, Text.class, CompressionType.RECORD);
-      assertNotNull("testBloomMapFileConstructors error !!!", writer);
+      assertNotNull(writer, "testBloomMapFileConstructors error !!!");
       writer.close();
       writer = new BloomMapFile.Writer(conf, ts,
           testFileName, WritableComparator.get(Text.class), Text.class);
-      assertNotNull("testBloomMapFileConstructors error !!!", writer);
+      assertNotNull(writer, "testBloomMapFileConstructors error !!!");
       writer.close();
     } catch (Exception ex) {
       fail("testBloomMapFileConstructors error !!!");
     } finally {
-      IOUtils.cleanup(null, writer);
+      IOUtils.cleanupWithLogger(LOG, writer);
     }
   }
 

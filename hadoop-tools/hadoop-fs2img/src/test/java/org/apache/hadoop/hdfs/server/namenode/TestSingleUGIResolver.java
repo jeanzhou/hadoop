@@ -23,21 +23,28 @@ import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.permission.AclEntry;
+import org.apache.hadoop.fs.permission.AclEntryScope;
+import org.apache.hadoop.fs.permission.AclEntryType;
+import org.apache.hadoop.fs.permission.AclStatus;
+import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.UserGroupInformation;
 
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import static org.junit.Assert.*;
+import org.apache.hadoop.test.TestName;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Validate resolver assigning all paths to a single owner/group.
  */
 public class TestSingleUGIResolver {
 
-  @Rule public TestName name = new TestName();
+  @RegisterExtension
+  private TestName name = new TestName();
 
   private static final int TESTUID = 10101;
   private static final int TESTGID = 10102;
@@ -46,7 +53,7 @@ public class TestSingleUGIResolver {
 
   private SingleUGIResolver ugi = new SingleUGIResolver();
 
-  @Before
+  @BeforeEach
   public void setup() {
     Configuration conf = new Configuration(false);
     conf.setInt(SingleUGIResolver.UID, TESTUID);
@@ -93,31 +100,64 @@ public class TestSingleUGIResolver {
     assertEquals(user, ids.get(1));
   }
 
-  @Test(expected=IllegalArgumentException.class)
+  @Test
+  public void testAclResolution() {
+    long perm;
+
+    FsPermission p1 = new FsPermission((short)0755);
+    FileStatus fileStatus = file("dingo", "dingo", p1);
+    perm = ugi.getPermissionsProto(fileStatus, null);
+    match(perm, p1);
+
+    AclEntry aclEntry = new AclEntry.Builder()
+        .setType(AclEntryType.USER)
+        .setScope(AclEntryScope.ACCESS)
+        .setPermission(FsAction.ALL)
+        .setName("dingo")
+        .build();
+
+    AclStatus aclStatus = new AclStatus.Builder()
+        .owner("dingo")
+        .group(("dingo"))
+        .addEntry(aclEntry)
+        .setPermission(p1)
+        .build();
+
+    perm = ugi.getPermissionsProto(null, aclStatus);
+    match(perm, p1);
+  }
+
+  @Test
   public void testInvalidUid() {
-    Configuration conf = ugi.getConf();
-    conf.setInt(SingleUGIResolver.UID, (1 << 24) + 1);
-    ugi.setConf(conf);
-    ugi.resolve(file(TESTUSER, TESTGROUP, new FsPermission((short)0777)));
+    assertThrows(IllegalArgumentException.class, () -> {
+      Configuration conf = ugi.getConf();
+      conf.setInt(SingleUGIResolver.UID, (1 << 24) + 1);
+      ugi.setConf(conf);
+      ugi.resolve(file(TESTUSER, TESTGROUP, new FsPermission((short) 0777)));
+    });
   }
 
-  @Test(expected=IllegalArgumentException.class)
+  @Test
   public void testInvalidGid() {
-    Configuration conf = ugi.getConf();
-    conf.setInt(SingleUGIResolver.GID, (1 << 24) + 1);
-    ugi.setConf(conf);
-    ugi.resolve(file(TESTUSER, TESTGROUP, new FsPermission((short)0777)));
+    assertThrows(IllegalArgumentException.class, () -> {
+      Configuration conf = ugi.getConf();
+      conf.setInt(SingleUGIResolver.GID, (1 << 24) + 1);
+      ugi.setConf(conf);
+      ugi.resolve(file(TESTUSER, TESTGROUP, new FsPermission((short) 0777)));
+    });
   }
 
-  @Test(expected=IllegalStateException.class)
+  @Test
   public void testDuplicateIds() {
-    Configuration conf = new Configuration(false);
-    conf.setInt(SingleUGIResolver.UID, 4344);
-    conf.setInt(SingleUGIResolver.GID, 4344);
-    conf.set(SingleUGIResolver.USER, TESTUSER);
-    conf.set(SingleUGIResolver.GROUP, TESTGROUP);
-    ugi.setConf(conf);
-    ugi.ugiMap();
+    assertThrows(IllegalStateException.class, () -> {
+      Configuration conf = new Configuration(false);
+      conf.setInt(SingleUGIResolver.UID, 4344);
+      conf.setInt(SingleUGIResolver.GID, 4344);
+      conf.set(SingleUGIResolver.USER, TESTUSER);
+      conf.set(SingleUGIResolver.GROUP, TESTGROUP);
+      ugi.setConf(conf);
+      ugi.ugiMap();
+    });
   }
 
   static void match(long encoded, FsPermission p) {
@@ -144,5 +184,4 @@ public class TestSingleUGIResolver {
           group,                   /* String group,            */
           p);                      /* Path path                */
   }
-
 }

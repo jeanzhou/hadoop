@@ -26,7 +26,9 @@ import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.security.PrivilegedExceptionAction;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
@@ -37,6 +39,7 @@ import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HAUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.server.namenode.NamenodeFsck;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -50,14 +53,17 @@ import org.apache.hadoop.util.ToolRunner;
  * <p>The tool scans all files and directories, starting from an indicated
  *  root path. The following abnormal conditions are detected and handled:</p>
  * <ul>
- * <li>files with blocks that are completely missing from all datanodes.<br/>
+ * <li>files with blocks that are completely missing from all datanodes.<br>
  * In this case the tool can perform one of the following actions:
  *  <ul>
- *      <li>none ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#FIXING_NONE})</li>
  *      <li>move corrupted files to /lost+found directory on DFS
- *      ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#FIXING_MOVE}). Remaining data blocks are saved as a
- *      block chains, representing longest consecutive series of valid blocks.</li>
- *      <li>delete corrupted files ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#FIXING_DELETE})</li>
+ *      ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#doMove}).
+ *      Remaining data blocks are saved as a
+ *      block chains, representing longest consecutive series of valid blocks.
+ *      </li>
+ *      <li>delete corrupted files
+ *      ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#doDelete})
+ *      </li>
  *  </ul>
  *  </li>
  *  <li>detect files with under-replicated or over-replicated blocks</li>
@@ -81,7 +87,7 @@ public class DFSck extends Configured implements Tool {
           "-upgradedomains]]]] "
       + "[-includeSnapshots] [-showprogress] "
       + "[-storagepolicies] [-maintenance] "
-      + "[-blockId <blk_Id>]\n"
+      + "[-blockId <blk_Id>] [-replicate]\n"
       + "\t<path>\tstart checking from this path\n"
       + "\t-move\tmove corrupted files to /lost+found\n"
       + "\t-delete\tdelete corrupted files\n"
@@ -101,11 +107,13 @@ public class DFSck extends Configured implements Tool {
           "every block\n"
       + "\t-storagepolicies\tprint out storage policy summary for the blocks\n"
       + "\t-maintenance\tprint out maintenance state node details\n"
-      + "\t-showprogress\tshow progress in output. Default is OFF (no progress)\n"
+      + "\t-showprogress\tDeprecated. Progress is now shown by default\n"
       + "\t-blockId\tprint out which file this blockId belongs to, locations"
       + " (nodes, racks) of this block, and other diagnostics info"
-      + " (under replicated, corrupted or not, etc)\n\n"
-      + "Please Note:\n"
+      + " (under replicated, corrupted or not, etc)\n"
+      + "\t-replicate initiate replication work to make mis-replicated\n"
+      + " blocks satisfy block placement policy\n\n"
+      + "Please Note:\n\n"
       + "\t1. By default fsck ignores files opened for write, "
       + "use -openforwrite to report such files. They are usually "
       + " tagged CORRUPT or HEALTHY depending on their block "
@@ -132,8 +140,17 @@ public class DFSck extends Configured implements Tool {
     super(conf);
     this.ugi = UserGroupInformation.getCurrentUser();
     this.out = out;
+    int connectTimeout = (int) conf.getTimeDuration(
+        HdfsClientConfigKeys.DFS_CLIENT_FSCK_CONNECT_TIMEOUT,
+        HdfsClientConfigKeys.DFS_CLIENT_FSCK_CONNECT_TIMEOUT_DEFAULT,
+        TimeUnit.MILLISECONDS);
+    int readTimeout = (int) conf.getTimeDuration(
+        HdfsClientConfigKeys.DFS_CLIENT_FSCK_READ_TIMEOUT,
+        HdfsClientConfigKeys.DFS_CLIENT_FSCK_READ_TIMEOUT_DEFAULT,
+        TimeUnit.MILLISECONDS);
+
     this.connectionFactory = URLConnectionFactory
-        .newDefaultURLConnectionFactory(conf);
+        .newDefaultURLConnectionFactory(connectTimeout, readTimeout, conf);
     this.isSpnegoEnabled = UserGroupInformation.isSecurityEnabled();
   }
 
@@ -178,7 +195,7 @@ public class DFSck extends Configured implements Tool {
     final String cookiePrefix = "Cookie:";
     boolean allDone = false;
     while (!allDone) {
-      final StringBuffer url = new StringBuffer(baseUrl);
+      final StringBuilder url = new StringBuilder(baseUrl);
       if (cookie > 0) {
         url.append("&startblockafter=").append(String.valueOf(cookie));
       }
@@ -191,7 +208,7 @@ public class DFSck extends Configured implements Tool {
       }
       InputStream stream = connection.getInputStream();
       BufferedReader input = new BufferedReader(new InputStreamReader(
-          stream, "UTF-8"));
+          stream, StandardCharsets.UTF_8));
       try {
         String line = null;
         while ((line = input.readLine()) != null) {
@@ -210,13 +227,19 @@ public class DFSck extends Configured implements Tool {
             allDone = true;
             break;
           }
+          if (line.startsWith("Access denied for user")) {
+            out.println("Failed to open path '" + dir + "': Permission denied");
+            errCode = -1;
+            return errCode;
+          }
           if ((line.isEmpty())
               || (line.startsWith("FSCK started by"))
+              || (line.startsWith("FSCK ended at"))
               || (line.startsWith("The filesystem under path")))
             continue;
           numCorrupt++;
           if (numCorrupt == 1) {
-            out.println("The list of corrupt files under path '"
+            out.println("The list of corrupt blocks under path '"
                 + dir + "' are:");
           }
           out.println(line);
@@ -226,7 +249,7 @@ public class DFSck extends Configured implements Tool {
       }
     }
     out.println("The filesystem under path '" + dir + "' has " 
-        + numCorrupt + " CORRUPT files");
+        + numCorrupt + " CORRUPT blocks");
     if (numCorrupt == 0)
       errCode = 0;
     return errCode;
@@ -299,6 +322,8 @@ public class DFSck extends Configured implements Tool {
           idx++;
         }
         url.append("&blockId=").append(URLEncoder.encode(sb.toString(), "UTF-8"));
+      } else if (args[idx].equals("-replicate")) {
+        url.append("&replicate=1");
       } else if (!args[idx].startsWith("-")) {
         if (null == dir) {
           dir = args[idx];
@@ -352,9 +377,9 @@ public class DFSck extends Configured implements Tool {
     }
     InputStream stream = connection.getInputStream();
     BufferedReader input = new BufferedReader(new InputStreamReader(
-                                              stream, "UTF-8"));
+                                              stream, StandardCharsets.UTF_8));
     String line = null;
-    String lastLine = null;
+    String lastLine = NamenodeFsck.CORRUPT_STATUS;
     int errCode = -1;
     try {
       while ((line = input.readLine()) != null) {
@@ -372,6 +397,8 @@ public class DFSck extends Configured implements Tool {
       errCode = 0;
     } else if (lastLine.contains("Incorrect blockId format:")) {
       errCode = 0;
+    } else if (lastLine.endsWith(NamenodeFsck.EXCESS_STATUS)) {
+      errCode = 0;
     } else if (lastLine.endsWith(NamenodeFsck.DECOMMISSIONED_STATUS)) {
       errCode = 2;
     } else if (lastLine.endsWith(NamenodeFsck.DECOMMISSIONING_STATUS)) {
@@ -380,6 +407,8 @@ public class DFSck extends Configured implements Tool {
       errCode = 4;
     } else if (lastLine.endsWith(NamenodeFsck.ENTERING_MAINTENANCE_STATUS)) {
       errCode = 5;
+    } else if (lastLine.endsWith(NamenodeFsck.STALE_STATUS)) {
+      errCode = 6;
     }
     return errCode;
   }

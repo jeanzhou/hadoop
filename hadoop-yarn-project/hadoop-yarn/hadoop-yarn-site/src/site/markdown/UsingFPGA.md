@@ -53,7 +53,7 @@ Use following property to configure `DominantResourceCalculator` (In `capacity-s
 ```
   <property>
     <name>yarn.nodemanager.resource-plugins</name>
-    <value>yarn-io/fpga</value>
+    <value>yarn.io/fpga</value>
   </property>
 
 ```
@@ -102,11 +102,11 @@ FPGA isolation uses CGroup [devices controller](https://www.kernel.org/doc/Docum
 | --- | --- |
 | yarn.nodemanager.linux-container-executor.cgroups.mount | true |
 
-For more details of YARN CGroups configurations, please refer to [Using CGroups with YARN](https://hadoop.apache.org/docs/stable/hadoop-yarn/hadoop-yarn-site/NodeManagerCgroups.html)
+For more details of YARN CGroups configurations, please refer to [Using Cgroups with YARN](https://hadoop.apache.org/docs/stable/hadoop-yarn/hadoop-yarn-site/NodeManagerCgroups.html)
 
 ### In `container-executor.cfg`
 
-In general, following config needs to be added to `container-executor.cfg`. The fpag.major-device-number and allowed-device-minor-numbers are optional allowed devices.
+In general, following config needs to be added to `container-executor.cfg`. The fpga.major-device-number and allowed-device-minor-numbers are optional allowed devices.
 
 ```
 [fpga]

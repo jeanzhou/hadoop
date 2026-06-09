@@ -21,19 +21,19 @@ import java.nio.ByteBuffer;
 
 import org.apache.hadoop.fs.ChecksumException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Wrapper around JNI support code to do checksum computation
  * natively.
  */
 class NativeCrc32 {
-  
+  private static final boolean isSparc = System.getProperty("os.arch").toLowerCase().startsWith("sparc");
   /**
    * Return true if the JNI-based native CRC extensions are available.
    */
   public static boolean isAvailable() {
-    if (System.getProperty("os.arch").toLowerCase().startsWith("sparc")) {
+    if (isSparc) {
       return false;
     } else {
       return NativeCodeLoader.isNativeCodeLoaded();

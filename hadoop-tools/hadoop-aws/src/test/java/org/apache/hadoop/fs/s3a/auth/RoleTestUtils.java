@@ -18,8 +18,12 @@
 
 package org.apache.hadoop.fs.s3a.auth;
 
+import java.io.IOException;
 import java.nio.file.AccessDeniedException;
+import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import org.slf4j.Logger;
@@ -30,14 +34,20 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.test.GenericTestUtils;
 
 import static org.apache.hadoop.fs.contract.ContractTestUtils.touch;
 import static org.apache.hadoop.fs.s3a.Constants.*;
+import static org.apache.hadoop.fs.s3a.Constants.S3EXPRESS_CREATE_SESSION;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.disableCreateSession;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.disableFilesystemCaching;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.removeBaseAndBucketOverrides;
 import static org.apache.hadoop.fs.s3a.auth.RoleModel.*;
 import static org.apache.hadoop.fs.s3a.auth.RolePolicies.*;
+import static org.apache.hadoop.fs.s3a.auth.delegation.DelegationConstants.DELEGATION_TOKEN_BINDING;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
+import static org.assertj.core.api.Assumptions.assumeThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Helper class for testing roles.
@@ -58,20 +68,19 @@ public final class RoleTestUtils {
 
 
   /** Deny GET requests to all buckets. */
-  public static final Statement DENY_GET_ALL =
+  public static final Statement DENY_S3_GET_OBJECT =
       statement(false, S3_ALL_BUCKETS, S3_GET_OBJECT);
 
-  /**
-   * This is AWS policy removes read access.
-   */
-  public static final Policy RESTRICTED_POLICY = policy(DENY_GET_ALL);
-
+  public static final Statement ALLOW_S3_GET_BUCKET_LOCATION
+      =  statement(true, S3_ALL_BUCKETS, S3_GET_BUCKET_LOCATION);
 
   /**
-   * Error message to get from the AWS SDK if you can't assume the role.
+   * This is AWS policy removes read access from S3.
+   * The client does need {@link RolePolicies#S3_GET_BUCKET_LOCATION} to
+   * get the bucket location.
    */
-  public static final String E_BAD_ROLE
-      = "Not authorized to perform sts:AssumeRole";
+  public static final Policy RESTRICTED_POLICY = policy(
+      DENY_S3_GET_OBJECT, ALLOW_S3_GET_BUCKET_LOCATION);
 
   private RoleTestUtils() {
   }
@@ -143,29 +152,110 @@ public final class RoleTestUtils {
       final Configuration srcConf,
       final String roleARN) {
     Configuration conf = new Configuration(srcConf);
+    removeBaseAndBucketOverrides(conf,
+        S3A_BUCKET_PROBE,
+        DELEGATION_TOKEN_BINDING,
+        ASSUMED_ROLE_ARN,
+        AWS_CREDENTIALS_PROVIDER,
+        ASSUMED_ROLE_SESSION_DURATION,
+        S3EXPRESS_CREATE_SESSION);
+
     conf.set(AWS_CREDENTIALS_PROVIDER, AssumedRoleCredentialProvider.NAME);
     conf.set(ASSUMED_ROLE_ARN, roleARN);
-    conf.set(ASSUMED_ROLE_SESSION_NAME, "valid");
+    conf.set(ASSUMED_ROLE_SESSION_NAME, "test");
     conf.set(ASSUMED_ROLE_SESSION_DURATION, "15m");
+    // disable bucket resolution during startup as s3 express doesn't like it
+    conf.setInt(S3A_BUCKET_PROBE, 0);
+    disableCreateSession(conf);
     disableFilesystemCaching(conf);
     return conf;
   }
 
   /**
    * Assert that an operation is forbidden.
+   * @param <T> type of closure
    * @param contained contained text, may be null
    * @param eval closure to evaluate
-   * @param <T> type of closure
    * @return the access denied exception
    * @throws Exception any other exception
    */
   public static <T> AccessDeniedException forbidden(
-      String contained,
-      Callable<T> eval)
+      final String contained,
+      final Callable<T> eval)
       throws Exception {
-    AccessDeniedException ex = intercept(AccessDeniedException.class, eval);
-    GenericTestUtils.assertExceptionContains(contained, ex);
-    return ex;
+    return forbidden("", contained, eval);
   }
 
+  /**
+   * Assert that an operation is forbidden.
+   * @param <T> type of closure
+   * @param message error message
+   * @param contained contained text, may be null
+   * @param eval closure to evaluate
+   * @return the access denied exception
+   * @throws Exception any other exception
+   */
+  public static <T> AccessDeniedException forbidden(
+      final String message,
+      final String contained,
+      final Callable<T> eval)
+      throws Exception {
+    return intercept(AccessDeniedException.class,
+        contained, message, eval);
+  }
+
+  /**
+   * Get the Assumed role referenced by ASSUMED_ROLE_ARN;
+   * skip the test if it is unset.
+   * @param conf config
+   * @return the string
+   */
+  public static String probeForAssumedRoleARN(Configuration conf) {
+    String arn = conf.getTrimmed(ASSUMED_ROLE_ARN, "");
+    assumeThat(arn)
+        .as("No ARN defined in " + ASSUMED_ROLE_ARN)
+        .isNotEmpty();
+    return arn;
+  }
+
+  /**
+   * Assert that credentials are equal without printing secrets.
+   * Different assertions will have different message details.
+   * @param message message to use as base of error.
+   * @param expected expected credentials
+   * @param actual actual credentials.
+   */
+  public static void assertCredentialsEqual(final String message,
+      final MarshalledCredentials expected,
+      final MarshalledCredentials actual) {
+    // DO NOT use assertEquals() here, as that could print a secret to
+    // the test report.
+    assertEquals(expected.getAccessKey(),
+        actual.getAccessKey(),
+        message + ": access key");
+    assertTrue(expected.getSecretKey().equals(actual.getSecretKey()),
+        message + ": secret key");
+    assertEquals(expected.getSessionToken(),
+        actual.getSessionToken(),
+        message + ": session token");
+  }
+
+  /**
+   * Parallel-touch a set of files in the destination directory.
+   * @param fs filesystem
+   * @param destDir destination
+   * @param range range 1..range inclusive of files to create.
+   * @return the list of paths created.
+   */
+  public static List<Path> touchFiles(final FileSystem fs,
+      final Path destDir,
+      final int range) throws IOException {
+    List<Path> paths = IntStream.rangeClosed(1, range)
+        .mapToObj((i) -> new Path(destDir, "file-" + i))
+                .collect(Collectors.toList());
+    for (Path path : paths) {
+      touch(fs, path);
+    }
+    return paths;
+  }
 }

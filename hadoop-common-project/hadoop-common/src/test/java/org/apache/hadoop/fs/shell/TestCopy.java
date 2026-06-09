@@ -18,8 +18,21 @@
 
 package org.apache.hadoop.fs.shell;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.anyShort;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.reset;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -36,10 +49,9 @@ import org.apache.hadoop.fs.FilterFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.shell.CopyCommands.Put;
-import org.apache.hadoop.util.Progressable;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.mockito.stubbing.OngoingStubbing;
 
 public class TestCopy {
@@ -51,7 +63,7 @@ public class TestCopy {
   static PathData target;
   static FileStatus fileStat;
   
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws IOException {
     conf = new Configuration();
     conf.setClass("fs.mockfs.impl", MockFileSystem.class, FileSystem.class);
@@ -60,7 +72,7 @@ public class TestCopy {
     when(fileStat.isDirectory()).thenReturn(false);
   }
   
-  @Before
+  @BeforeEach
   public void resetMock() throws IOException {
     reset(mockFs);
     target = new PathData(path.toString(), conf);
@@ -78,10 +90,19 @@ public class TestCopy {
     when(in.read(any(byte[].class), anyInt(), anyInt())).thenReturn(-1);
     
     tryCopyStream(in, true);
+    verify(in).close();
+    verify(out, times(2)).close();
+    // no data was written.
+    verify(out, never()).write(any(byte[].class), anyInt(), anyInt());
     verify(mockFs, never()).delete(eq(path), anyBoolean());
     verify(mockFs).rename(eq(tmpPath), eq(path));
     verify(mockFs, never()).delete(eq(tmpPath), anyBoolean());
     verify(mockFs, never()).close();
+    // temp path never had is existence checked. This is critical for S3 as it
+    // avoids the successful path accidentally getting a 404 into the S3 load
+    // balancer cache
+    verify(mockFs, never()).exists(eq(tmpPath));
+    verify(mockFs, never()).exists(eq(path));
   }
 
   @Test
@@ -111,6 +132,31 @@ public class TestCopy {
     FSDataInputStream in = mock(FSDataInputStream.class);
 
     tryCopyStream(in, false);
+    verify(mockFs, never()).rename(any(Path.class), any(Path.class));
+    verify(mockFs).delete(eq(tmpPath), anyBoolean());
+    verify(mockFs, never()).delete(eq(path), anyBoolean());
+    verify(mockFs, never()).close();
+  }
+
+  /**
+   * Create a file but fail in the write.
+   * The copy operation should attempt to clean up by
+   * closing the output stream then deleting it.
+   */
+  @Test
+  public void testFailedWrite() throws Exception {
+    FSDataOutputStream out = mock(FSDataOutputStream.class);
+    doThrow(new IOException("mocked"))
+        .when(out).write(any(byte[].class), anyInt(), anyInt());
+    whenFsCreate().thenReturn(out);
+    when(mockFs.getFileStatus(eq(tmpPath))).thenReturn(fileStat);
+    FSInputStream in = mock(FSInputStream.class);
+    doReturn(0)
+        .when(in).read(any(byte[].class), anyInt(), anyInt());
+    Throwable thrown = tryCopyStream(in, false);
+    assertExceptionContains("mocked", thrown);
+    verify(in).close();
+    verify(out, times(2)).close();
     verify(mockFs).delete(eq(tmpPath), anyBoolean());
     verify(mockFs, never()).rename(any(Path.class), any(Path.class));
     verify(mockFs, never()).delete(eq(path), anyBoolean());
@@ -153,18 +199,24 @@ public class TestCopy {
 
   private OngoingStubbing<FSDataOutputStream> whenFsCreate() throws IOException {
     return when(mockFs.create(eq(tmpPath), any(FsPermission.class),
-        anyBoolean(), anyInt(), anyShort(), anyLong(),
-        any(Progressable.class)));
+        anyBoolean(), anyInt(), anyShort(), anyLong(), any()));
   }
   
-  private void tryCopyStream(InputStream in, boolean shouldPass) {
+  private Throwable tryCopyStream(InputStream in, boolean shouldPass) {
     try {
       cmd.copyStreamToTarget(new FSDataInputStream(in), target);
+      return null;
     } catch (InterruptedIOException e) {
-      assertFalse("copy failed", shouldPass);
+      if (shouldPass) {
+        throw new AssertionError("copy failed", e);
+      }
+      return e;
     } catch (Throwable e) {
-      assertFalse(e.getMessage(), shouldPass);
-    }    
+      if (shouldPass) {
+        throw new AssertionError(e.getMessage(), e);
+      }
+      return e;
+    }
   }
   
   static class MockFileSystem extends FilterFileSystem {

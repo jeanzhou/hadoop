@@ -18,12 +18,12 @@
 
 package org.apache.hadoop.hdfs.server.datanode.checker;
 
-import com.google.common.base.Optional;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.ListeningExecutorService;
-import com.google.common.util.concurrent.MoreExecutors;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.FutureCallback;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Futures;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.FluentFuture;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListenableFuture;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListeningExecutorService;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.MoreExecutors;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.util.Timer;
@@ -35,6 +35,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -44,14 +45,14 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * An implementation of {@link AsyncChecker} that skips checking recently
- * checked objects. It will enforce at least {@link minMsBetweenChecks}
+ * checked objects. It will enforce at least {@link #minMsBetweenChecks}
  * milliseconds between two successive checks of any one object.
  *
  * It is assumed that the total number of Checkable objects in the system
  * is small, (not more than a few dozen) since the checker uses O(Checkables)
  * storage and also potentially O(Checkables) threads.
  *
- * {@link minMsBetweenChecks} should be configured reasonably
+ * {@link #minMsBetweenChecks} should be configured reasonably
  * by the caller to avoid spinning up too many threads frequently.
  */
 @InterfaceAudience.Private
@@ -88,7 +89,7 @@ public class ThrottledAsyncChecker<K, V> implements AsyncChecker<K, V> {
    */
   private final Map<Checkable, LastCheckResult<V>> completedChecks;
 
-  ThrottledAsyncChecker(final Timer timer,
+  public ThrottledAsyncChecker(final Timer timer,
                         final long minMsBetweenChecks,
                         final long diskCheckTimeout,
                         final ExecutorService executorService) {
@@ -117,20 +118,20 @@ public class ThrottledAsyncChecker<K, V> implements AsyncChecker<K, V> {
    * will receive the same Future.
    */
   @Override
-  public Optional<ListenableFuture<V>> schedule(Checkable<K, V> target,
-                                                K context) {
+  public synchronized Optional<ListenableFuture<V>> schedule(
+      Checkable<K, V> target, K context) {
     if (checksInProgress.containsKey(target)) {
-      return Optional.absent();
+      return Optional.empty();
     }
 
-    if (completedChecks.containsKey(target)) {
-      final LastCheckResult<V> result = completedChecks.get(target);
+    final LastCheckResult<V> result = completedChecks.get(target);
+    if (result != null) {
       final long msSinceLastCheck = timer.monotonicNow() - result.completedAt;
       if (msSinceLastCheck < minMsBetweenChecks) {
         LOG.debug("Skipped checking {}. Time since last check {}ms " +
                 "is less than the min gap {}ms.",
             target, msSinceLastCheck, minMsBetweenChecks);
-        return Optional.absent();
+        return Optional.empty();
       }
     }
 
@@ -145,9 +146,8 @@ public class ThrottledAsyncChecker<K, V> implements AsyncChecker<K, V> {
     final ListenableFuture<V> lf;
 
     if (diskCheckTimeout > 0) {
-      lf = TimeoutFuture
-          .create(lfWithoutTimeout, diskCheckTimeout, TimeUnit.MILLISECONDS,
-              scheduledExecutorService);
+      lf = FluentFuture.from(lfWithoutTimeout)
+          .withTimeout(diskCheckTimeout, TimeUnit.MILLISECONDS, scheduledExecutorService);
     } else {
       lf = lfWithoutTimeout;
     }
@@ -166,7 +166,7 @@ public class ThrottledAsyncChecker<K, V> implements AsyncChecker<K, V> {
       Checkable<K, V> target, ListenableFuture<V> lf) {
     Futures.addCallback(lf, new FutureCallback<V>() {
       @Override
-      public void onSuccess(@Nullable V result) {
+      public void onSuccess(V result) {
         synchronized (ThrottledAsyncChecker.this) {
           checksInProgress.remove(target);
           completedChecks.put(target, new LastCheckResult<>(
@@ -182,7 +182,7 @@ public class ThrottledAsyncChecker<K, V> implements AsyncChecker<K, V> {
               t, timer.monotonicNow()));
         }
       }
-    });
+    }, MoreExecutors.directExecutor());
   }
 
   /**

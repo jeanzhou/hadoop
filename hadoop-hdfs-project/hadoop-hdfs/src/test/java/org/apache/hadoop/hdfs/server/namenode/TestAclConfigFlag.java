@@ -21,7 +21,8 @@ import static org.apache.hadoop.hdfs.server.namenode.AclTestHelpers.*;
 import static org.apache.hadoop.fs.permission.AclEntryScope.*;
 import static org.apache.hadoop.fs.permission.AclEntryType.*;
 import static org.apache.hadoop.fs.permission.FsAction.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -29,15 +30,11 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.AclException;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
-import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.io.IOUtils;
-import org.junit.After;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
-
-import com.google.common.collect.Lists;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 /**
  * Tests that the configuration flag that controls support for ACLs is off by
@@ -50,12 +47,9 @@ public class TestAclConfigFlag {
   private MiniDFSCluster cluster;
   private DistributedFileSystem fs;
 
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
-
-  @After
+  @AfterEach
   public void shutdown() throws Exception {
-    IOUtils.cleanup(null, fs);
+    IOUtils.cleanupWithLogger(null, fs);
     if (cluster != null) {
       cluster.shutdown();
       cluster = null;
@@ -66,52 +60,58 @@ public class TestAclConfigFlag {
   public void testModifyAclEntries() throws Exception {
     initCluster(true, false);
     fs.mkdirs(PATH);
-    expectException();
-    fs.modifyAclEntries(PATH, Lists.newArrayList(
-      aclEntry(DEFAULT, USER, "foo", READ_WRITE)));
+    expectException(() -> {
+      fs.modifyAclEntries(PATH, Lists.newArrayList(
+          aclEntry(DEFAULT, USER, "foo", READ_WRITE)));
+    });
   }
 
   @Test
   public void testRemoveAclEntries() throws Exception {
     initCluster(true, false);
     fs.mkdirs(PATH);
-    expectException();
-    fs.removeAclEntries(PATH, Lists.newArrayList(
-      aclEntry(DEFAULT, USER, "foo", READ_WRITE)));
+    expectException(() -> {
+      fs.removeAclEntries(PATH, Lists.newArrayList(
+          aclEntry(DEFAULT, USER, "foo", READ_WRITE)));
+    });
   }
 
   @Test
   public void testRemoveDefaultAcl() throws Exception {
     initCluster(true, false);
     fs.mkdirs(PATH);
-    expectException();
-    fs.removeAclEntries(PATH, Lists.newArrayList(
-      aclEntry(DEFAULT, USER, "foo", READ_WRITE)));
+    expectException(() -> {
+      fs.removeAclEntries(PATH, Lists.newArrayList(
+          aclEntry(DEFAULT, USER, "foo", READ_WRITE)));
+    });
   }
 
   @Test
   public void testRemoveAcl() throws Exception {
     initCluster(true, false);
     fs.mkdirs(PATH);
-    expectException();
-    fs.removeAcl(PATH);
+    expectException(() -> {
+      fs.removeAcl(PATH);
+    });
   }
 
   @Test
   public void testSetAcl() throws Exception {
     initCluster(true, false);
     fs.mkdirs(PATH);
-    expectException();
-    fs.setAcl(PATH, Lists.newArrayList(
-      aclEntry(DEFAULT, USER, "foo", READ_WRITE)));
+    expectException(() -> {
+      fs.setAcl(PATH, Lists.newArrayList(
+          aclEntry(DEFAULT, USER, "foo", READ_WRITE)));
+    });
   }
 
   @Test
   public void testGetAclStatus() throws Exception {
     initCluster(true, false);
     fs.mkdirs(PATH);
-    expectException();
-    fs.getAclStatus(PATH);
+    expectException(() -> {
+      fs.getAclStatus(PATH);
+    });
   }
 
   @Test
@@ -145,9 +145,9 @@ public class TestAclConfigFlag {
    * We expect an AclException, and we want the exception text to state the
    * configuration key that controls ACL support.
    */
-  private void expectException() {
-    exception.expect(AclException.class);
-    exception.expectMessage(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY);
+  private void expectException(Executable exec) {
+    AclException ex = assertThrows(AclException.class, exec);
+    assertTrue(ex.getMessage().contains(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY));
   }
 
   /**
@@ -160,10 +160,7 @@ public class TestAclConfigFlag {
   private void initCluster(boolean format, boolean aclsEnabled)
       throws Exception {
     Configuration conf = new Configuration();
-    // not explicitly setting to false, should be false by default
-    if (aclsEnabled) {
-      conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, true);
-    }
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, aclsEnabled);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).format(format)
       .build();
     cluster.waitActive();

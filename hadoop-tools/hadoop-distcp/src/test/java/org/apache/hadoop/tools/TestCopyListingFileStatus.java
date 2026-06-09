@@ -23,13 +23,23 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.DataOutputBuffer;
 
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Verify CopyListingFileStatus serialization and requirements for distcp.
  */
 public class TestCopyListingFileStatus {
+
+  @Test
+  public void testToString() {
+    CopyListingFileStatus src = new CopyListingFileStatus(
+        4344L, false, 2, 512 << 20, 1234L, 5678L, new FsPermission((short)0512),
+        "dingo", "yaks", new Path("hdfs://localhost:4344"));
+    src.toString();
+    src = new CopyListingFileStatus();
+    src.toString();
+  }
 
   @Test
   public void testCopyListingFileStatusSerialization() throws Exception {

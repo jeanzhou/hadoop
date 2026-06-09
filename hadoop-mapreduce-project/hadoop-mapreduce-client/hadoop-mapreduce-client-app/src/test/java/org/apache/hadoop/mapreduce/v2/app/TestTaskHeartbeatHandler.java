@@ -18,12 +18,15 @@
 
 package org.apache.hadoop.mapreduce.v2.app;
 
-import static org.mockito.Matchers.any;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-import com.google.common.base.Supplier;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
@@ -38,15 +41,17 @@ import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.ControlledClock;
 import org.apache.hadoop.yarn.util.SystemClock;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 
 
 public class TestTaskHeartbeatHandler {
   
-  @SuppressWarnings({ "rawtypes", "unchecked" })
+  @SuppressWarnings("unchecked")
   @Test
-  public void testTimeout() throws InterruptedException {
+  public void testTaskTimeout() throws InterruptedException {
     EventHandler mockHandler = mock(EventHandler.class);
     Clock clock = SystemClock.getInstance();
     TaskHeartbeatHandler hb = new TaskHeartbeatHandler(mockHandler, clock, 1);
@@ -58,16 +63,100 @@ public class TestTaskHeartbeatHandler {
     // so that TASK_TIMEOUT is not overridden
     conf.setLong(MRJobConfig.TASK_PROGRESS_REPORT_INTERVAL, 5);
     conf.setInt(MRJobConfig.TASK_TIMEOUT_CHECK_INTERVAL_MS, 10); //10 ms
+    conf.setDouble(MRJobConfig.TASK_LOG_PROGRESS_DELTA_THRESHOLD, 0.01);
     
     hb.init(conf);
     hb.start();
     try {
-      ApplicationId appId = ApplicationId.newInstance(0l, 5);
+      ApplicationId appId = ApplicationId.newInstance(0L, 5);
       JobId jobId = MRBuilderUtils.newJobId(appId, 4);
       TaskId tid = MRBuilderUtils.newTaskId(jobId, 3, TaskType.MAP);
       TaskAttemptId taid = MRBuilderUtils.newTaskAttemptId(tid, 2);
       hb.register(taid);
+      // Task heartbeat once to avoid stuck
+      hb.progressing(taid);
       Thread.sleep(100);
+      //Events only happen when the task is canceled
+      verify(mockHandler, times(2)).handle(any(Event.class));
+    } finally {
+      hb.stop();
+    }
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testTaskTimeoutDisable() throws InterruptedException {
+    EventHandler mockHandler = mock(EventHandler.class);
+    Clock clock = SystemClock.getInstance();
+    TaskHeartbeatHandler hb = new TaskHeartbeatHandler(mockHandler, clock, 1);
+
+    Configuration conf = new Configuration();
+    conf.setLong(MRJobConfig.TASK_STUCK_TIMEOUT_MS, 0); // no timeout
+    conf.setInt(MRJobConfig.TASK_TIMEOUT, 0); // no timeout
+    // set TASK_PROGRESS_REPORT_INTERVAL to a value smaller than TASK_TIMEOUT
+    // so that TASK_TIMEOUT is not overridden
+    conf.setLong(MRJobConfig.TASK_PROGRESS_REPORT_INTERVAL, 0);
+    conf.setInt(MRJobConfig.TASK_TIMEOUT_CHECK_INTERVAL_MS, 10); //10 ms
+
+    hb.init(conf);
+    hb.start();
+    try {
+      ApplicationId appId = ApplicationId.newInstance(0L, 5);
+      JobId jobId = MRBuilderUtils.newJobId(appId, 4);
+      TaskId tid = MRBuilderUtils.newTaskId(jobId, 3, TaskType.MAP);
+      TaskAttemptId taid = MRBuilderUtils.newTaskAttemptId(tid, 2);
+      hb.register(taid);
+
+      ConcurrentMap<TaskAttemptId, TaskHeartbeatHandler.ReportTime>
+          runningAttempts = hb.getRunningAttempts();
+      for (Map.Entry<TaskAttemptId, TaskHeartbeatHandler.ReportTime> entry
+          : runningAttempts.entrySet()) {
+        assertFalse(entry.getValue().isReported());
+      }
+
+      Thread.sleep(100);
+
+      // Timeout is disabled, so the task should not be canceled
+      verify(mockHandler, never()).handle(any(Event.class));
+    } finally {
+      hb.stop();
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testTaskStuck() throws InterruptedException {
+    EventHandler mockHandler = mock(EventHandler.class);
+    Clock clock = SystemClock.getInstance();
+    TaskHeartbeatHandler hb = new TaskHeartbeatHandler(mockHandler, clock, 1);
+
+
+    Configuration conf = new Configuration();
+    conf.setLong(MRJobConfig.TASK_STUCK_TIMEOUT_MS, 10); // 10ms
+    conf.setInt(MRJobConfig.TASK_TIMEOUT, 1000); //1000 ms
+    // set TASK_PROGRESS_REPORT_INTERVAL to a value smaller than TASK_TIMEOUT
+    // so that TASK_TIMEOUT is not overridden
+    conf.setLong(MRJobConfig.TASK_PROGRESS_REPORT_INTERVAL, 5);
+    conf.setInt(MRJobConfig.TASK_TIMEOUT_CHECK_INTERVAL_MS, 10); //10 ms
+
+    hb.init(conf);
+    hb.start();
+    try {
+      ApplicationId appId = ApplicationId.newInstance(0L, 5);
+      JobId jobId = MRBuilderUtils.newJobId(appId, 4);
+      TaskId tid = MRBuilderUtils.newTaskId(jobId, 3, TaskType.MAP);
+      TaskAttemptId taid = MRBuilderUtils.newTaskAttemptId(tid, 2);
+      hb.register(taid);
+
+      ConcurrentMap<TaskAttemptId, TaskHeartbeatHandler.ReportTime>
+          runningAttempts = hb.getRunningAttempts();
+      for (Map.Entry<TaskAttemptId, TaskHeartbeatHandler.ReportTime> entry
+          : runningAttempts.entrySet()) {
+        assertFalse(entry.getValue().isReported());
+      }
+
+      Thread.sleep(100);
+
       //Events only happen when the task is canceled
       verify(mockHandler, times(2)).handle(any(Event.class));
     } finally {
@@ -117,27 +206,23 @@ public class TestTaskHeartbeatHandler {
         new TaskHeartbeatHandler(mockHandler, clock, 1);
     Configuration conf = new Configuration();
     conf.setInt(MRJobConfig.TASK_TIMEOUT_CHECK_INTERVAL_MS, 1);
+    conf.setDouble(MRJobConfig.TASK_LOG_PROGRESS_DELTA_THRESHOLD, 0.01);
     hb.init(conf);
     hb.start();
     try {
-      ApplicationId appId = ApplicationId.newInstance(0l, 5);
+      ApplicationId appId = ApplicationId.newInstance(0L, 5);
       JobId jobId = MRBuilderUtils.newJobId(appId, 4);
       TaskId tid = MRBuilderUtils.newTaskId(jobId, 3, TaskType.MAP);
       final TaskAttemptId taid = MRBuilderUtils.newTaskAttemptId(tid, 2);
-      Assert.assertFalse(hb.hasRecentlyUnregistered(taid));
+      assertFalse(hb.hasRecentlyUnregistered(taid));
       hb.register(taid);
-      Assert.assertFalse(hb.hasRecentlyUnregistered(taid));
+      assertFalse(hb.hasRecentlyUnregistered(taid));
       hb.unregister(taid);
-      Assert.assertTrue(hb.hasRecentlyUnregistered(taid));
+      assertTrue(hb.hasRecentlyUnregistered(taid));
       long unregisterTimeout = conf.getLong(MRJobConfig.TASK_EXIT_TIMEOUT,
           MRJobConfig.TASK_EXIT_TIMEOUT_DEFAULT);
       clock.setTime(unregisterTimeout + 1);
-      GenericTestUtils.waitFor(new Supplier<Boolean>() {
-        @Override
-        public Boolean get() {
-          return !hb.hasRecentlyUnregistered(taid);
-        }
-      }, 10, 10000);
+      GenericTestUtils.waitFor(() -> !hb.hasRecentlyUnregistered(taid), 10, 10000);
     } finally {
       hb.stop();
     }
@@ -170,7 +255,7 @@ public class TestTaskHeartbeatHandler {
         new TaskHeartbeatHandler(null, SystemClock.getInstance(), 1);
     hb.init(conf);
 
-    Assert.assertTrue("The value of the task timeout is incorrect.",
-        hb.getTaskTimeOut() == expectedTimeout);
+    assertEquals(hb.getTaskTimeOut(), expectedTimeout,
+        "The value of the task timeout is incorrect.");
   }
 }

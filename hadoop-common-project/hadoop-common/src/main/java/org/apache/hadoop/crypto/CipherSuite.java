@@ -28,7 +28,8 @@ import org.apache.hadoop.util.StringUtils;
 @InterfaceAudience.Private
 public enum CipherSuite {
   UNKNOWN("Unknown", 0),
-  AES_CTR_NOPADDING("AES/CTR/NoPadding", 16);
+  AES_CTR_NOPADDING("AES/CTR/NoPadding", 16),
+  SM4_CTR_NOPADDING("SM4/CTR/NoPadding", 16);
 
   private final String name;
   private final int algoBlockSize;
@@ -65,8 +66,8 @@ public enum CipherSuite {
   @Override
   public String toString() {
     StringBuilder builder = new StringBuilder("{");
-    builder.append("name: " + name);
-    builder.append(", algorithmBlockSize: " + algoBlockSize);
+    builder.append("name: " + name)
+        .append(", algorithmBlockSize: " + algoBlockSize);
     if (unknownValue != null) {
       builder.append(", unknownValue: " + unknownValue);
     }

@@ -18,11 +18,11 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.DataOutput;
@@ -32,11 +32,14 @@ import java.io.DataInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.EnumSet;
 
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyState;
 import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
@@ -46,10 +49,11 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
 import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
 import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.ipc.RemoteException;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.NativeCodeLoader;
-import org.junit.Assert;
 
 import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.fs.permission.FsPermission;
@@ -58,6 +62,7 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSOutputStream;
 import org.apache.hadoop.hdfs.DFSTestUtil;
@@ -65,21 +70,25 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.client.HdfsDataOutputStream.SyncFlag;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.namenode.LeaseManager.Lease;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection;
+import org.apache.hadoop.hdfs.server.namenode.FsImageProto.FileSummary.Section;
+import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.SectionName;
 import org.apache.hadoop.hdfs.util.MD5FileUtils;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
+import org.apache.hadoop.test.LambdaTestUtils;
 import org.apache.hadoop.util.Time;
-import org.junit.Assume;
-import org.junit.Test;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import static org.junit.Assert.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+@Tag("slow")
 public class TestFSImage {
 
   private static final String HADOOP_2_7_ZER0_BLOCK_SIZE_TGZ =
@@ -105,7 +114,7 @@ public class TestFSImage {
 
   @Test
   public void testNativeCompression() throws IOException {
-    Assume.assumeTrue(NativeCodeLoader.isNativeCodeLoaded());
+    assumeTrue(NativeCodeLoader.isNativeCodeLoaded());
     Configuration conf = new Configuration();
     conf.setBoolean(DFSConfigKeys.DFS_IMAGE_COMPRESS_KEY, true);
     setCompressCodec(conf, "org.apache.hadoop.io.compress.Lz4Codec");
@@ -139,9 +148,9 @@ public class TestFSImage {
           .of(SyncFlag.UPDATE_LENGTH));
 
       // checkpoint
-      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      fs.setSafeMode(SafeModeAction.ENTER);
       fs.saveNamespace();
-      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+      fs.setSafeMode(SafeModeAction.LEAVE);
 
       cluster.restartNameNode();
       cluster.waitActive();
@@ -160,7 +169,7 @@ public class TestFSImage {
       assertEquals(BlockUCState.UNDER_CONSTRUCTION, blks[0].getBlockUCState());
       // check lease manager
       Lease lease = fsn.leaseManager.getLease(file2Node);
-      Assert.assertNotNull(lease);
+      assertNotNull(lease);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -223,11 +232,9 @@ public class TestFSImage {
               .loadINodeWithLocalName(false, in, false);
     }
 
-    assertEquals(id, fileByLoaded.getId() );
-    assertArrayEquals(isUC ? path.getBytes() : name,
-        fileByLoaded.getLocalName().getBytes());
-    assertEquals(permissionStatus.getUserName(),
-        fileByLoaded.getPermissionStatus().getUserName());
+    assertEquals(id, fileByLoaded.getId());
+    assertArrayEquals(isUC ? path.getBytes() : name, fileByLoaded.getLocalName().getBytes());
+    assertEquals(permissionStatus.getUserName(), fileByLoaded.getPermissionStatus().getUserName());
     assertEquals(permissionStatus.getGroupName(),
         fileByLoaded.getPermissionStatus().getGroupName());
     assertEquals(permissionStatus.getPermission(),
@@ -241,8 +248,7 @@ public class TestFSImage {
     assertEquals(file.getFileReplication(), fileByLoaded.getFileReplication());
 
     if (isUC) {
-      assertEquals(client,
-          fileByLoaded.getFileUnderConstructionFeature().getClientName());
+      assertEquals(client, fileByLoaded.getFileUnderConstructionFeature().getClientName());
       assertEquals(clientMachine,
           fileByLoaded.getFileUnderConstructionFeature().getClientMachine());
     }
@@ -265,6 +271,22 @@ public class TestFSImage {
       if (cluster != null) {
         cluster.shutdown();
       }
+    }
+  }
+
+  @Test
+  public void testImportCheckpoint() throws Exception{
+    Configuration conf = new Configuration();
+    conf.set(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_EDITS_DIR_KEY, "");
+    try(MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build()){
+      cluster.waitActive();
+      FSNamesystem fsn = cluster.getNamesystem();
+      FSImage fsImage= new FSImage(conf);
+      LambdaTestUtils.intercept(
+          IOException.class,
+          "Cannot import image from a checkpoint. "
+                  + "\"dfs.namenode.checkpoint.edits.dir\" is not set.",
+          () -> fsImage.doImportCheckpoint(fsn));
     }
   }
 
@@ -339,9 +361,9 @@ public class TestFSImage {
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
       DistributedFileSystem fs = cluster.getFileSystem();
-      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      fs.setSafeMode(SafeModeAction.ENTER);
       fs.saveNamespace();
-      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+      fs.setSafeMode(SafeModeAction.LEAVE);
       File currentDir = FSImageTestUtil.getNameNodeCurrentDirs(cluster, 0).get(
           0);
       File fsimage = FSImageTestUtil.findNewestImageFile(currentDir
@@ -358,7 +380,8 @@ public class TestFSImage {
   /**
    * Ensure mtime and atime can be loaded from fsimage.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testLoadMtimeAtime() throws Exception {
     Configuration conf = new Configuration();
     MiniDFSCluster cluster = null;
@@ -381,9 +404,9 @@ public class TestFSImage {
       long atimeLink = hdfs.getFileLinkStatus(link).getAccessTime();
 
       // save namespace and restart cluster
-      hdfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_ENTER);
+      hdfs.setSafeMode(SafeModeAction.ENTER);
       hdfs.saveNamespace();
-      hdfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_LEAVE);
+      hdfs.setSafeMode(SafeModeAction.LEAVE);
       cluster.shutdown();
       cluster = new MiniDFSCluster.Builder(conf).format(false)
           .numDataNodes(1).build();
@@ -405,7 +428,8 @@ public class TestFSImage {
   /**
    * Ensure ctime is set during namenode formatting.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testCtime() throws Exception {
     Configuration conf = new Configuration();
     MiniDFSCluster cluster = null;
@@ -457,8 +481,8 @@ public class TestFSImage {
     try {
       FileSystem fs = cluster.getFileSystem();
       Path testPath = new Path("/tmp/zeroBlockFile");
-      assertTrue("File /tmp/zeroBlockFile doesn't exist ", fs.exists(testPath));
-      assertTrue("Name node didn't come up", cluster.isNameNodeUp(0));
+      assertTrue(fs.exists(testPath), "File /tmp/zeroBlockFile doesn't exist ");
+      assertTrue(cluster.isNameNodeUp(0), "Name node didn't come up");
     } finally {
       cluster.shutdown();
       //Clean up
@@ -469,7 +493,8 @@ public class TestFSImage {
   /**
    * Ensure that FSImage supports BlockGroup.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testSupportBlockGroup() throws Exception {
     final short GROUP_SIZE = (short) (testECPolicy.getNumDataUnits() +
         testECPolicy.getNumParityUnits());
@@ -502,9 +527,9 @@ public class TestFSImage {
       DFSTestUtil.writeFile(fs, file_3_2, new String(bytes));
 
       // Save namespace and restart NameNode
-      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      fs.setSafeMode(SafeModeAction.ENTER);
       fs.saveNamespace();
-      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+      fs.setSafeMode(SafeModeAction.LEAVE);
 
       cluster.restartNameNodes();
       fs = cluster.getFileSystem();
@@ -519,12 +544,10 @@ public class TestFSImage {
       BlockInfo[] blks = inode.getBlocks();
       assertEquals(1, blks.length);
       assertTrue(blks[0].isStriped());
-      assertEquals(testECPolicy.getId(),
-          fs.getErasureCodingPolicy(file_10_4).getId());
+      assertEquals(testECPolicy.getId(), fs.getErasureCodingPolicy(file_10_4).getId());
       assertEquals(testECPolicy.getId(),
           ((BlockInfoStriped)blks[0]).getErasureCodingPolicy().getId());
-      assertEquals(testECPolicy.getNumDataUnits(),
-          ((BlockInfoStriped) blks[0]).getDataBlockNum());
+      assertEquals(testECPolicy.getNumDataUnits(), ((BlockInfoStriped) blks[0]).getDataBlockNum());
       assertEquals(testECPolicy.getNumParityUnits(),
           ((BlockInfoStriped) blks[0]).getParityBlockNum());
       byte[] content = DFSTestUtil.readFileAsBytes(fs, file_10_4);
@@ -534,16 +557,14 @@ public class TestFSImage {
       // check the information of file_3_2
       inode = fsn.dir.getINode(file_3_2.toString()).asFile();
       assertTrue(inode.isStriped());
-      assertEquals(SystemErasureCodingPolicies.getByID(
-          SystemErasureCodingPolicies.RS_3_2_POLICY_ID).getId(),
+      assertEquals(
+          SystemErasureCodingPolicies.getByID(SystemErasureCodingPolicies.RS_3_2_POLICY_ID).getId(),
           inode.getErasureCodingPolicyID());
       blks = inode.getBlocks();
       assertEquals(1, blks.length);
       assertTrue(blks[0].isStriped());
-      assertEquals(ec32Policy.getId(),
-          fs.getErasureCodingPolicy(file_3_2).getId());
-      assertEquals(ec32Policy.getNumDataUnits(),
-          ((BlockInfoStriped) blks[0]).getDataBlockNum());
+      assertEquals(ec32Policy.getId(), fs.getErasureCodingPolicy(file_3_2).getId());
+      assertEquals(ec32Policy.getNumDataUnits(), ((BlockInfoStriped) blks[0]).getDataBlockNum());
       assertEquals(ec32Policy.getNumParityUnits(),
           ((BlockInfoStriped) blks[0]).getParityBlockNum());
       content = DFSTestUtil.readFileAsBytes(fs, file_3_2);
@@ -781,9 +802,9 @@ public class TestFSImage {
           .of(SyncFlag.UPDATE_LENGTH));
 
       // checkpoint
-      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      fs.setSafeMode(SafeModeAction.ENTER);
       fs.saveNamespace();
-      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+      fs.setSafeMode(SafeModeAction.LEAVE);
 
       cluster.restartNameNode();
       cluster.waitActive();
@@ -795,14 +816,14 @@ public class TestFSImage {
       assertTrue(fs.exists(replicaFile2));
 
       // check directories
-      assertEquals("Directory should have default EC policy.",
-          defaultEcPolicy, fs.getErasureCodingPolicy(ecDir));
-      assertEquals("Directory should hide replication EC policy.",
-          null, fs.getErasureCodingPolicy(replicaDir));
+      assertEquals(defaultEcPolicy, fs.getErasureCodingPolicy(ecDir),
+          "Directory should have default EC policy.");
+      assertEquals(null, fs.getErasureCodingPolicy(replicaDir),
+          "Directory should hide replication EC policy.");
 
       // check file1
-      assertEquals("File should not have EC policy.", null,
-          fs.getErasureCodingPolicy(replicaFile1));
+      assertEquals(null, fs.getErasureCodingPolicy(replicaFile1),
+          "File should not have EC policy.");
       // check internals of file2
       INodeFile file2Node =
           fsn.dir.getINode4Write(replicaFile2.toString()).asFile();
@@ -811,13 +832,12 @@ public class TestFSImage {
       BlockInfo[] blks = file2Node.getBlocks();
       assertEquals(1, blks.length);
       assertEquals(BlockUCState.UNDER_CONSTRUCTION, blks[0].getBlockUCState());
-      assertEquals("File should return expected replication factor.",
-          2, blks[0].getReplication());
-      assertEquals("File should not have EC policy.", null,
-          fs.getErasureCodingPolicy(replicaFile2));
+      assertEquals(2, blks[0].getReplication(), "File should return expected replication factor.");
+      assertEquals(null, fs.getErasureCodingPolicy(replicaFile2),
+          "File should not have EC policy.");
       // check lease manager
       Lease lease = fsn.leaseManager.getLease(file2Node);
-      Assert.assertNotNull(lease);
+      assertNotNull(lease);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -840,16 +860,16 @@ public class TestFSImage {
       DFSTestUtil.enableAllECPolicies(fs);
 
       // Save namespace and restart NameNode
-      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      fs.setSafeMode(SafeModeAction.ENTER);
       fs.saveNamespace();
-      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+      fs.setSafeMode(SafeModeAction.LEAVE);
 
       cluster.restartNameNodes();
       cluster.waitActive();
 
-      assertEquals("Erasure coding policy number should match",
-          SystemErasureCodingPolicies.getPolicies().size(),
-          ErasureCodingPolicyManager.getInstance().getPolicies().length);
+      assertEquals(SystemErasureCodingPolicies.getPolicies().size(),
+          ErasureCodingPolicyManager.getInstance().getPolicies().length,
+          "Erasure coding policy number should match");
 
       // Add new erasure coding policy
       ECSchema newSchema = new ECSchema("rs", 5, 4);
@@ -863,35 +883,36 @@ public class TestFSImage {
       newPolicy = ret[0].getPolicy();
 
       // Save namespace and restart NameNode
-      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      fs.setSafeMode(SafeModeAction.ENTER);
       fs.saveNamespace();
-      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+      fs.setSafeMode(SafeModeAction.LEAVE);
 
       cluster.restartNameNodes();
       cluster.waitActive();
 
-      assertEquals("Erasure coding policy number should match",
-          SystemErasureCodingPolicies.getPolicies().size() + 1,
-          ErasureCodingPolicyManager.getInstance().getPolicies().length);
+      assertEquals(SystemErasureCodingPolicies.getPolicies().size() + 1,
+          ErasureCodingPolicyManager.getInstance().getPolicies().length,
+          "Erasure coding policy number should match");
       ErasureCodingPolicy ecPolicy =
           ErasureCodingPolicyManager.getInstance().getByID(newPolicy.getId());
-      assertEquals("Newly added erasure coding policy is not found",
-          newPolicy, ecPolicy);
-      assertEquals(
-          "Newly added erasure coding policy should be of disabled state",
-          ErasureCodingPolicyState.DISABLED,
-          DFSTestUtil.getECPolicyState(ecPolicy));
+      assertEquals(newPolicy, ecPolicy, "Newly added erasure coding policy is not found");
+      assertEquals(ErasureCodingPolicyState.DISABLED, DFSTestUtil.getECPolicyState(ecPolicy),
+          "Newly added erasure coding policy should be of disabled state");
 
       // Test enable/disable/remove user customized erasure coding policy
-      testChangeErasureCodingPolicyState(cluster, blockSize, newPolicy);
-      // Test enable/disable built-in erasure coding policy
+      testChangeErasureCodingPolicyState(cluster, blockSize, newPolicy, false);
+      // Test enable/disable default built-in erasure coding policy
       testChangeErasureCodingPolicyState(cluster, blockSize,
-          SystemErasureCodingPolicies.getByID((byte) 1));
+          SystemErasureCodingPolicies.getByID((byte) 1), true);
+      // Test enable/disable non-default built-in erasure coding policy
+      testChangeErasureCodingPolicyState(cluster, blockSize,
+          SystemErasureCodingPolicies.getByID((byte) 2), false);
     }
   }
 
   private void testChangeErasureCodingPolicyState(MiniDFSCluster cluster,
-      int blockSize, ErasureCodingPolicy targetPolicy) throws IOException {
+      int blockSize, ErasureCodingPolicy targetPolicy, boolean isDefault)
+      throws IOException {
     DistributedFileSystem fs = cluster.getFileSystem();
 
     // 1. Enable an erasure coding policy
@@ -907,38 +928,47 @@ public class TestFSImage {
 
 
     // Save namespace and restart NameNode
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     fs.saveNamespace();
-    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
 
     cluster.restartNameNodes();
     cluster.waitActive();
     ErasureCodingPolicy ecPolicy =
         ErasureCodingPolicyManager.getInstance().getByID(targetPolicy.getId());
-    assertEquals("The erasure coding policy is not found",
-        targetPolicy, ecPolicy);
-    assertEquals("The erasure coding policy should be of enabled state",
-        ErasureCodingPolicyState.ENABLED,
-        DFSTestUtil.getECPolicyState(ecPolicy));
+    assertEquals(targetPolicy, ecPolicy, "The erasure coding policy is not found");
+    assertEquals(ErasureCodingPolicyState.ENABLED, DFSTestUtil.getECPolicyState(ecPolicy),
+        "The erasure coding policy should be of enabled state");
+    assertTrue(isPolicyEnabledInFsImage(targetPolicy),
+        "Policy should be in disabled state in FSImage!");
+
     // Read file regardless of the erasure coding policy state
     DFSTestUtil.readFileAsBytes(fs, filePath);
 
     // 2. Disable an erasure coding policy
     fs.disableErasureCodingPolicy(ecPolicy.getName());
     // Save namespace and restart NameNode
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     fs.saveNamespace();
-    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
 
     cluster.restartNameNodes();
     cluster.waitActive();
     ecPolicy =
         ErasureCodingPolicyManager.getInstance().getByID(targetPolicy.getId());
-    assertEquals("The erasure coding policy is not found",
-        targetPolicy, ecPolicy);
-    assertEquals("The erasure coding policy should be of disabled state",
-        ErasureCodingPolicyState.DISABLED,
-        DFSTestUtil.getECPolicyState(ecPolicy));
+    assertEquals(targetPolicy, ecPolicy, "The erasure coding policy is not found");
+    ErasureCodingPolicyState ecPolicyState =
+        DFSTestUtil.getECPolicyState(ecPolicy);
+    if (isDefault) {
+      assertEquals(ErasureCodingPolicyState.ENABLED, ecPolicyState,
+          "The erasure coding policy should be of " + "enabled state");
+    } else {
+      assertEquals(ErasureCodingPolicyState.DISABLED, ecPolicyState,
+          "The erasure coding policy should be of " + "disabled state");
+    }
+    assertFalse(isPolicyEnabledInFsImage(targetPolicy),
+        "Policy should be in disabled state in FSImage!");
+
     // Read file regardless of the erasure coding policy state
     DFSTestUtil.readFileAsBytes(fs, filePath);
 
@@ -947,29 +977,250 @@ public class TestFSImage {
       fs.removeErasureCodingPolicy(ecPolicy.getName());
     } catch (RemoteException e) {
       // built-in policy cannot been removed
-      assertTrue("Built-in policy cannot be removed",
-          ecPolicy.isSystemPolicy());
+      assertTrue(ecPolicy.isSystemPolicy(), "Built-in policy cannot be removed");
       assertExceptionContains("System erasure coding policy", e);
       return;
     }
 
     fs.removeErasureCodingPolicy(ecPolicy.getName());
     // Save namespace and restart NameNode
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     fs.saveNamespace();
-    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
 
     cluster.restartNameNodes();
     cluster.waitActive();
     ecPolicy = ErasureCodingPolicyManager.getInstance().getByID(
         targetPolicy.getId());
-    assertEquals("The erasure coding policy saved into and loaded from " +
-        "fsImage is bad", targetPolicy, ecPolicy);
-    assertEquals("The erasure coding policy should be of removed state",
-        ErasureCodingPolicyState.REMOVED,
-        DFSTestUtil.getECPolicyState(ecPolicy));
+    assertEquals(targetPolicy, ecPolicy,
+        "The erasure coding policy saved into and loaded from " + "fsImage is bad");
+    assertEquals(ErasureCodingPolicyState.REMOVED, DFSTestUtil.getECPolicyState(ecPolicy),
+        "The erasure coding policy should be of removed state");
     // Read file regardless of the erasure coding policy state
     DFSTestUtil.readFileAsBytes(fs, filePath);
     fs.delete(dirPath, true);
+  }
+
+  private boolean isPolicyEnabledInFsImage(ErasureCodingPolicy testPolicy) {
+    ErasureCodingPolicyInfo[] persistedPolicies =
+        ErasureCodingPolicyManager.getInstance().getPersistedPolicies();
+    for (ErasureCodingPolicyInfo p : persistedPolicies) {
+      if(p.getPolicy().getName().equals(testPolicy.getName())) {
+        return p.isEnabled();
+      }
+    }
+    throw new AssertionError("Policy is not found!");
+  }
+
+  private ArrayList<Section> getSubSectionsOfName(ArrayList<Section> sections,
+      FSImageFormatProtobuf.SectionName name) {
+    ArrayList<Section> subSec = new ArrayList<>();
+    for (Section s : sections) {
+      if (s.getName().equals(name.toString())) {
+        subSec.add(s);
+      }
+    }
+    return subSec;
+  }
+
+  private MiniDFSCluster createAndLoadParallelFSImage(Configuration conf)
+    throws IOException {
+    conf.set(DFSConfigKeys.DFS_IMAGE_PARALLEL_LOAD_KEY, "true");
+    conf.set(DFSConfigKeys.DFS_IMAGE_PARALLEL_INODE_THRESHOLD_KEY, "1");
+    conf.set(DFSConfigKeys.DFS_IMAGE_PARALLEL_TARGET_SECTIONS_KEY, "4");
+    conf.set(DFSConfigKeys.DFS_IMAGE_PARALLEL_THREADS_KEY, "4");
+
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+    cluster.waitActive();
+    DistributedFileSystem fs = cluster.getFileSystem();
+
+    // Create 10 directories, each containing 5 files
+    String baseDir = "/abc/def";
+    for (int i=0; i<10; i++) {
+      Path dir = new Path(baseDir+"/"+i);
+      for (int j=0; j<5; j++) {
+        Path f = new Path(dir, Integer.toString(j));
+        FSDataOutputStream os = fs.create(f);
+        os.write(1);
+        os.close();
+      }
+    }
+
+    // checkpoint
+    fs.setSafeMode(SafeModeAction.ENTER);
+    fs.saveNamespace();
+    fs.setSafeMode(SafeModeAction.LEAVE);
+
+    cluster.restartNameNode();
+    cluster.waitActive();
+    fs = cluster.getFileSystem();
+
+    // Ensure all the files created above exist, proving they were loaded
+    // correctly
+    for (int i=0; i<10; i++) {
+      Path dir = new Path(baseDir+"/"+i);
+      assertTrue(fs.getFileStatus(dir).isDirectory());
+      for (int j=0; j<5; j++) {
+        Path f = new Path(dir, Integer.toString(j));
+        assertTrue(fs.exists(f));
+      }
+    }
+    return cluster;
+  }
+
+  @Test
+  public void testParallelSaveAndLoad() throws IOException {
+    Configuration conf = new Configuration();
+
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = createAndLoadParallelFSImage(conf);
+
+      // Obtain the image summary section to check the sub-sections
+      // are being correctly created when the image is saved.
+      FsImageProto.FileSummary summary = FSImageTestUtil.
+          getLatestImageSummary(cluster);
+      ArrayList<Section> sections = Lists.newArrayList(
+          summary.getSectionsList());
+
+      ArrayList<Section> inodeSubSections =
+          getSubSectionsOfName(sections, SectionName.INODE_SUB);
+      ArrayList<Section> dirSubSections =
+          getSubSectionsOfName(sections, SectionName.INODE_DIR_SUB);
+      Section inodeSection =
+          getSubSectionsOfName(sections, SectionName.INODE).get(0);
+      Section dirSection = getSubSectionsOfName(sections,
+              SectionName.INODE_DIR).get(0);
+
+      // Expect 4 sub-sections for inodes and directories as target Sections
+      // is 4
+      assertEquals(4, inodeSubSections.size());
+      assertEquals(4, dirSubSections.size());
+
+      // Expect the sub-section offset and lengths do not overlap and cover a
+      // continuous range of the file. They should also line up with the parent
+      ensureSubSectionsAlignWithParent(inodeSubSections, inodeSection);
+      ensureSubSectionsAlignWithParent(dirSubSections, dirSection);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  @Test
+  public void testParallelSaveAndLoadWithCompression()
+      throws IOException {
+    Configuration conf = new Configuration();
+    conf.setBoolean(DFSConfigKeys.DFS_IMAGE_COMPRESS_KEY, true);
+    conf.set(DFSConfigKeys.DFS_IMAGE_COMPRESSION_CODEC_KEY,
+        "org.apache.hadoop.io.compress.GzipCodec");
+
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = createAndLoadParallelFSImage(conf);
+
+      // Obtain the image summary section to check the sub-sections
+      // are being correctly created when the image is saved.
+      FsImageProto.FileSummary summary = FSImageTestUtil.
+          getLatestImageSummary(cluster);
+      ArrayList<Section> sections = Lists.newArrayList(
+          summary.getSectionsList());
+      Section inodeSection =
+              getSubSectionsOfName(sections, SectionName.INODE).get(0);
+      Section dirSection = getSubSectionsOfName(sections,
+              SectionName.INODE_DIR).get(0);
+
+      ArrayList<Section> inodeSubSections =
+          getSubSectionsOfName(sections, SectionName.INODE_SUB);
+      ArrayList<Section> dirSubSections =
+          getSubSectionsOfName(sections, SectionName.INODE_DIR_SUB);
+      // Compression and parallel can be enabled at the same time.
+      assertEquals(4, inodeSubSections.size());
+      assertEquals(4, dirSubSections.size());
+
+      ensureSubSectionsAlignWithParent(inodeSubSections, inodeSection);
+      ensureSubSectionsAlignWithParent(dirSubSections, dirSection);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  private void ensureSubSectionsAlignWithParent(ArrayList<Section> subSec,
+      Section parent) {
+    // For each sub-section, check its offset + length == the next section
+    // offset
+    for (int i=0; i<subSec.size()-1; i++) {
+      Section s = subSec.get(i);
+      long endOffset = s.getOffset() + s.getLength();
+      assertEquals(subSec.get(i+1).getOffset(), endOffset);
+    }
+    // The last sub-section should align with the parent section
+    Section lastSubSection = subSec.get(subSec.size()-1);
+    assertEquals(parent.getLength()+parent.getOffset(),
+        lastSubSection.getLength() + lastSubSection.getOffset());
+    // The first sub-section and parent section should have the same offset
+    assertEquals(parent.getOffset(), subSec.get(0).getOffset());
+  }
+
+  @Test
+  public void testUpdateBlocksMapAndNameCacheAsync() throws IOException {
+    Configuration conf = new Configuration();
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+    cluster.waitActive();
+    DistributedFileSystem fs = cluster.getFileSystem();
+    FSDirectory fsdir = cluster.getNameNode().namesystem.getFSDirectory();
+    File workingDir = GenericTestUtils.getTestDir();
+
+    File preRestartTree = new File(workingDir, "preRestartTree");
+    File postRestartTree = new File(workingDir, "postRestartTree");
+
+    Path baseDir = new Path("/user/foo");
+    fs.mkdirs(baseDir);
+    fs.allowSnapshot(baseDir);
+    for (int i = 0; i < 5; i++) {
+      Path dir = new Path(baseDir, Integer.toString(i));
+      fs.mkdirs(dir);
+      for (int j = 0; j < 5; j++) {
+        Path file = new Path(dir, Integer.toString(j));
+        FSDataOutputStream os = fs.create(file);
+        os.write((byte) j);
+        os.close();
+      }
+      fs.createSnapshot(baseDir, "snap_"+i);
+      fs.rename(new Path(dir, "0"), new Path(dir, "renamed"));
+    }
+    SnapshotTestHelper.dumpTree2File(fsdir, preRestartTree);
+
+    // checkpoint
+    fs.setSafeMode(SafeModeAction.ENTER);
+    fs.saveNamespace();
+    fs.setSafeMode(SafeModeAction.LEAVE);
+
+    cluster.restartNameNode();
+    cluster.waitActive();
+    fs = cluster.getFileSystem();
+    fsdir = cluster.getNameNode().namesystem.getFSDirectory();
+
+    // Ensure all the files created above exist, and blocks is correct.
+    for (int i = 0; i < 5; i++) {
+      Path dir = new Path(baseDir, Integer.toString(i));
+      assertTrue(fs.getFileStatus(dir).isDirectory());
+      for (int j = 0; j < 5; j++) {
+        Path file = new Path(dir, Integer.toString(j));
+        if (j == 0) {
+          file = new Path(dir, "renamed");
+        }
+        FSDataInputStream in = fs.open(file);
+        int n = in.readByte();
+        assertEquals(j, n);
+        in.close();
+      }
+    }
+    SnapshotTestHelper.dumpTree2File(fsdir, postRestartTree);
+    SnapshotTestHelper.compareDumpedTreeInFile(
+        preRestartTree, postRestartTree, true);
   }
 }

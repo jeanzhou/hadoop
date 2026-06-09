@@ -24,11 +24,19 @@ import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 
 import static org.apache.hadoop.test.MetricsAsserts.*;
 
-import org.junit.Test;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TestMRAppMetrics {
+
+  @AfterEach
+  public void tearDown() {
+    DefaultMetricsSystem.shutdown();
+  }
 
   @Test public void testNames() {
     Job job = mock(Job.class);

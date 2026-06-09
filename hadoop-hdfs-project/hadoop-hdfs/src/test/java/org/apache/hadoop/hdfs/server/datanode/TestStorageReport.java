@@ -20,8 +20,8 @@ package org.apache.hadoop.hdfs.server.datanode;
 import java.io.IOException;
 
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
@@ -34,22 +34,21 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
 import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
-import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertThat;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.anyLong;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestStorageReport {
-  public static final Log LOG = LogFactory.getLog(TestStorageReport.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestStorageReport.class);
 
   private static final short REPL_FACTOR = 1;
   private static final StorageType storageType = StorageType.SSD; // pick non-default.
@@ -59,7 +58,7 @@ public class TestStorageReport {
   private DistributedFileSystem fs;
   static String bpid;
 
-  @Before
+  @BeforeEach
   public void startUpCluster() throws IOException {
     conf = new HdfsConfiguration();
     cluster = new MiniDFSCluster.Builder(conf)
@@ -70,7 +69,7 @@ public class TestStorageReport {
     bpid = cluster.getNamesystem().getBlockPoolId();
   }
 
-  @After
+  @AfterEach
   public void shutDownCluster() throws IOException {
     if (cluster != null) {
       fs.close();
@@ -108,15 +107,15 @@ public class TestStorageReport {
         any(DatanodeRegistration.class),
         captor.capture(),
         anyLong(), anyLong(), anyInt(), anyInt(), anyInt(),
-        Mockito.any(VolumeFailureSummary.class), Mockito.anyBoolean(),
+        any(), Mockito.anyBoolean(),
         Mockito.any(SlowPeerReports.class),
         Mockito.any(SlowDiskReports.class));
 
     StorageReport[] reports = captor.getValue();
 
     for (StorageReport report: reports) {
-      assertThat(report.getStorage().getStorageType(), is(storageType));
-      assertThat(report.getStorage().getState(), is(DatanodeStorage.State.NORMAL));
+      assertThat(report.getStorage().getStorageType()).isEqualTo(storageType);
+      assertThat(report.getStorage().getState()).isEqualTo(DatanodeStorage.State.NORMAL);
     }
   }
 }

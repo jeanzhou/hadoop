@@ -26,8 +26,8 @@ import java.util.StringTokenizer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.mapred.TaskStatus;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskType;
@@ -69,7 +69,7 @@ public class JobBuilder {
   private static final long BYTES_IN_MEG =
       StringUtils.TraditionalBinaryPrefix.string2long("1m");
 
-  static final private Log LOG = LogFactory.getLog(JobBuilder.class);
+  static final private Logger LOG = LoggerFactory.getLogger(JobBuilder.class);
   
   private String jobID;
 
@@ -460,7 +460,7 @@ public class JobBuilder {
     }
     task.setFinishTime(event.getFinishTime());
     task.setTaskStatus(getPre21Value(event.getTaskStatus()));
-    task.incorporateCounters(((TaskFinished) event.getDatum()).counters);
+    task.incorporateCounters(((TaskFinished) event.getDatum()).getCounters());
   }
 
   private void processTaskFailedEvent(TaskFailedEvent event) {
@@ -472,7 +472,7 @@ public class JobBuilder {
     task.setFinishTime(event.getFinishTime());
     task.setTaskStatus(getPre21Value(event.getTaskStatus()));
     TaskFailed t = (TaskFailed)(event.getDatum());
-    task.putDiagnosticInfo(t.error.toString());
+    task.putDiagnosticInfo(t.getError().toString());
     // killed task wouldn't have failed attempt.
     if (t.getFailedDueToAttempt() != null) {
       task.putFailedDueToAttemptId(t.getFailedDueToAttempt().toString());
@@ -542,7 +542,7 @@ public class JobBuilder {
     }
     attempt.setFinishTime(event.getFinishTime());
     attempt
-        .incorporateCounters(((TaskAttemptFinished) event.getDatum()).counters);
+        .incorporateCounters(((TaskAttemptFinished) event.getDatum()).getCounters());
   }
 
   private void processReduceAttemptFinishedEvent(
@@ -568,7 +568,7 @@ public class JobBuilder {
     attempt.setShuffleFinished(event.getShuffleFinishTime());
     attempt.setSortFinished(event.getSortFinishTime());
     attempt
-        .incorporateCounters(((ReduceAttemptFinished) event.getDatum()).counters);
+        .incorporateCounters(((ReduceAttemptFinished) event.getDatum()).getCounters());
     attempt.arraySetClockSplits(event.getClockSplits());
     attempt.arraySetCpuUsages(event.getCpuUsages());
     attempt.arraySetVMemKbytes(event.getVMemKbytes());
@@ -596,7 +596,7 @@ public class JobBuilder {
     // is redundant, but making this will add future-proofing.
     attempt.setFinishTime(event.getFinishTime());
     attempt
-      .incorporateCounters(((MapAttemptFinished) event.getDatum()).counters);
+      .incorporateCounters(((MapAttemptFinished) event.getDatum()).getCounters());
     attempt.arraySetClockSplits(event.getClockSplits());
     attempt.arraySetCpuUsages(event.getCpuUsages());
     attempt.arraySetVMemKbytes(event.getVMemKbytes());
@@ -661,11 +661,11 @@ public class JobBuilder {
 
     JobFinished job = (JobFinished)event.getDatum();
     Map<String, Long> countersMap =
-        JobHistoryUtils.extractCounters(job.totalCounters);
+        JobHistoryUtils.extractCounters(job.getTotalCounters());
     result.putTotalCounters(countersMap);
-    countersMap = JobHistoryUtils.extractCounters(job.mapCounters);
+    countersMap = JobHistoryUtils.extractCounters(job.getMapCounters());
     result.putMapCounters(countersMap);
-    countersMap = JobHistoryUtils.extractCounters(job.reduceCounters);
+    countersMap = JobHistoryUtils.extractCounters(job.getReduceCounters());
     result.putReduceCounters(countersMap);
   }
 

@@ -49,7 +49,7 @@ public final class Utils {
    *          output stream
    * @param n
    *          The integer to be encoded
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    * @see Utils#writeVLong(DataOutput, long)
    */
   public static void writeVInt(DataOutput out, int n) throws IOException {
@@ -62,34 +62,40 @@ public final class Utils {
    * <li>if n in [-32, 127): encode in one byte with the actual value.
    * Otherwise,
    * <li>if n in [-20*2^8, 20*2^8): encode in two bytes: byte[0] = n/256 - 52;
-   * byte[1]=n&0xff. Otherwise,
+   * byte[1]=n&amp;0xff. Otherwise,
    * <li>if n IN [-16*2^16, 16*2^16): encode in three bytes: byte[0]=n/2^16 -
-   * 88; byte[1]=(n>>8)&0xff; byte[2]=n&0xff. Otherwise,
+   * 88; byte[1]=(n&gt;&gt;8)&amp;0xff; byte[2]=n&amp;0xff. Otherwise,
    * <li>if n in [-8*2^24, 8*2^24): encode in four bytes: byte[0]=n/2^24 - 112;
-   * byte[1] = (n>>16)&0xff; byte[2] = (n>>8)&0xff; byte[3]=n&0xff. Otherwise:
+   * byte[1] = (n&gt;&gt;16)&amp;0xff; byte[2] = (n&gt;&gt;8)&amp;0xff;
+   * byte[3]=n&amp;0xff.
+   * Otherwise:
    * <li>if n in [-2^31, 2^31): encode in five bytes: byte[0]=-125; byte[1] =
-   * (n>>24)&0xff; byte[2]=(n>>16)&0xff; byte[3]=(n>>8)&0xff; byte[4]=n&0xff;
+   * (n&gt;&gt;24)&amp;0xff; byte[2]=(n&gt;&gt;16)&amp;0xff;
+   * byte[3]=(n&gt;&gt;8)&amp;0xff; byte[4]=n&amp;0xff;
    * <li>if n in [-2^39, 2^39): encode in six bytes: byte[0]=-124; byte[1] =
-   * (n>>32)&0xff; byte[2]=(n>>24)&0xff; byte[3]=(n>>16)&0xff;
-   * byte[4]=(n>>8)&0xff; byte[5]=n&0xff
+   * (n&gt;&gt;32)&amp;0xff; byte[2]=(n&gt;&gt;24)&amp;0xff;
+   * byte[3]=(n&gt;&gt;16)&amp;0xff; byte[4]=(n&gt;&gt;8)&amp;0xff;
+   * byte[5]=n&amp;0xff
    * <li>if n in [-2^47, 2^47): encode in seven bytes: byte[0]=-123; byte[1] =
-   * (n>>40)&0xff; byte[2]=(n>>32)&0xff; byte[3]=(n>>24)&0xff;
-   * byte[4]=(n>>16)&0xff; byte[5]=(n>>8)&0xff; byte[6]=n&0xff;
+   * (n&gt;&gt;40)&amp;0xff; byte[2]=(n&gt;&gt;32)&amp;0xff;
+   * byte[3]=(n&gt;&gt;24)&amp;0xff; byte[4]=(n&gt;&gt;16)&amp;0xff;
+   * byte[5]=(n&gt;&gt;8)&amp;0xff; byte[6]=n&amp;0xff;
    * <li>if n in [-2^55, 2^55): encode in eight bytes: byte[0]=-122; byte[1] =
-   * (n>>48)&0xff; byte[2] = (n>>40)&0xff; byte[3]=(n>>32)&0xff;
-   * byte[4]=(n>>24)&0xff; byte[5]=(n>>16)&0xff; byte[6]=(n>>8)&0xff;
-   * byte[7]=n&0xff;
+   * (n&gt;&gt;48)&amp;0xff; byte[2] = (n&gt;&gt;40)&amp;0xff;
+   * byte[3]=(n&gt;&gt;32)&amp;0xff; byte[4]=(n&gt;&gt;24)&amp;0xff; byte[5]=
+   * (n&gt;&gt;16)&amp;0xff; byte[6]=(n&gt;&gt;8)&amp;0xff; byte[7]=n&amp;0xff;
    * <li>if n in [-2^63, 2^63): encode in nine bytes: byte[0]=-121; byte[1] =
-   * (n>>54)&0xff; byte[2] = (n>>48)&0xff; byte[3] = (n>>40)&0xff;
-   * byte[4]=(n>>32)&0xff; byte[5]=(n>>24)&0xff; byte[6]=(n>>16)&0xff;
-   * byte[7]=(n>>8)&0xff; byte[8]=n&0xff;
+   * (n&gt;&gt;54)&amp;0xff; byte[2] = (n&gt;&gt;48)&amp;0xff;
+   * byte[3] = (n&gt;&gt;40)&amp;0xff; byte[4]=(n&gt;&gt;32)&amp;0xff;
+   * byte[5]=(n&gt;&gt;24)&amp;0xff; byte[6]=(n&gt;&gt;16)&amp;0xff; byte[7]=
+   * (n&gt;&gt;8)&amp;0xff; byte[8]=n&amp;0xff;
    * </ul>
    * 
    * @param out
    *          output stream
    * @param n
    *          the integer number
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   @SuppressWarnings("fallthrough")
   public static void writeVLong(DataOutput out, long n) throws IOException {
@@ -164,7 +170,7 @@ public final class Utils {
    * @param in
    *          input stream
    * @return the decoded integer
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    * 
    * @see Utils#readVLong(DataInput)
    */
@@ -181,19 +187,19 @@ public final class Utils {
    * Decoding the variable-length integer. Suppose the value of the first byte
    * is FB, and the following bytes are NB[*].
    * <ul>
-   * <li>if (FB >= -32), return (long)FB;
-   * <li>if (FB in [-72, -33]), return (FB+52)<<8 + NB[0]&0xff;
-   * <li>if (FB in [-104, -73]), return (FB+88)<<16 + (NB[0]&0xff)<<8 +
-   * NB[1]&0xff;
-   * <li>if (FB in [-120, -105]), return (FB+112)<<24 + (NB[0]&0xff)<<16 +
-   * (NB[1]&0xff)<<8 + NB[2]&0xff;
+   * <li>if (FB &gt;= -32), return (long)FB;
+   * <li>if (FB in [-72, -33]), return (FB+52)&lt;&lt;8 + NB[0]&amp;0xff;
+   * <li>if (FB in [-104, -73]), return (FB+88)&lt;&lt;16 +
+   * (NB[0]&amp;0xff)&lt;&lt;8 + NB[1]&amp;0xff;
+   * <li>if (FB in [-120, -105]), return (FB+112)&lt;&lt;24 + (NB[0]&amp;0xff)
+   * &lt;&lt;16 + (NB[1]&amp;0xff)&lt;&lt;8 + NB[2]&amp;0xff;
    * <li>if (FB in [-128, -121]), return interpret NB[FB+129] as a signed
    * big-endian integer.
-   * 
+   * </ul>
    * @param in
    *          input stream
    * @return the decoded long integer.
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
 
   public static long readVLong(DataInput in) throws IOException {
@@ -243,9 +249,9 @@ public final class Utils {
   /**
    * Write a String as a VInt n, followed by n Bytes as in Text format.
    * 
-   * @param out
-   * @param s
-   * @throws IOException
+   * @param out out.
+   * @param s s.
+   * @throws IOException raised on errors performing I/O.
    */
   public static void writeString(DataOutput out, String s) throws IOException {
     if (s != null) {
@@ -265,7 +271,7 @@ public final class Utils {
    * @param in
    *          The input stream.
    * @return The string
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public static String readString(DataInput in) throws IOException {
     int length = readVInt(in);
@@ -293,7 +299,7 @@ public final class Utils {
      * 
      * @param in
      *          input stream
-     * @throws IOException
+     * @throws IOException raised on errors performing I/O.
      */
     public Version(DataInput in) throws IOException {
       major = in.readShort();
@@ -320,7 +326,7 @@ public final class Utils {
      * 
      * @param out
      *          The DataOutput object.
-     * @throws IOException
+     * @throws IOException raised on errors performing I/O.
      */
     public void write(DataOutput out) throws IOException {
       out.writeShort(major);

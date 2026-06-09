@@ -26,8 +26,8 @@ import org.apache.hadoop.hdfs.inotify.EventBatchList;
 import org.apache.hadoop.hdfs.inotify.MissingEventsException;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.util.Time;
-import org.apache.htrace.core.TraceScope;
-import org.apache.htrace.core.Tracer;
+import org.apache.hadoop.tracing.TraceScope;
+import org.apache.hadoop.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -139,7 +139,7 @@ public class DFSInotifyEventInputStream {
    * are falling behind (i.e. transaction are being generated faster than the
    * client is reading them). If a client falls too far behind events may be
    * deleted before the client can read them.
-   * <p/>
+   * <p>
    * A return value of -1 indicates that an estimate could not be produced, and
    * should be ignored. The value returned by this method is really only useful
    * when compared to previous or subsequent returned values.

@@ -17,16 +17,13 @@
  */
 package org.apache.hadoop.fs.shell.find;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
-import org.junit.Rule;
-import org.junit.rules.Timeout;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+@Timeout(10)
 public class TestResult {
-
-  @Rule
-  public Timeout globalTimeout = new Timeout(10000);
 
   // test the PASS value
   @Test

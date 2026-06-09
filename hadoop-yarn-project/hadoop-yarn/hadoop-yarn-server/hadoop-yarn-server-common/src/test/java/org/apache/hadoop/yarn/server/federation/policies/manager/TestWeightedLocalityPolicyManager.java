@@ -19,15 +19,16 @@ package org.apache.hadoop.yarn.server.federation.policies.manager;
 
 import org.apache.hadoop.yarn.server.federation.policies.amrmproxy.LocalityMulticastAMRMProxyPolicy;
 import org.apache.hadoop.yarn.server.federation.policies.dao.WeightedPolicyInfo;
-import org.apache.hadoop.yarn.server.federation.policies.router.WeightedRandomRouterPolicy;
+import org.apache.hadoop.yarn.server.federation.policies.router.LocalityRouterPolicy;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterId;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterIdInfo;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Simple test of {@link WeightedLocalityPolicyManager}.
@@ -37,7 +38,7 @@ public class TestWeightedLocalityPolicyManager extends
 
   private WeightedPolicyInfo policyInfo;
 
-  @Before
+  @BeforeEach
   public void setup() {
     // configure a policy
 
@@ -63,7 +64,7 @@ public class TestWeightedLocalityPolicyManager extends
     //set expected params that the base test class will use for tests
     expectedPolicyManager = WeightedLocalityPolicyManager.class;
     expectedAMRMProxyPolicy = LocalityMulticastAMRMProxyPolicy.class;
-    expectedRouterPolicy = WeightedRandomRouterPolicy.class;
+    expectedRouterPolicy = LocalityRouterPolicy.class;
   }
 
   @Test
@@ -73,7 +74,7 @@ public class TestWeightedLocalityPolicyManager extends
                                          expectedRouterPolicy);
 
     //check the policyInfo propagates through ser/der correctly
-    Assert.assertEquals(((WeightedLocalityPolicyManager) wfp)
-                            .getWeightedPolicyInfo(), policyInfo);
+    assertEquals(((WeightedLocalityPolicyManager) wfp)
+        .getWeightedPolicyInfo(), policyInfo);
   }
 }

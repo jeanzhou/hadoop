@@ -18,9 +18,8 @@
 
 package org.apache.hadoop.mapreduce.v2.hs.webapp;
 
-import com.google.inject.Singleton;
-import com.sun.jersey.api.json.JSONConfiguration;
-import com.sun.jersey.api.json.JSONJAXBContext;
+import javax.inject.Singleton;
+import org.glassfish.jersey.jettison.JettisonJaxbContext;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -36,8 +35,8 @@ import org.apache.hadoop.mapreduce.v2.app.webapp.dao.CounterInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobCounterInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobTaskAttemptCounterInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobTaskCounterInfo;
+import org.apache.hadoop.mapreduce.v2.app.webapp.dao.MapTaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.ReduceTaskAttemptInfo;
-import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskAttemptsInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskCounterGroupInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskCounterInfo;
@@ -63,15 +62,14 @@ public class JAXBContextResolver implements ContextResolver<JAXBContext> {
       JobsInfo.class, TaskInfo.class, TasksInfo.class, TaskAttemptsInfo.class,
       ConfInfo.class, CounterInfo.class, JobTaskCounterInfo.class,
       JobTaskAttemptCounterInfo.class, TaskCounterInfo.class,
-      JobCounterInfo.class, ReduceTaskAttemptInfo.class, TaskAttemptInfo.class,
+      JobCounterInfo.class, MapTaskAttemptInfo.class, ReduceTaskAttemptInfo.class,
       TaskAttemptsInfo.class, CounterGroupInfo.class,
       TaskCounterGroupInfo.class, AMAttemptInfo.class, AMAttemptsInfo.class,
       RemoteExceptionData.class };
 
   public JAXBContextResolver() throws Exception {
-    this.types = new HashSet<Class>(Arrays.asList(cTypes));
-    this.context = new JSONJAXBContext(JSONConfiguration.natural()
-        .rootUnwrapping(false).build(), cTypes);
+    this.types = new HashSet<>(Arrays.asList(cTypes));
+    this.context = new JettisonJaxbContext(cTypes);
   }
 
   @Override

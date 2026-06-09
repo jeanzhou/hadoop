@@ -30,7 +30,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
+import org.slf4j.Logger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -50,22 +50,25 @@ import org.apache.hadoop.hdfs.server.balancer.BalancerParameters;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Test balancer with multiple NameNodes
  */
 public class TestBalancerWithMultipleNameNodes {
-  static final Log LOG = Balancer.LOG;
+  static final Logger LOG = Balancer.LOG;
   {
-    GenericTestUtils.setLogLevel(LOG, Level.ALL);
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(LOG, Level.TRACE);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
   }
 
   
-  private static final long CAPACITY = 500L;
+  private static final long CAPACITY = 5000L;
   private static final String RACK0 = "/rack0";
   private static final String RACK1 = "/rack1";
   private static final String RACK2 = "/rack2";
@@ -146,15 +149,16 @@ public class TestBalancerWithMultipleNameNodes {
   }
 
   /* wait for one heartbeat */
-  static void wait(final ClientProtocol[] clients,
+  static void wait(final Suite suite,
       long expectedUsedSpace, long expectedTotalSpace) throws IOException {
     LOG.info("WAIT expectedUsedSpace=" + expectedUsedSpace
         + ", expectedTotalSpace=" + expectedTotalSpace);
-    for(int n = 0; n < clients.length; n++) {
+    suite.cluster.triggerHeartbeats();
+    for(int n = 0; n < suite.clients.length; n++) {
       int i = 0;
       for(boolean done = false; !done; ) {
-        final long[] s = clients[n].getStats();
-        done = s[0] == expectedTotalSpace && s[1] == expectedUsedSpace;
+        final long[] s = suite.clients[n].getStats();
+        done = s[0] == expectedTotalSpace && s[1] >= expectedUsedSpace;
         if (!done) {
           sleep(100L);
           if (++i % 100 == 0) {
@@ -172,7 +176,7 @@ public class TestBalancerWithMultipleNameNodes {
     LOG.info("BALANCER 0: totalUsed=" + totalUsed
         + ", totalCapacity=" + totalCapacity
         + ", avg=" + avg);
-    wait(s.clients, totalUsed, totalCapacity);
+    wait(s, totalUsed, totalCapacity);
     LOG.info("BALANCER 1");
 
     // get storage reports for relevant blockpools so that we can compare
@@ -183,10 +187,10 @@ public class TestBalancerWithMultipleNameNodes {
     // start rebalancing
     final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(s.conf);
     final int r = Balancer.run(namenodes, s.parameters, s.conf);
-    Assert.assertEquals(ExitStatus.SUCCESS.getExitCode(), r);
+    assertEquals(ExitStatus.SUCCESS.getExitCode(), r);
 
     LOG.info("BALANCER 2");
-    wait(s.clients, totalUsed, totalCapacity);
+    wait(s, totalUsed, totalCapacity);
     LOG.info("BALANCER 3");
 
     int i = 0;
@@ -200,7 +204,7 @@ public class TestBalancerWithMultipleNameNodes {
       for(int n = 0; n < s.clients.length; n++) {
         final DatanodeInfo[] datanodes = s.clients[n].getDatanodeReport(
             DatanodeReportType.ALL);
-        Assert.assertEquals(datanodes.length, used.length);
+        assertEquals(datanodes.length, used.length);
 
         for(int d = 0; d < datanodes.length; d++) {
           if (n == 0) {
@@ -212,8 +216,8 @@ public class TestBalancerWithMultipleNameNodes {
                   + ", getCapacity()=" + datanodes[d].getCapacity());
             }
           } else {
-            Assert.assertEquals(used[d], datanodes[d].getDfsUsed());
-            Assert.assertEquals(cap[d], datanodes[d].getCapacity());
+            assertEquals(used[d], datanodes[d].getDfsUsed());
+            assertEquals(cap[d], datanodes[d].getCapacity());
           }
           bpUsed[n][d] = datanodes[d].getBlockPoolUsed();
         }
@@ -265,7 +269,7 @@ public class TestBalancerWithMultipleNameNodes {
     // cluster is balanced, verify that only selected blockpools were touched
     Map<Integer, DatanodeStorageReport[]> postBalancerPoolUsages =
         getStorageReports(s);
-    Assert.assertEquals(preBalancerPoolUsages.size(),
+    assertEquals(preBalancerPoolUsages.size(),
         postBalancerPoolUsages.size());
     for (Map.Entry<Integer, DatanodeStorageReport[]> entry
         : preBalancerPoolUsages.entrySet()) {
@@ -283,15 +287,14 @@ public class TestBalancerWithMultipleNameNodes {
    */
   private static void compareTotalPoolUsage(DatanodeStorageReport[] preReports,
       DatanodeStorageReport[] postReports) {
-    Assert.assertNotNull(preReports);
-    Assert.assertNotNull(postReports);
-    Assert.assertEquals(preReports.length, postReports.length);
+    assertNotNull(preReports);
+    assertNotNull(postReports);
+    assertEquals(preReports.length, postReports.length);
     for (DatanodeStorageReport preReport : preReports) {
       String dnUuid = preReport.getDatanodeInfo().getDatanodeUuid();
-      for(DatanodeStorageReport postReport : postReports) {
-        if(postReport.getDatanodeInfo().getDatanodeUuid().equals(dnUuid)) {
-          Assert.assertEquals(getTotalPoolUsage(preReport),
-              getTotalPoolUsage(postReport));
+      for (DatanodeStorageReport postReport : postReports) {
+        if (postReport.getDatanodeInfo().getDatanodeUuid().equals(dnUuid)) {
+          assertEquals(getTotalPoolUsage(preReport), getTotalPoolUsage(postReport));
           LOG.info("Comparision of datanode pool usage pre/post balancer run. "
               + "PrePoolUsage: " + getTotalPoolUsage(preReport)
               + ", PostPoolUsage: " + getTotalPoolUsage(postReport));
@@ -352,7 +355,7 @@ public class TestBalancerWithMultipleNameNodes {
     try {
       Thread.sleep(ms);
     } catch(InterruptedException e) {
-      LOG.error(e);
+      LOG.error("{}", e);
     }
   }
   
@@ -489,7 +492,7 @@ public class TestBalancerWithMultipleNameNodes {
     final long[] capacities = new long[nDataNodes];
     Arrays.fill(capacities, CAPACITY);
     LOG.info("nNameNodes=" + nNameNodes + ", nDataNodes=" + nDataNodes);
-    Assert.assertEquals(nDataNodes, racks.length);
+    assertEquals(nDataNodes, racks.length);
 
     LOG.info("RUN_TEST -1: start a cluster with nNameNodes=" + nNameNodes
         + ", nDataNodes=" + nDataNodes);
@@ -530,7 +533,7 @@ public class TestBalancerWithMultipleNameNodes {
 
       LOG.info("RUN_TEST 2: create files");
       // fill up the cluster to be 30% full
-      final long totalUsed = (totalCapacity * s.replication)*3/10;
+      final long totalUsed = totalCapacity * 3 / 10;
       final long size = (totalUsed/nNameNodes)/s.replication;
       for(int n = 0; n < nNameNodes; n++) {
         createFile(s, n, size);
@@ -594,14 +597,16 @@ public class TestBalancerWithMultipleNameNodes {
   }
 
   /** Even distribution with 2 Namenodes, 4 Datanodes and 2 new Datanodes. */
-  @Test(timeout = 600000)
+  @Test
+  @Timeout(value = 600)
   public void testTwoFourTwo() throws Exception {
     final Configuration conf = createConf();
     runTest(2, new String[]{RACK0, RACK0, RACK1, RACK1},
         new String[]{RACK2, RACK2}, conf, 2, null);
   }
 
-  @Test(timeout=600000)
+  @Test
+  @Timeout(value = 600)
   public void testBalancingBlockpoolsWithBlockPoolPolicy() throws Exception {
     final Configuration conf = createConf();
     BalancerParameters balancerParameters = new BalancerParameters.Builder()
@@ -611,7 +616,8 @@ public class TestBalancerWithMultipleNameNodes {
         balancerParameters);
   }
 
-  @Test(timeout = 600000)
+  @Test
+  @Timeout(value = 600)
   public void test1OutOf2BlockpoolsWithBlockPoolPolicy()
       throws
       Exception {

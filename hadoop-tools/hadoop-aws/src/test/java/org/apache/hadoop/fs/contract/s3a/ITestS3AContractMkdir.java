@@ -21,24 +21,21 @@ package org.apache.hadoop.fs.contract.s3a;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.contract.AbstractContractMkdirTest;
 import org.apache.hadoop.fs.contract.AbstractFSContract;
+import org.apache.hadoop.test.tags.IntegrationTest;
 
-import static org.apache.hadoop.fs.s3a.S3ATestUtils.maybeEnableS3Guard;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.setPerformanceFlags;
 
 /**
  * Test dir operations on S3A.
  */
+@IntegrationTest
 public class ITestS3AContractMkdir extends AbstractContractMkdirTest {
 
-  /**
-   * Create a configuration, possibly patching in S3Guard options.
-   * @return a configuration
-   */
   @Override
   protected Configuration createConfiguration() {
-    Configuration conf = super.createConfiguration();
-    // patch in S3Guard options
-    maybeEnableS3Guard(conf);
-    return conf;
+    return setPerformanceFlags(
+        super.createConfiguration(),
+        "");
   }
 
   @Override

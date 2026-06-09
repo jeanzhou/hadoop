@@ -17,11 +17,13 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NN_NOT_BECOME_ACTIVE_IN_SAFEMODE;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -30,8 +32,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.ha.ServiceFailedException;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -62,20 +66,26 @@ import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcErrorCodeProto;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.apache.hadoop.test.Whitebox;
+import org.apache.hadoop.util.Lists;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 
-import com.google.common.base.Supplier;
-import com.google.common.collect.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.event.Level;
+
+import java.util.function.Supplier;
 
 /**
  * Tests that exercise safemode in an HA cluster.
  */
+@Tag("slow")
 public class TestHASafeMode {
-  private static final Log LOG = LogFactory.getLog(TestHASafeMode.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestHASafeMode.class);
   private static final int BLOCK_SIZE = 1024;
   private NameNode nn0;
   private NameNode nn1;
@@ -83,16 +93,17 @@ public class TestHASafeMode {
   private MiniDFSCluster cluster;
   
   static {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
-    GenericTestUtils.setLogLevel(FSImage.LOG, Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
+    GenericTestUtils.setLogLevel(FSImage.LOG, Level.TRACE);
   }
   
-  @Before
+  @BeforeEach
   public void setupCluster() throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_SIZE);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
+    conf.setBoolean("dfs.namenode.snapshot.trashroot.enabled", false);
 
     cluster = new MiniDFSCluster.Builder(conf)
       .nnTopology(MiniDFSNNTopology.simpleHATopology())
@@ -108,7 +119,7 @@ public class TestHASafeMode {
     cluster.transitionToActive(0);
   }
   
-  @After
+  @AfterEach
   public void shutdownCluster() {
     if (cluster != null) {
       cluster.shutdown();
@@ -119,7 +130,8 @@ public class TestHASafeMode {
   /**
    * Make sure the client retries when the active NN is in safemode
    */
-  @Test (timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testClientRetrySafeMode() throws Exception {
     final Map<Path, Boolean> results = Collections
         .synchronizedMap(new HashMap<Path, Boolean>());
@@ -133,9 +145,9 @@ public class TestHASafeMode {
         .getBlockManager());
     assertTrue(nn0.getNamesystem().isInStartupSafeMode());
     LOG.info("enter safemode");
-    new Thread() {
+    new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         try {
           boolean mkdir = fs.mkdirs(test);
           LOG.info("mkdir finished, result is " + mkdir);
@@ -150,8 +162,7 @@ public class TestHASafeMode {
     }.start();
     
     // make sure the client's call has actually been handled by the active NN
-    assertFalse("The directory should not be created while NN in safemode",
-        fs.exists(test));
+    assertFalse(fs.exists(test), "The directory should not be created while NN in safemode");
     
     Thread.sleep(1000);
     // let nn0 leave safemode
@@ -196,14 +207,11 @@ public class TestHASafeMode {
 
     FSNamesystem namesystem = nn0.getNamesystem();
     String status = namesystem.getSafemode();
-    assertTrue("Bad safemode status: '" + status + "'", status
-        .startsWith("Safe mode is ON."));
+    assertTrue(status.startsWith("Safe mode is ON."), "Bad safemode status: '" + status + "'");
     NameNodeAdapter.enterSafeMode(nn0, false);
-    assertTrue("Failed to enter into safemode in active", namesystem
-        .isInSafeMode());
+    assertTrue(namesystem.isInSafeMode(), "Failed to enter into safemode in active");
     NameNodeAdapter.enterSafeMode(nn0, false);
-    assertTrue("Failed to enter into safemode in active", namesystem
-        .isInSafeMode());
+    assertTrue(namesystem.isInSafeMode(), "Failed to enter into safemode in active");
   }
 
   /**
@@ -227,14 +235,11 @@ public class TestHASafeMode {
     restartStandby();
     FSNamesystem namesystem = nn1.getNamesystem();
     String status = namesystem.getSafemode();
-    assertTrue("Bad safemode status: '" + status + "'", status
-        .startsWith("Safe mode is ON."));
+    assertTrue(status.startsWith("Safe mode is ON."), "Bad safemode status: '" + status + "'");
     NameNodeAdapter.enterSafeMode(nn1, false);
-    assertTrue("Failed to enter into safemode in standby", namesystem
-        .isInSafeMode());
+    assertTrue(namesystem.isInSafeMode(), "Failed to enter into safemode in standby");
     NameNodeAdapter.enterSafeMode(nn1, false);
-    assertTrue("Failed to enter into safemode in standby", namesystem
-        .isInSafeMode());
+    assertTrue(namesystem.isInSafeMode(), "Failed to enter into safemode in standby");
   }
 
   private void restartActive() throws IOException {
@@ -340,6 +345,8 @@ public class TestHASafeMode {
     // once it starts up
     banner("Removing the blocks without rolling the edit log");
     fs.delete(new Path("/test"), true);
+    BlockManagerTestUtil.waitForMarkedDeleteQueueIsEmpty(
+        cluster.getNamesystem(0).getBlockManager());
     BlockManagerTestUtil.computeAllPendingWork(
         nn0.getNamesystem().getBlockManager());
     cluster.triggerHeartbeats();
@@ -379,6 +386,8 @@ public class TestHASafeMode {
     // ACKed when due to block removals.
     banner("Removing the blocks without rolling the edit log");
     fs.delete(new Path("/test"), true);
+    BlockManagerTestUtil.waitForMarkedDeleteQueueIsEmpty(
+        cluster.getNamesystem(0).getBlockManager());
     BlockManagerTestUtil.computeAllPendingWork(
         nn0.getNamesystem().getBlockManager());
     
@@ -492,21 +501,37 @@ public class TestHASafeMode {
   private static void assertSafeMode(NameNode nn, int safe, int total,
     int numNodes, int nodeThresh) {
     String status = nn.getNamesystem().getSafemode();
-    if (safe == total) {
-      assertTrue("Bad safemode status: '" + status + "'",
-          status.startsWith(
-            "Safe mode is ON. The reported blocks " + safe + " has reached the "
-            + "threshold 0.9990 of total blocks " + total + ". The number of "
-            + "live datanodes " + numNodes + " has reached the minimum number "
-            + nodeThresh + ". In safe mode extension. "
-            + "Safe mode will be turned off automatically"));
+    if (total == 0 && nodeThresh == 0) {
+      assertTrue(status.isEmpty()
+              || status.startsWith("Safe mode is ON. The reported blocks 0 " +
+              "has reached the threshold 0.9990 of total blocks 0. The " +
+              "minimum number of live datanodes is not required. In safe " +
+              "mode extension. Safe mode will be turned off automatically " +
+              "in 0 seconds."),
+          "Bad safemode status: '" + status + "'");
+    } else if (safe == total) {
+      if (nodeThresh == 0) {
+        assertTrue(status.startsWith("Safe mode is ON. The reported blocks " + safe
+            + " has reached the " + "threshold 0.9990 of total blocks "
+            + total + ". The minimum number of live datanodes is not "
+            + "required. In safe mode extension. Safe mode will be turned "
+            + "off automatically"), "Bad safemode status: '" + status + "'");
+      } else {
+        assertTrue(status.startsWith(
+                "Safe mode is ON. The reported blocks " + safe + " has reached "
+                    + "the threshold 0.9990 of total blocks " + total + ". The "
+                    + "number of live datanodes " + numNodes + " has reached "
+                    + "the minimum number " + nodeThresh + ". In safe mode "
+                    + "extension. Safe mode will be turned off automatically"),
+            "Bad safemode status: '" + status + "'");
+      }
     } else {
       int additional = (int) (total * 0.9990) - safe;
-      assertTrue("Bad safemode status: '" + status + "'",
-          status.startsWith(
+      assertTrue(status.startsWith(
               "Safe mode is ON. " +
               "The reported blocks " + safe + " needs additional " +
-              additional + " blocks"));
+              additional + " blocks"),
+          "Bad safemode status: '" + status + "'");
     }
   }
 
@@ -565,12 +590,12 @@ public class TestHASafeMode {
     
     // It will initially have all of the blocks necessary.
     String status = nn1.getNamesystem().getSafemode();
-    assertTrue("Bad safemode status: '" + status + "'",
-      status.startsWith(
+    assertTrue(status.startsWith(
         "Safe mode is ON. The reported blocks 10 has reached the threshold "
-        + "0.9990 of total blocks 10. The number of live datanodes 3 has "
-        + "reached the minimum number 0. In safe mode extension. "
-        + "Safe mode will be turned off automatically"));
+        + "0.9990 of total blocks 10. The minimum number of live datanodes is "
+        + "not required. In safe mode extension. Safe mode will be turned off "
+            + "automatically"),
+        "Bad safemode status: '" + status + "'");
 
     // Delete those blocks while the SBN is in safe mode.
     // Immediately roll the edit log before the actual deletions are sent
@@ -764,7 +789,7 @@ public class TestHASafeMode {
   public void testIsInSafemode() throws Exception {
     // Check for the standby nn without client failover.
     NameNode nn2 = cluster.getNameNode(1);
-    assertTrue("nn2 should be in standby state", nn2.isStandbyState());
+    assertTrue(nn2.isStandbyState(), "nn2 should be in standby state");
 
     InetSocketAddress nameNodeAddress = nn2.getNameNodeAddress();
     Configuration conf = new Configuration();
@@ -777,11 +802,11 @@ public class TestHASafeMode {
       fail("StandBy should throw exception for isInSafeMode");
     } catch (IOException e) {
       if (e instanceof RemoteException) {
-        assertEquals("RPC Error code should indicate app failure.", RpcErrorCodeProto.ERROR_APPLICATION,
-            ((RemoteException) e).getErrorCode());
+        assertEquals(RpcErrorCodeProto.ERROR_APPLICATION, ((RemoteException) e).getErrorCode(),
+            "RPC Error code should indicate app failure.");
         IOException sbExcpetion = ((RemoteException) e).unwrapRemoteException();
-        assertTrue("StandBy nn should not support isInSafeMode",
-            sbExcpetion instanceof StandbyException);
+        assertTrue(sbExcpetion instanceof StandbyException,
+            "StandBy nn should not support isInSafeMode");
       } else {
         throw e;
       }
@@ -796,14 +821,15 @@ public class TestHASafeMode {
     cluster.transitionToActive(1);
     cluster.getNameNodeRpc(1).setSafeMode(SafeModeAction.SAFEMODE_ENTER, false);
     DistributedFileSystem dfsWithFailOver = (DistributedFileSystem) fs;
-    assertTrue("ANN should be in SafeMode", dfsWithFailOver.isInSafeMode());
+    assertTrue(dfsWithFailOver.isInSafeMode(), "ANN should be in SafeMode");
 
     cluster.getNameNodeRpc(1).setSafeMode(SafeModeAction.SAFEMODE_LEAVE, false);
-    assertFalse("ANN should be out of SafeMode", dfsWithFailOver.isInSafeMode());
+    assertFalse(dfsWithFailOver.isInSafeMode(), "ANN should be out of SafeMode");
   }
 
   /** Test NN crash and client crash/stuck immediately after block allocation */
-  @Test(timeout = 100000)
+  @Test
+  @Timeout(value = 100)
   public void testOpenFileWhenNNAndClientCrashAfterAddBlock() throws Exception {
     cluster.getConfiguration(0).set(
         DFSConfigKeys.DFS_NAMENODE_SAFEMODE_THRESHOLD_PCT_KEY, "1.0f");
@@ -824,18 +850,18 @@ public class TestHASafeMode {
           null);
       create.write(testData.getBytes());
       create.hflush();
-      long fileId = ((DFSOutputStream)create.
-          getWrappedStream()).getFileId();
+      String renewLeaseKey = ((DFSOutputStream)create.
+          getWrappedStream()).getUniqKey();
       FileStatus fileStatus = dfs.getFileStatus(filePath);
       DFSClient client = DFSClientAdapter.getClient(dfs);
       // add one dummy block at NN, but not write to DataNode
       ExtendedBlock previousBlock =
-          DFSClientAdapter.getPreviousBlock(client, fileId);
+          DFSClientAdapter.getPreviousBlock(client, renewLeaseKey);
       DFSClientAdapter.getNamenode(client).addBlock(
           pathString,
           client.getClientName(),
           new ExtendedBlock(previousBlock),
-          new DatanodeInfo[0],
+          DatanodeInfo.EMPTY_ARRAY,
           DFSClientAdapter.getFileId((DFSOutputStream) create
               .getWrappedStream()), null, null);
       cluster.restartNameNode(0, true);
@@ -846,13 +872,14 @@ public class TestHASafeMode {
       FSDataInputStream is = dfs.open(filePath);
       is.close();
       dfs.recoverLease(filePath);// initiate recovery
-      assertTrue("Recovery also should be success", dfs.recoverLease(filePath));
+      assertTrue(dfs.recoverLease(filePath), "Recovery also should be success");
     } finally {
       cluster.shutdown();
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testSafeModeExitAfterTransition() throws Exception {
     DFSTestUtil.createFile(fs, new Path("/test"), 5 * BLOCK_SIZE, (short) 3,
         1L);
@@ -885,5 +912,97 @@ public class TestHASafeMode {
     banner(nn1.getNamesystem().getSafemode());
     cluster.transitionToActive(1);
     assertSafeMode(nn1, 3, 3, 3, 0);
+  }
+
+  @Test
+  public void testNameNodeCreateSnapshotTrashRootOnHASetup() throws Exception {
+    DistributedFileSystem dfs = cluster.getFileSystem(0);
+    final Path testDir = new Path("/disallowss/test2/");
+    final Path file0path = new Path(testDir, "file-0");
+    dfs.create(file0path).close();
+    dfs.allowSnapshot(testDir);
+    // .Trash won't be created right now since snapshot trash is disabled
+    final Path trashRoot = new Path(testDir, FileSystem.TRASH_PREFIX);
+    assertFalse(dfs.exists(trashRoot));
+    // Set dfs.namenode.snapshot.trashroot.enabled=true
+    cluster.getNameNode(0).getConf()
+        .setBoolean("dfs.namenode.snapshot.trashroot.enabled", true);
+    cluster.getNameNode(1).getConf()
+        .setBoolean("dfs.namenode.snapshot.trashroot.enabled", true);
+    restartActive();
+    cluster.transitionToActive(1);
+    dfs = cluster.getFileSystem(1);
+    // Make sure .Trash path does not exist yet as on NN1 trash root is not
+    // enabled
+    assertFalse(dfs.exists(trashRoot));
+    cluster.transitionToStandby(1);
+    cluster.transitionToActive(0);
+    dfs = cluster.getFileSystem(0);
+    // Check .Trash existence, should be created now
+    assertTrue(dfs.exists(trashRoot));
+    assertFalse(cluster.getNameNode(0).isInSafeMode());
+    restartStandby();
+    // Ensure Standby namenode is up and running
+    assertTrue(cluster.getNameNode(1).isStandbyState());
+    // Cleanup
+    dfs.delete(trashRoot, true);
+    dfs.disallowSnapshot(testDir);
+    dfs.delete(testDir, true);
+  }
+
+  /**
+   * Test transition to active when namenode in safemode.
+   *
+   * @throws IOException
+   */
+  @Test
+  public void testTransitionToActiveWhenSafeMode() throws Exception {
+    Configuration config = new Configuration();
+    config.setBoolean(DFS_HA_NN_NOT_BECOME_ACTIVE_IN_SAFEMODE, true);
+    try (MiniDFSCluster miniCluster = new MiniDFSCluster.Builder(config,
+        new File(GenericTestUtils.getRandomizedTempPath()))
+        .nnTopology(MiniDFSNNTopology.simpleHATopology())
+        .numDataNodes(1)
+        .build()) {
+      miniCluster.waitActive();
+      miniCluster.transitionToStandby(0);
+      miniCluster.transitionToStandby(1);
+      NameNode namenode0 = miniCluster.getNameNode(0);
+      NameNode namenode1 = miniCluster.getNameNode(1);
+      NameNodeAdapter.enterSafeMode(namenode0, false);
+      NameNodeAdapter.enterSafeMode(namenode1, false);
+      LambdaTestUtils.intercept(ServiceFailedException.class,
+          "NameNode still not leave safemode",
+          () -> miniCluster.transitionToActive(0));
+    }
+  }
+
+  @Test
+  public void testTransitionToObserverWhenSafeMode() throws Exception {
+    Configuration config = new Configuration();
+    config.setBoolean(DFS_HA_NN_NOT_BECOME_ACTIVE_IN_SAFEMODE, true);
+    try (MiniDFSCluster miniCluster = new MiniDFSCluster.Builder(config,
+        new File(GenericTestUtils.getRandomizedTempPath()))
+        .nnTopology(MiniDFSNNTopology.simpleHATopology())
+        .numDataNodes(1)
+        .build()) {
+      miniCluster.waitActive();
+      miniCluster.transitionToStandby(0);
+      miniCluster.transitionToStandby(1);
+      NameNode namenode0 = miniCluster.getNameNode(0);
+      NameNode namenode1 = miniCluster.getNameNode(1);
+      NameNodeAdapter.enterSafeMode(namenode0, false);
+      NameNodeAdapter.enterSafeMode(namenode1, false);
+      LambdaTestUtils.intercept(ServiceFailedException.class,
+          "NameNode still not leave safemode",
+          () -> miniCluster.transitionToObserver(0));
+    }
+  }
+
+  @Test
+  public void testTransitionToStandbyWhenSafeModeWithResourcesLow() throws Exception {
+    NameNodeAdapter.enterSafeMode(nn0, true);
+    cluster.transitionToStandby(0);
+    assertFalse(nn0.isInSafeMode(), "SNN should not enter safe mode when resources low");
   }
 }

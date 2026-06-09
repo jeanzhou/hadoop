@@ -18,19 +18,9 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import com.google.common.collect.Sets;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.ApplicationId;
-import org.apache.hadoop.yarn.api.records.Container;
-import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.NodeId;
-import org.apache.hadoop.yarn.api.records.Priority;
-import org.apache.hadoop.yarn.api.records.Resource;
-import org.apache.hadoop.yarn.api.records.ResourceInformation;
-import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.util.Sets;
+import org.apache.hadoop.yarn.api.records.*;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
@@ -58,19 +48,37 @@ import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 public class TestUtils {
-  private static final Log LOG = LogFactory.getLog(TestUtils.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestUtils.class);
+  private static final String A_PATH = CapacitySchedulerConfiguration.ROOT + ".a";
+  private static final String B_PATH = CapacitySchedulerConfiguration.ROOT + ".b";
+  private static final String C_PATH = CapacitySchedulerConfiguration.ROOT + ".c";
+  private static final String A1_PATH = A_PATH + ".a1";
+  private static final String B1_PATH = B_PATH + ".b1";
+  private static final String B2_PATH = B_PATH + ".b2";
+  private static final String C1_PATH = C_PATH + ".c1";
+  private static final QueuePath ROOT = new QueuePath(CapacitySchedulerConfiguration.ROOT);
+  private static final QueuePath A = new QueuePath(A_PATH);
+  private static final QueuePath B = new QueuePath(B_PATH);
+  private static final QueuePath C = new QueuePath(C_PATH);
+  private static final QueuePath A1 = new QueuePath(A1_PATH);
+  private static final QueuePath B1 = new QueuePath(B1_PATH);
+  private static final QueuePath B2 = new QueuePath(B2_PATH);
+  private static final QueuePath C1 = new QueuePath(C1_PATH);
 
   /**
    * Get a mock {@link RMContext} for use in test cases.
@@ -119,7 +127,7 @@ public class TestUtils {
       }
     });
     
-    when(nlm.getResourceByLabel(any(String.class), any(Resource.class)))
+    when(nlm.getResourceByLabel(any(), any(Resource.class)))
         .thenAnswer(new Answer<Resource>() {
           @Override public Resource answer(InvocationOnMock invocation)
               throws Throwable {
@@ -128,6 +136,7 @@ public class TestUtils {
           }
         });
 
+    rmContext.setYarnConfiguration(conf);
     rmContext.setNodeLabelManager(nlm);
     rmContext.setSystemMetricsPublisher(mock(SystemMetricsPublisher.class));
     rmContext.setRMApplicationHistoryWriter(mock(RMApplicationHistoryWriter.class));
@@ -186,6 +195,20 @@ public class TestUtils {
     request.setNodeLabelExpression(labelExpression);
     return request;
   }
+
+  public static ResourceRequest createResourceRequest(int memory, int vcores, int numContainers,
+      Priority priority, long allocationId, ExecutionTypeRequest type, String resourceName) {
+    ResourceRequest request =
+        recordFactory.newRecordInstance(ResourceRequest.class);
+    Resource capability = Resources.createResource(memory, vcores);
+    request.setNumContainers(numContainers);
+    request.setCapability(capability);
+    request.setPriority(priority);
+    request.setAllocationRequestId(allocationId);
+    request.setExecutionTypeRequest(type);
+    request.setResourceName(resourceName);
+    return request;
+  }
   
   public static ResourceRequest createResourceRequest(
       String resourceName, int memory, int numContainers, boolean relaxLocality,
@@ -204,7 +227,14 @@ public class TestUtils {
     ApplicationId applicationId = BuilderUtils.newApplicationId(0l, appId);
     return ApplicationAttemptId.newInstance(applicationId, attemptId);
   }
-  
+
+  public static FiCaSchedulerNode getMockNodeWithAttributes(String host,
+      String rack, int port, int memory, Set<NodeAttribute> attributes) {
+    FiCaSchedulerNode node = getMockNode(host, rack, port, memory, 1);
+    when(node.getNodeAttributes()).thenReturn(attributes);
+    return node;
+  }
+
   public static FiCaSchedulerNode getMockNode(String host, String rack,
       int port, int memory) {
     return getMockNode(host, rack, port, memory, 1);
@@ -220,6 +250,7 @@ public class TestUtils {
     when(rmNode.getNodeAddress()).thenReturn(host+":"+port);
     when(rmNode.getHostName()).thenReturn(host);
     when(rmNode.getRackName()).thenReturn(rack);
+    when(rmNode.getState()).thenReturn(NodeState.RUNNING);
     
     FiCaSchedulerNode node = spy(new FiCaSchedulerNode(rmNode, false));
     LOG.info("node = " + host + " avail=" + node.getUnallocatedResource());
@@ -277,41 +308,35 @@ public class TestUtils {
         new CapacitySchedulerConfiguration(config);
 
     // Define top-level queues
-    conf.setQueues(CapacitySchedulerConfiguration.ROOT, new String[] {"a", "b", "c"});
-    conf.setCapacityByLabel(CapacitySchedulerConfiguration.ROOT, "x", 100);
-    conf.setCapacityByLabel(CapacitySchedulerConfiguration.ROOT, "y", 100);
+    conf.setQueues(ROOT, new String[] {"a", "b", "c"});
+    conf.setCapacityByLabel(ROOT, "x", 100);
+    conf.setCapacityByLabel(ROOT, "y", 100);
 
-    final String A = CapacitySchedulerConfiguration.ROOT + ".a";
     conf.setCapacity(A, 10);
     conf.setMaximumCapacity(A, 15);
     conf.setAccessibleNodeLabels(A, toSet("x"));
     conf.setCapacityByLabel(A, "x", 100);
-    
-    final String B = CapacitySchedulerConfiguration.ROOT + ".b";
+
     conf.setCapacity(B, 20);
     conf.setAccessibleNodeLabels(B, toSet("y"));
     conf.setCapacityByLabel(B, "y", 100);
-    
-    final String C = CapacitySchedulerConfiguration.ROOT + ".c";
+
     conf.setCapacity(C, 70);
     conf.setMaximumCapacity(C, 70);
     conf.setAccessibleNodeLabels(C, RMNodeLabelsManager.EMPTY_STRING_SET);
     
     // Define 2nd-level queues
-    final String A1 = A + ".a1";
     conf.setQueues(A, new String[] {"a1"});
     conf.setCapacity(A1, 100);
     conf.setMaximumCapacity(A1, 100);
     conf.setCapacityByLabel(A1, "x", 100);
-    
-    final String B1 = B + ".b1";
+
     conf.setQueues(B, new String[] {"b1"});
     conf.setCapacity(B1, 100);
     conf.setMaximumCapacity(B1, 100);
     conf.setCapacityByLabel(B1, "y", 100);
     conf.setMaximumApplicationMasterResourcePerQueuePercent(B1, 1f);
 
-    final String C1 = C + ".c1";
     conf.setQueues(C, new String[] {"c1"});
     conf.setCapacity(C1, 100);
     conf.setMaximumCapacity(C1, 100);
@@ -325,19 +350,17 @@ public class TestUtils {
         new CapacitySchedulerConfiguration(config);
     
     // Define top-level queues
-    conf.setQueues(CapacitySchedulerConfiguration.ROOT, new String[] {"a", "b"});
-    conf.setCapacityByLabel(CapacitySchedulerConfiguration.ROOT, "x", 100);
-    conf.setCapacityByLabel(CapacitySchedulerConfiguration.ROOT, "y", 100);
-    conf.setCapacityByLabel(CapacitySchedulerConfiguration.ROOT, "z", 100);
+    conf.setQueues(ROOT, new String[] {"a", "b"});
+    conf.setCapacityByLabel(ROOT, "x", 100);
+    conf.setCapacityByLabel(ROOT, "y", 100);
+    conf.setCapacityByLabel(ROOT, "z", 100);
 
-    final String A = CapacitySchedulerConfiguration.ROOT + ".a";
     conf.setCapacity(A, 10);
     conf.setMaximumCapacity(A, 10);
     conf.setAccessibleNodeLabels(A, toSet("x", "y"));
     conf.setCapacityByLabel(A, "x", 100);
     conf.setCapacityByLabel(A, "y", 50);
-    
-    final String B = CapacitySchedulerConfiguration.ROOT + ".b";
+
     conf.setCapacity(B, 90);
     conf.setMaximumCapacity(B, 100);
     conf.setAccessibleNodeLabels(B, toSet("y", "z"));
@@ -345,7 +368,6 @@ public class TestUtils {
     conf.setCapacityByLabel(B, "z", 100);
     
     // Define 2nd-level queues
-    final String A1 = A + ".a1";
     conf.setQueues(A, new String[] {"a1"});
     conf.setCapacity(A1, 100);
     conf.setMaximumCapacity(A1, 100);
@@ -355,12 +377,10 @@ public class TestUtils {
     conf.setCapacityByLabel(A1, "y", 100);
     
     conf.setQueues(B, new String[] {"b1", "b2"});
-    final String B1 = B + ".b1";
     conf.setCapacity(B1, 50);
     conf.setMaximumCapacity(B1, 50);
     conf.setAccessibleNodeLabels(B1, RMNodeLabelsManager.EMPTY_STRING_SET);
 
-    final String B2 = B + ".b2";
     conf.setCapacity(B2, 50);
     conf.setMaximumCapacity(B2, 50);
     conf.setAccessibleNodeLabels(B2, toSet("y", "z"));
@@ -372,9 +392,6 @@ public class TestUtils {
   
   public static Configuration getConfigurationWithDefaultQueueLabels(
       Configuration config) {
-    final String A = CapacitySchedulerConfiguration.ROOT + ".a";
-    final String B = CapacitySchedulerConfiguration.ROOT + ".b";
-    
     CapacitySchedulerConfiguration conf =
         (CapacitySchedulerConfiguration) getConfigurationWithQueueLabels(config);
         new CapacitySchedulerConfiguration(config);
@@ -404,20 +421,17 @@ public class TestUtils {
         new CapacitySchedulerConfiguration(config);
 
     // Define top-level queues
-    conf.setQueues(CapacitySchedulerConfiguration.ROOT,
+    conf.setQueues(ROOT,
         new String[] { "a", "b", "c" });
 
-    final String A = CapacitySchedulerConfiguration.ROOT + ".a";
     conf.setCapacity(A, 10);
     conf.setMaximumCapacity(A, 100);
     conf.setUserLimitFactor(A, 100);
 
-    final String B = CapacitySchedulerConfiguration.ROOT + ".b";
     conf.setCapacity(B, 20);
     conf.setMaximumCapacity(B, 100);
     conf.setUserLimitFactor(B, 100);
 
-    final String C = CapacitySchedulerConfiguration.ROOT + ".c";
     conf.setCapacity(C, 70);
     conf.setMaximumCapacity(C, 100);
     conf.setUserLimitFactor(C, 100);
@@ -445,7 +459,14 @@ public class TestUtils {
   public static void applyResourceCommitRequest(Resource clusterResource,
       CSAssignment csAssignment,
       final Map<NodeId, FiCaSchedulerNode> nodes,
-      final Map<ApplicationAttemptId, FiCaSchedulerApp> apps)
+      final Map<ApplicationAttemptId, FiCaSchedulerApp> apps) throws IOException {
+    applyResourceCommitRequest(clusterResource, csAssignment, nodes, apps, null);
+  }
+
+  public static void applyResourceCommitRequest(Resource clusterResource,
+      CSAssignment csAssignment,
+      final Map<NodeId, FiCaSchedulerNode> nodes,
+      final Map<ApplicationAttemptId, FiCaSchedulerApp> apps, CapacitySchedulerConfiguration csConf)
       throws IOException {
     CapacityScheduler cs = new CapacityScheduler() {
       @Override
@@ -459,29 +480,10 @@ public class TestUtils {
         return apps.get(applicationAttemptId);
       }
     };
-
+    cs.setAsyncSchedulingConf(new CapacityScheduler.AsyncSchedulingConfiguration(csConf, cs));
     cs.setResourceCalculator(new DefaultResourceCalculator());
 
     cs.submitResourceCommitRequest(clusterResource,
         csAssignment);
-  }
-
-  /**
-   * An easy way to create resources other than memory and vcores for tests.
-   * @param memory memory
-   * @param vcores vcores
-   * @param nameToValues resource types other than memory and vcores.
-   * @return created resource
-   */
-  public static Resource createResource(long memory, int vcores,
-      Map<String, Integer> nameToValues) {
-    Resource res = Resource.newInstance(memory, vcores);
-    if (nameToValues != null) {
-      for (Map.Entry<String, Integer> entry : nameToValues.entrySet()) {
-        res.setResourceInformation(entry.getKey(), ResourceInformation
-            .newInstance(entry.getKey(), "", entry.getValue()));
-      }
-    }
-    return res;
   }
 }

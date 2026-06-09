@@ -21,7 +21,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -35,8 +35,8 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.MissingArgumentException;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.lang.time.DateFormatUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.time.DateFormatUtils;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.util.ToolRunner;
@@ -44,7 +44,6 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.exceptions.YarnException;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 
 @Private
 @Unstable
@@ -107,6 +106,8 @@ public class NodeCLI extends YarnCLI {
       printUsage(opts);
       return exitCode;
     }
+
+    createAndStartYarnClient();
 
     if (cliParser.hasOption("status")) {
       if (args.length != 2) {
@@ -176,7 +177,7 @@ public class NodeCLI extends YarnCLI {
   private void listClusterNodes(Set<NodeState> nodeStates) 
             throws YarnException, IOException {
     PrintWriter writer = new PrintWriter(
-        new OutputStreamWriter(sysout, Charset.forName("UTF-8")));
+        new OutputStreamWriter(sysout, StandardCharsets.UTF_8));
     List<NodeReport> nodesReport = client.getNodeReports(
                                        nodeStates.toArray(new NodeState[0]));
     writer.println("Total Nodes:" + nodesReport.size());
@@ -201,7 +202,7 @@ public class NodeCLI extends YarnCLI {
   private void listDetailedClusterNodes(Set<NodeState> nodeStates)
       throws YarnException, IOException {
     PrintWriter writer = new PrintWriter(new OutputStreamWriter(sysout,
-        Charset.forName("UTF-8")));
+        StandardCharsets.UTF_8));
     List<NodeReport> nodesReport = client.getNodeReports(nodeStates
         .toArray(new NodeState[0]));
     writer.println("Total Nodes:" + nodesReport.size());
@@ -264,7 +265,7 @@ public class NodeCLI extends YarnCLI {
     // Use PrintWriter.println, which uses correct platform line ending.
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     PrintWriter nodeReportStr = new PrintWriter(
-        new OutputStreamWriter(baos, Charset.forName("UTF-8")));
+        new OutputStreamWriter(baos, StandardCharsets.UTF_8));
     NodeReport nodeReport = null;
     for (NodeReport report : nodesReport) {
       if (!report.getNodeId().equals(nodeId)) {
@@ -307,6 +308,18 @@ public class NodeCLI extends YarnCLI {
       Collections.sort(nodeLabelsList);
       nodeReportStr.println(StringUtils.join(nodeLabelsList.iterator(), ','));
 
+      if (nodeReport.getNodeAttributes().size() > 0) {
+        ArrayList nodeAtrs = new ArrayList<>(nodeReport.getNodeAttributes());
+        nodeReportStr.print("\tNode Attributes : ");
+        nodeReportStr.println(nodeAtrs.get(0).toString());
+        for (int index = 1; index < nodeAtrs.size(); index++) {
+          nodeReportStr.println(
+              String.format("\t%18s%s", "", nodeAtrs.get(index).toString()));
+        }
+      } else {
+        nodeReportStr.println("\tNode Attributes : ");
+      }
+
       nodeReportStr.print("\tResource Utilization by Node : ");
       if (nodeReport.getNodeUtilization() != null) {
         nodeReportStr.print("PMem:"
@@ -334,7 +347,7 @@ public class NodeCLI extends YarnCLI {
           + nodeIdStr);
     }
     nodeReportStr.close();
-    sysout.println(baos.toString("UTF-8"));
+    sysout.println(new String(baos.toByteArray(), StandardCharsets.UTF_8));
   }
 
   private String getAllValidNodeStates() {

@@ -37,10 +37,14 @@ public class InvalidInputException extends IOException {
   
   /**
    * Create the exception with the given list.
+   * The first element of the list is used as the init cause value.
    * @param probs the list of problems to report. this list is not copied.
    */
   public InvalidInputException(List<IOException> probs) {
     problems = probs;
+    if (!probs.isEmpty()) {
+      initCause(probs.get(0));
+    }
   }
   
   /**
@@ -56,7 +60,7 @@ public class InvalidInputException extends IOException {
    * @return the concatenated messages from all of the problems.
    */
   public String getMessage() {
-    StringBuffer result = new StringBuffer();
+    StringBuilder result = new StringBuilder();
     Iterator<IOException> itr = problems.iterator();
     while(itr.hasNext()) {
       result.append(itr.next().getMessage());

@@ -24,8 +24,8 @@ import java.util.Queue;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.util.Lists;
 
 /**
  * In the Standby Node, we can receive messages about blocks
@@ -95,10 +95,46 @@ class PendingDataNodeMessages {
   
   void enqueueReportedBlock(DatanodeStorageInfo storageInfo, Block block,
       ReplicaState reportedState) {
-    block = new Block(block);
-    getBlockQueue(block).add(
-        new ReportedBlockInfo(storageInfo, block, reportedState));
+    if (BlockIdManager.isStripedBlockID(block.getBlockId())) {
+      Block blkId = new Block(BlockIdManager.convertToStripedID(block
+          .getBlockId()));
+      getBlockQueue(blkId).add(
+          new ReportedBlockInfo(storageInfo, new Block(block), reportedState));
+    } else {
+      block = new Block(block);
+      getBlockQueue(block).add(
+          new ReportedBlockInfo(storageInfo, block, reportedState));
+    }
     count++;
+  }
+
+  void removeQueuedBlock(DatanodeStorageInfo storageInfo, Block block) {
+    if (storageInfo == null || block == null) {
+      return;
+    }
+    Block blk = new Block(block);
+    if (BlockIdManager.isStripedBlockID(block.getBlockId())) {
+      blk = new Block(BlockIdManager.convertToStripedID(block
+          .getBlockId()));
+    }
+    Queue<ReportedBlockInfo> queue = queueByBlockId.get(blk);
+    if (queue == null) {
+      return;
+    }
+    // We only want the latest non-future reported block to be queued for each
+    // DataNode. Otherwise, there can be a race condition that causes an old
+    // reported block to be kept in the queue until the SNN switches to ANN and
+    // the old reported block will be processed and marked as corrupt by the ANN.
+    // See HDFS-17453
+    int size = queue.size();
+    if (queue.removeIf(rbi -> storageInfo.equals(rbi.storageInfo))) {
+      count -= (size - queue.size());
+    }
+    // If the block message queue is now empty, we should remove the block
+    // from the queue.
+    if (queue.isEmpty()) {
+      queueByBlockId.remove(blk);
+    }
   }
   
   /**

@@ -29,8 +29,7 @@ import java.util.LinkedList;
 import java.util.TreeMap;
 import java.util.zip.CRC32;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSInputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -49,9 +48,12 @@ import org.apache.hadoop.hdfs.server.namenode.IllegalReservedPathException;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.log4j.Logger;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * This tests data transfer protocol handling in the Datanode. It sends
@@ -65,8 +67,8 @@ import static org.junit.Assert.*;
  */
 public class TestDFSUpgradeFromImage {
   
-  private static final Log LOG = LogFactory
-      .getLog(TestDFSUpgradeFromImage.class);
+  private static final org.slf4j.Logger LOG = LoggerFactory
+      .getLogger(TestDFSUpgradeFromImage.class);
   private static final File TEST_ROOT_DIR =
                       new File(MiniDFSCluster.getBaseDirectory());
   private static final String HADOOP_DFS_DIR_TXT = "hadoop-dfs-dir.txt";
@@ -162,7 +164,7 @@ public class TestDFSUpgradeFromImage {
       // The paths are expected to be listed in the same order 
       // as they are traversed here.
       assertEquals(info.path, path);
-      assertEquals("Checking checksum for " + path, info.checksum, checksum);
+      assertEquals(info.checksum, checksum, "Checking checksum for " + path);
     }
   }
   
@@ -252,9 +254,9 @@ public class TestDFSUpgradeFromImage {
 
     // Set up a fake NN storage that looks like an ancient Hadoop dir circa 0.3.0
     FileUtil.fullyDelete(namenodeStorage);
-    assertTrue("Make " + namenodeStorage, namenodeStorage.mkdirs());
+    assertTrue(namenodeStorage.mkdirs(), "Make " + namenodeStorage);
     File imageDir = new File(namenodeStorage, "image");
-    assertTrue("Make " + imageDir, imageDir.mkdirs());
+    assertTrue(imageDir.mkdirs(), "Make " + imageDir);
 
     // Hex dump of a formatted image from Hadoop 0.3.0
     File imageFile = new File(imageDir, "fsimage");
@@ -334,7 +336,7 @@ public class TestDFSUpgradeFromImage {
       }
       int md5failures = appender.countExceptionsWithMessage(
           " is corrupt with MD5 checksum of ");
-      assertEquals("Upgrade did not fail with bad MD5", 1, md5failures);
+      assertEquals(1, md5failures, "Upgrade did not fail with bad MD5");
     }
   }
 
@@ -396,10 +398,10 @@ public class TestDFSUpgradeFromImage {
           }
         }
         for (String s: expected) {
-          assertTrue("Did not find expected path " + s, found.contains(s));
+          assertTrue(found.contains(s), "Did not find expected path " + s);
         }
-        assertEquals("Found an unexpected path while listing filesystem",
-            found.size(), expected.length);
+        assertEquals(found.size(), expected.length,
+            "Found an unexpected path while listing filesystem");
       }
     } finally {
       if (cluster != null) {
@@ -460,10 +462,10 @@ public class TestDFSUpgradeFromImage {
           }
         }
         for (String s: expected) {
-          assertTrue("Did not find expected path " + s, found.contains(s));
+          assertTrue(found.contains(s), "Did not find expected path " + s);
         }
-        assertEquals("Found an unexpected path while listing filesystem",
-            found.size(), expected.length);
+        assertEquals(found.size(), expected.length,
+            "Found an unexpected path while listing filesystem");
       }
     } finally {
       if (cluster != null) {
@@ -555,10 +557,10 @@ public class TestDFSUpgradeFromImage {
           }
         }
         for (String s: expected) {
-          assertTrue("Did not find expected path " + s, found.contains(s));
+          assertTrue(found.contains(s), "Did not find expected path " + s);
         }
-        assertEquals("Found an unexpected path while listing filesystem",
-            found.size(), expected.length);
+        assertEquals(found.size(), expected.length,
+            "Found an unexpected path while listing filesystem");
       }
     } finally {
       if (cluster != null) {

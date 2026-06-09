@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -38,6 +38,7 @@ import java.io.Serializable;
 import java.io.StringWriter;
 import java.net.URL;
 import java.net.URLConnection;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -50,7 +51,8 @@ import static org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.r
  * Implementation to use nvidia-docker v1 as GPU docker command plugin.
  */
 public class NvidiaDockerV1CommandPlugin implements DockerCommandPlugin {
-  final static Log LOG = LogFactory.getLog(NvidiaDockerV1CommandPlugin.class);
+  final static Logger LOG = LoggerFactory.
+      getLogger(NvidiaDockerV1CommandPlugin.class);
 
   private Configuration conf;
   private Map<String, Set<String>> additionalCommands = null;
@@ -103,7 +105,7 @@ public class NvidiaDockerV1CommandPlugin implements DockerCommandPlugin {
       uc.setRequestProperty("X-Requested-With", "Curl");
 
       StringWriter writer = new StringWriter();
-      IOUtils.copy(uc.getInputStream(), writer, "utf-8");
+      IOUtils.copy(uc.getInputStream(), writer, StandardCharsets.UTF_8);
       cliOptions = writer.toString();
 
       LOG.info("Additional docker CLI options from plugin to run GPU "
@@ -121,9 +123,7 @@ public class NvidiaDockerV1CommandPlugin implements DockerCommandPlugin {
           addToCommand(DEVICE_OPTION, getValue(str));
         } else if (str.startsWith(VOLUME_DRIVER_OPTION)) {
           volumeDriver = getValue(str);
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Found volume-driver:" + volumeDriver);
-          }
+          LOG.debug("Found volume-driver:{}", volumeDriver);
         } else if (str.startsWith(MOUNT_RO_OPTION)) {
           String mount = getValue(str);
           if (!mount.endsWith(":ro")) {
@@ -286,15 +286,11 @@ public class NvidiaDockerV1CommandPlugin implements DockerCommandPlugin {
         if (VOLUME_NAME_PATTERN.matcher(mountSource).matches()) {
           // This is a valid named volume
           newVolumeName = mountSource;
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Found volume name for GPU:" + newVolumeName);
-          }
+          LOG.debug("Found volume name for GPU:{}", newVolumeName);
           break;
         } else{
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Failed to match " + mountSource
-                + " to named-volume regex pattern");
-          }
+          LOG.debug("Failed to match {} to named-volume regex pattern",
+              mountSource);
         }
       }
     }

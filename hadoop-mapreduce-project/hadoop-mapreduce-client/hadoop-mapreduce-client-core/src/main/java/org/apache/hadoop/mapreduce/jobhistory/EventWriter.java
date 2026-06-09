@@ -37,7 +37,7 @@ import org.apache.hadoop.mapreduce.Counters;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Event Writer is an utility class used to write events to the underlying
@@ -93,8 +93,8 @@ public class EventWriter {
     wrapper.setType(event.getEventType());
     wrapper.setEvent(event.getDatum());
     writer.write(wrapper, encoder);
-    encoder.flush();
     if (this.jsonOutput) {
+      encoder.flush();
       out.writeBytes("\n");
     }
   }

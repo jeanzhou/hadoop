@@ -17,13 +17,14 @@
  */
 package org.apache.hadoop.mapreduce.v2.util;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Splitter;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.mapreduce.JobID;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TypeConverter;
 import org.apache.hadoop.mapreduce.v2.jobhistory.JHAdminConfig;
 import org.apache.hadoop.net.NetUtils;
@@ -144,7 +145,7 @@ public class MRWebAppUtil {
     InetSocketAddress address = NetUtils.createSocketAddr(
       hsAddress, getDefaultJHSWebappPort(),
       getDefaultJHSWebappURLWithoutScheme());
-    StringBuffer sb = new StringBuffer();
+    StringBuilder sb = new StringBuilder();
     if (address.getAddress() != null &&
         (address.getAddress().isAnyLocalAddress() ||
          address.getAddress().isLoopbackAddress())) {
@@ -178,6 +179,9 @@ public class MRWebAppUtil {
   }
 
   public static String getAMWebappScheme(Configuration conf) {
-    return "http://";
+    return conf.getBoolean(
+        MRJobConfig.MR_AM_WEBAPP_HTTPS_ENABLED,
+        MRJobConfig.DEFAULT_MR_AM_WEBAPP_HTTPS_ENABLED)
+        ? "https://" : "http://";
   }
 }

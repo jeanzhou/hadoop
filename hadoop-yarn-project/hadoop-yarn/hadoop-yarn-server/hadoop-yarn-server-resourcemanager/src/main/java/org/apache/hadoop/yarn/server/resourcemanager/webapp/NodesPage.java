@@ -19,8 +19,10 @@
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
 import com.google.inject.Inject;
+import org.apache.commons.text.StringEscapeUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
@@ -29,6 +31,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeInfo;
 import org.apache.hadoop.yarn.util.Times;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.webapp.SubView;
 import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet;
 import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TABLE;
@@ -36,6 +39,7 @@ import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TBODY;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 
 import java.util.Collection;
+import java.util.Map;
 
 import static org.apache.hadoop.yarn.webapp.YarnWebParams.NODE_LABEL;
 import static org.apache.hadoop.yarn.webapp.YarnWebParams.NODE_STATE;
@@ -84,19 +88,41 @@ class NodesPage extends RmView {
             .th(".allocationTags", "Allocation Tags")
             .th(".mem", "Mem Used")
             .th(".mem", "Mem Avail")
+            .th(".mem", "Mem Total")
+            .th(".mem", "Phys Mem Used %")
             .th(".vcores", "VCores Used")
-            .th(".vcores", "VCores Avail");
+            .th(".vcores", "VCores Avail")
+            .th(".vcores", "VCores Total")
+            .th(".vcores", "Phys VCores Used %");
       } else {
         trbody.th(".containers", "Running Containers (G)")
             .th(".allocationTags", "Allocation Tags")
             .th(".mem", "Mem Used (G)")
             .th(".mem", "Mem Avail (G)")
+            .th(".mem", "Mem Total")
+            .th(".mem", "Phys Mem Used %")
             .th(".vcores", "VCores Used (G)")
             .th(".vcores", "VCores Avail (G)")
+            .th(".vcores", "VCores Total")
+            .th(".vcores", "Phys VCores Used %")
             .th(".containers", "Running Containers (O)")
             .th(".mem", "Mem Used (O)")
             .th(".vcores", "VCores Used (O)")
             .th(".containers", "Queued Containers");
+      }
+
+      for (Map.Entry<String, Integer> integerEntry :
+          ResourceUtils.getResourceTypeIndex().entrySet()) {
+        if (integerEntry.getKey().equals(ResourceInformation.MEMORY_URI)
+            || integerEntry.getKey().equals(ResourceInformation.VCORES_URI)) {
+          continue;
+        }
+
+        trbody.th("." + integerEntry.getKey(),
+            integerEntry.getKey() + " " + "Used");
+
+        trbody.th("." + integerEntry.getKey(),
+            integerEntry.getKey() + " " + "Avail");
       }
 
       TBODY<TABLE<Hamlet>> tbody =
@@ -153,6 +179,8 @@ class NodesPage extends RmView {
         NodeInfo info = new NodeInfo(ni, sched);
         int usedMemory = (int) info.getUsedMemory();
         int availableMemory = (int) info.getAvailableMemory();
+        long totalMemory = info.getTotalResource().getMemorySize();
+        int totalVcore = info.getTotalResource().getvCores();
         nodeTableData.append("[\"")
             .append(StringUtils.join(",", info.getNodeLabels())).append("\",\"")
             .append(info.getRack()).append("\",\"").append(info.getState())
@@ -164,10 +192,11 @@ class NodesPage extends RmView {
           nodeTableData.append("\",\"<a ").append("href='" + "//" + httpAddress)
               .append("'>").append(httpAddress).append("</a>\",").append("\"");
         }
+
         nodeTableData.append("<br title='")
             .append(String.valueOf(info.getLastHealthUpdate())).append("'>")
             .append(Times.format(info.getLastHealthUpdate())).append("\",\"")
-            .append(info.getHealthReport()).append("\",\"")
+            .append(StringEscapeUtils.escapeJava(info.getHealthReport())).append("\",\"")
             .append(String.valueOf(info.getNumContainers())).append("\",\"")
             .append(info.getAllocationTagsSummary()).append("\",\"")
             .append("<br title='").append(String.valueOf(usedMemory))
@@ -175,9 +204,18 @@ class NodesPage extends RmView {
             .append("\",\"").append("<br title='")
             .append(String.valueOf(availableMemory)).append("'>")
             .append(StringUtils.byteDesc(availableMemory * BYTES_IN_MB))
-            .append("\",\"").append(String.valueOf(info.getUsedVirtualCores()))
+            .append("\",\"").append("<br title='").append(String.valueOf(totalMemory))
+            .append("'>").append(StringUtils.byteDesc(totalMemory * BYTES_IN_MB))
+            .append("\",\"")
+            .append(String.valueOf((int) info.getMemUtilization()))
+            .append("\",\"")
+            .append(String.valueOf(info.getUsedVirtualCores()))
             .append("\",\"")
             .append(String.valueOf(info.getAvailableVirtualCores()))
+            .append("\",\"")
+            .append(String.valueOf(totalVcore))
+            .append("\",\"")
+            .append(String.valueOf((int) info.getVcoreUtilization()))
             .append("\",\"");
 
         // If opportunistic containers are enabled, add extra fields.
@@ -193,6 +231,34 @@ class NodesPage extends RmView {
               .append("\",\"")
               .append(String.valueOf(info.getNumQueuedContainers()))
               .append("\",\"");
+        }
+
+        for (Map.Entry<String, Integer> integerEntry :
+            ResourceUtils.getResourceTypeIndex().entrySet()) {
+          if (integerEntry.getKey().equals(ResourceInformation.MEMORY_URI)
+              || integerEntry.getKey().equals(ResourceInformation.VCORES_URI)) {
+            continue;
+          }
+
+          long usedCustomResource = 0;
+          long availableCustomResource = 0;
+
+          String resourceName = integerEntry.getKey();
+          Integer index = integerEntry.getValue();
+
+          if (index != null && info.getUsedResource() != null
+              && info.getAvailableResource() != null) {
+            usedCustomResource = info.getUsedResource().getResource()
+                .getResourceValue(resourceName);
+            availableCustomResource = info.getAvailableResource().getResource()
+                .getResourceValue(resourceName);
+
+            nodeTableData
+                .append(usedCustomResource)
+                .append("\",\"")
+                .append(availableCustomResource)
+                .append("\",\"");
+          }
         }
 
         nodeTableData.append(ni.getNodeManagerVersion())
@@ -232,12 +298,12 @@ class NodesPage extends RmView {
   private String nodesTableInit() {
     StringBuilder b = tableInit().append(", 'aaData': nodeTableData")
         .append(", bDeferRender: true").append(", bProcessing: true")
-        .append(", aoColumnDefs: [");
-    b.append("{'bSearchable': false, 'aTargets': [ 7 ]}");
-    b.append(", {'sType': 'title-numeric', 'bSearchable': false, "
-        + "'aTargets': [ 8, 9 ] }");
-    b.append(", {'sType': 'title-numeric', 'aTargets': [ 5 ]}");
-    b.append("]}");
+        .append(", aoColumnDefs: [")
+        .append("{'bSearchable': false, 'aTargets': [ 7 ]}")
+        .append(", {'sType': 'title-numeric', 'bSearchable': false, "
+            + "'aTargets': [ 9, 10 ] }")
+        .append(", {'sType': 'title-numeric', 'aTargets': [ 5 ]}")
+        .append("]}");
     return b.toString();
   }
 }

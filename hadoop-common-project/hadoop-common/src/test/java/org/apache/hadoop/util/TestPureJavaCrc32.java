@@ -21,6 +21,7 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
 import java.lang.reflect.Constructor;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -28,8 +29,10 @@ import java.util.Random;
 import java.util.zip.CRC32;
 import java.util.zip.Checksum;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Unit test to verify that the pure-Java CRC32 algorithm gives
@@ -49,7 +52,7 @@ public class TestPureJavaCrc32 {
 
     checkOnBytes(new byte[] {40, 60, 97, -70}, false);
     
-    checkOnBytes("hello world!".getBytes("UTF-8"), false);
+    checkOnBytes("hello world!".getBytes(StandardCharsets.UTF_8), false);
 
     for (int i = 0; i < 10000; i++) {
       byte randomBytes[] = new byte[new Random().nextInt(2048)];
@@ -95,7 +98,7 @@ public class TestPureJavaCrc32 {
   }
 
   private void checkSame() {
-    Assert.assertEquals(theirs.getValue(), ours.getValue());
+    assertEquals(theirs.getValue(), ours.getValue());
   }
 
   /**
@@ -203,15 +206,19 @@ public class TestPureJavaCrc32 {
       }
     }
   }
-  
+
   /**
    * Performance tests to compare performance of the Pure Java implementation
    * to the built-in java.util.zip implementation. This can be run from the
    * command line with:
+   * <pre><code>
+   *   ./mvnw clean install -pl :hadoop-common -am -DskipTests
    *
-   *   java -cp path/to/test/classes:path/to/common/classes \
-   *      'org.apache.hadoop.util.TestPureJavaCrc32$PerformanceTest'
-   *
+   *   ./mvnw exec:java \
+   *     -pl hadoop-common-project/hadoop-common \
+   *     -Dexec.classpathScope=test \
+   *     -Dexec.mainClass='org.apache.hadoop.util.TestPureJavaCrc32$PerformanceTest'
+   * </code></pre>
    * The output is in JIRA table format.
    */
   public static class PerformanceTest {
@@ -314,7 +321,7 @@ public class TestPureJavaCrc32 {
         final int numThreads, final byte[] bytes, final int size)
             throws Exception {
 
-      final Thread[] threads = new Thread[numThreads];
+      final SubjectInheritingThread[] threads = new SubjectInheritingThread[numThreads];
       final BenchResult[] results = new BenchResult[threads.length];
 
       {
@@ -324,11 +331,11 @@ public class TestPureJavaCrc32 {
 
         for(int i = 0; i < threads.length; i++) {
           final int index = i;
-          threads[i] = new Thread() {
+          threads[i] = new SubjectInheritingThread() {
             final Checksum crc = ctor.newInstance();
   
             @Override
-            public void run() {
+            public void work() {
               final long st = System.nanoTime();
               crc.reset();
               for (int i = 0; i < trials; i++) {

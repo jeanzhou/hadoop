@@ -31,6 +31,8 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
+import org.apache.hadoop.hdfs.util.StripedBlockUtil.BlockReadStats;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.token.Token;
@@ -94,6 +96,7 @@ class StripedBlockReader {
   }
 
   void freeReadBuffer() {
+    DataNodeFaultInjector.get().interceptFreeBlockReaderBuffer();
     buffer = null;
   }
 
@@ -128,10 +131,10 @@ class StripedBlockReader {
       return BlockReaderRemote.newBlockReader(
           "dummy", block, blockToken, offsetInBlock,
           block.getNumBytes() - offsetInBlock, true, "", peer, source,
-          null, stripedReader.getCachingStrategy(), datanode.getTracer(), -1);
+          null, stripedReader.getCachingStrategy(), -1, conf);
     } catch (IOException e) {
-      LOG.info("Exception while creating remote block reader, datanode {}",
-          source, e);
+      LOG.info("Exception while creating remote block reader for {}, datanode {}",
+          block, source, e);
       IOUtils.closeStream(peer);
       return null;
     }
@@ -155,22 +158,21 @@ class StripedBlockReader {
       return peer;
     } finally {
       if (!success) {
-        IOUtils.cleanup(null, peer);
+        IOUtils.cleanupWithLogger(null, peer);
         IOUtils.closeSocket(sock);
       }
     }
   }
 
-  Callable<Void> readFromBlock(final int length,
+  Callable<BlockReadStats> readFromBlock(final int length,
                                final CorruptedBlocks corruptedBlocks) {
-    return new Callable<Void>() {
+    return new Callable<BlockReadStats>() {
 
       @Override
-      public Void call() throws Exception {
+      public BlockReadStats call() throws Exception {
         try {
           getReadBuffer().limit(length);
-          actualReadFromBlock();
-          return null;
+          return actualReadFromBlock();
         } catch (ChecksumException e) {
           LOG.warn("Found Checksum error for {} from {} at {}", block,
               source, e.getPos());
@@ -179,6 +181,8 @@ class StripedBlockReader {
         } catch (IOException e) {
           LOG.info(e.getMessage());
           throw e;
+        } finally {
+          DataNodeFaultInjector.get().interceptBlockReader();
         }
       }
     };
@@ -187,7 +191,8 @@ class StripedBlockReader {
   /**
    * Perform actual reading of bytes from block.
    */
-  private void actualReadFromBlock() throws IOException {
+  private BlockReadStats actualReadFromBlock() throws IOException {
+    DataNodeFaultInjector.get().delayBlockReader();
     int len = buffer.remaining();
     int n = 0;
     while (n < len) {
@@ -198,6 +203,8 @@ class StripedBlockReader {
       n += nread;
       stripedReader.getReconstructor().incrBytesRead(isLocal, nread);
     }
+    return new BlockReadStats(n, blockReader.isShortCircuit(),
+        blockReader.getNetworkDistance());
   }
 
   // close block reader

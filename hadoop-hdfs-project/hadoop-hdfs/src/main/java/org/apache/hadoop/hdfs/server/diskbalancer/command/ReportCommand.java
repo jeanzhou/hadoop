@@ -24,17 +24,18 @@ import java.util.ListIterator;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.lang.text.StrBuilder;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.text.TextStringBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.diskbalancer.DiskBalancerException;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerDataNode;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerVolume;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerVolumeSet;
 import org.apache.hadoop.hdfs.tools.DiskBalancerCLI;
+import org.apache.hadoop.util.Lists;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.util.Preconditions;
+
 
 /**
  * Executes the report command.
@@ -67,7 +68,7 @@ public class ReportCommand extends Command {
 
   @Override
   public void execute(CommandLine cmd) throws Exception {
-    StrBuilder result = new StrBuilder();
+    TextStringBuilder result = new TextStringBuilder();
     String outputLine = "Processing report command";
     recordOutput(result, outputLine);
 
@@ -99,7 +100,7 @@ public class ReportCommand extends Command {
     getPrintStream().println(result.toString());
   }
 
-  private void handleTopReport(final CommandLine cmd, final StrBuilder result,
+  private void handleTopReport(final CommandLine cmd, final TextStringBuilder result,
       final String nodeFormat) throws IllegalArgumentException {
     Collections.sort(getCluster().getNodes(), Collections.reverseOrder());
 
@@ -131,7 +132,7 @@ public class ReportCommand extends Command {
     }
   }
 
-  private void handleNodeReport(final CommandLine cmd, StrBuilder result,
+  private void handleNodeReport(final CommandLine cmd, TextStringBuilder result,
       final String nodeFormat, final String volumeFormat) throws Exception {
     String outputLine = "";
     /*
@@ -153,7 +154,7 @@ public class ReportCommand extends Command {
 
       recordOutput(result, outputLine);
 
-      List<DiskBalancerDataNode> dbdns = Lists.newArrayList();
+      List<DiskBalancerDataNode> dbdns;
       try {
         dbdns = getNodes(nodeVal);
       } catch (DiskBalancerException e) {
@@ -175,7 +176,7 @@ public class ReportCommand extends Command {
   /**
    * Put node report lines to string buffer.
    */
-  private void recordNodeReport(StrBuilder result, DiskBalancerDataNode dbdn,
+  private void recordNodeReport(TextStringBuilder result, DiskBalancerDataNode dbdn,
       final String nodeFormat, final String volumeFormat) throws Exception {
     final String trueStr = "True";
     final String falseStr = "False";

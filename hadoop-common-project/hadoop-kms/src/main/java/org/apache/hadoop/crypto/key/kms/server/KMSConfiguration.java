@@ -20,6 +20,7 @@ package org.apache.hadoop.crypto.key.kms.server;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -158,5 +159,22 @@ public class KMSConfiguration {
       newer = f.lastModified() - time > 100;
     }
     return newer;
+  }
+
+  /**
+   * Validate whether "kms.config.dir" and "log4j.configuration" are defined in the System
+   * properties. If not, abort the KMS WebServer.
+   */
+  public static void validateSystemProps() {
+    if (System.getProperty(KMS_CONFIG_DIR) == null) {
+      String errorMsg = "System property '" + KMS_CONFIG_DIR + "' not defined";
+      System.err.println("Aborting KMSWebServer because " + errorMsg);
+      throw new RuntimeException(errorMsg);
+    }
+    if (System.getProperty("log4j.configuration") == null) {
+      String errorMsg = "System property 'log4j.configuration' not defined";
+      System.err.println("Aborting KMSWebServer because " + errorMsg);
+      throw new RuntimeException(errorMsg);
+    }
   }
 }

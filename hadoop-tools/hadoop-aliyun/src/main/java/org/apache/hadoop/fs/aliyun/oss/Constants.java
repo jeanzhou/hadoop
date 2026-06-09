@@ -31,11 +31,13 @@ public final class Constants {
   // User agent
   public static final String USER_AGENT_PREFIX = "fs.oss.user.agent.prefix";
   public static final String USER_AGENT_PREFIX_DEFAULT =
-          VersionInfoUtils.getDefaultUserAgent();
+      VersionInfoUtils.getDefaultUserAgent();
 
   // Class of credential provider
-  public static final String ALIYUN_OSS_CREDENTIALS_PROVIDER_KEY =
+  public static final String CREDENTIALS_PROVIDER_KEY =
       "fs.oss.credentials.provider";
+
+  public static final int OSS_DEFAULT_PORT = -1;
 
   // OSS access verification
   public static final String ACCESS_KEY_ID = "fs.oss.accessKeyId";
@@ -82,10 +84,14 @@ public final class Constants {
   public static final int MAX_PAGING_KEYS_DEFAULT = 1000;
 
   // Size of each of or multipart pieces in bytes
-  public static final String MULTIPART_UPLOAD_SIZE_KEY =
+  public static final String MULTIPART_UPLOAD_PART_SIZE_KEY =
       "fs.oss.multipart.upload.size";
+  public static final long MULTIPART_UPLOAD_PART_SIZE_DEFAULT =
+      104857600; // 100 MB
 
-  public static final long MULTIPART_UPLOAD_SIZE_DEFAULT = 10 * 1024 * 1024;
+  /** The minimum multipart size which Aliyun OSS supports. */
+  public static final int MULTIPART_MIN_SIZE = 100 * 1024;
+
   public static final int MULTIPART_UPLOAD_PART_NUM_LIMIT = 10000;
 
   // Minimum size in bytes before we start a multipart uploads or copy
@@ -96,7 +102,6 @@ public final class Constants {
 
   public static final String MULTIPART_DOWNLOAD_SIZE_KEY =
       "fs.oss.multipart.download.size";
-
   public static final long MULTIPART_DOWNLOAD_SIZE_DEFAULT = 512 * 1024;
 
   public static final String MULTIPART_DOWNLOAD_THREAD_NUMBER_KEY =
@@ -129,6 +134,59 @@ public final class Constants {
   // Comma separated list of directories
   public static final String BUFFER_DIR_KEY = "fs.oss.buffer.dir";
 
+  /**
+   * What buffer to use.
+   * Default is {@link #FAST_UPLOAD_BUFFER_DISK}
+   * Value: {@value}
+   */
+  public static final String FAST_UPLOAD_BUFFER =
+      "fs.oss.fast.upload.buffer";
+
+  /**
+   * Buffer blocks to disk: {@value}.
+   * Capacity is limited to available disk space.
+   */
+  public static final String FAST_UPLOAD_BUFFER_DISK = "disk";
+
+  /**
+   * Use an in-memory array. Fast but will run of heap rapidly: {@value}.
+   */
+  public static final String FAST_UPLOAD_BUFFER_ARRAY = "array";
+
+  /**
+   * Use a byte buffer. May be more memory efficient than the
+   * {@link #FAST_UPLOAD_BUFFER_ARRAY}: {@value}.
+   */
+  public static final String FAST_UPLOAD_BYTEBUFFER = "bytebuffer";
+
+  /**
+   * Use an in-memory array and fallback to disk if
+   * used memory exceed the quota.
+   */
+  public static final String FAST_UPLOAD_BUFFER_ARRAY_DISK = "array_disk";
+
+  /**
+   * Use a byte buffer and fallback to disk if
+   * used memory exceed the quota.
+   */
+  public static final String FAST_UPLOAD_BYTEBUFFER_DISK = "bytebuffer_disk";
+
+  /**
+   * Memory limit of {@link #FAST_UPLOAD_BUFFER_ARRAY_DISK} or
+   * {@link #FAST_UPLOAD_BYTEBUFFER_DISK}.
+   */
+  public static final String FAST_UPLOAD_BUFFER_MEMORY_LIMIT =
+      "fs.oss.fast.upload.memory.limit";
+
+  public static final long FAST_UPLOAD_BUFFER_MEMORY_LIMIT_DEFAULT =
+      1024 * 1024 * 1024; // 1GB
+
+  /**
+   * Default buffer option: {@value}.
+   */
+  public static final String DEFAULT_FAST_UPLOAD_BUFFER =
+      FAST_UPLOAD_BUFFER_DISK;
+
   // private | public-read | public-read-write
   public static final String CANNED_ACL_KEY = "fs.oss.acl.default";
   public static final String CANNED_ACL_DEFAULT = "";
@@ -139,9 +197,33 @@ public final class Constants {
 
   public static final String FS_OSS_BLOCK_SIZE_KEY = "fs.oss.block.size";
   public static final int FS_OSS_BLOCK_SIZE_DEFAULT = 64 * 1024 * 1024;
+
   public static final String FS_OSS = "oss";
 
-  public static final long MIN_MULTIPART_UPLOAD_PART_SIZE = 100 * 1024L;
-  public static final int MAX_RETRIES = 10;
+  public static final String KEEPALIVE_TIME_KEY =
+      "fs.oss.threads.keepalivetime";
+  public static final int KEEPALIVE_TIME_DEFAULT = 60;
 
+  public static final String UPLOAD_ACTIVE_BLOCKS_KEY =
+      "fs.oss.upload.active.blocks";
+  public static final int UPLOAD_ACTIVE_BLOCKS_DEFAULT = 4;
+
+  public static final String LIST_VERSION = "fs.oss.list.version";
+
+  public static final int DEFAULT_LIST_VERSION = 2;
+
+  /**
+   * OSS signature version.
+   */
+  public static final String SIGNATURE_VERSION_KEY = "fs.oss.signatureversion";
+
+  /**
+   * OSS signature version DEFAULT {@value}.
+   */
+  public static final String SIGNATURE_VERSION_DEFAULT = "V1";
+
+  /**
+   * OSS region {@value}.
+   */
+  public static final String REGION_KEY = "fs.oss.region";
 }

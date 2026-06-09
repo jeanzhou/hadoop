@@ -49,7 +49,10 @@ import org.apache.hadoop.yarn.server.resourcemanager.reservation.planning.Reserv
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.security.CapacityReservationsACLsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.security.FairReservationsACLsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.ReservationsACLsManager;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.UTCClock;
@@ -173,7 +176,13 @@ public abstract class AbstractReservationSystem extends AbstractService
         YarnConfiguration.DEFAULT_YARN_RESERVATION_ACL_ENABLE)
         && conf.getBoolean(YarnConfiguration.YARN_ACL_ENABLE,
             YarnConfiguration.DEFAULT_YARN_ACL_ENABLE)) {
-      reservationsACLsManager = new ReservationsACLsManager(scheduler, conf);
+      if (scheduler instanceof CapacityScheduler) {
+        reservationsACLsManager = new CapacityReservationsACLsManager(scheduler,
+            conf);
+      } else if (scheduler instanceof FairScheduler) {
+        reservationsACLsManager = new FairReservationsACLsManager(scheduler,
+            conf);
+      }
     }
   }
 
@@ -422,7 +431,7 @@ public abstract class AbstractReservationSystem extends AbstractService
     Plan plan = new InMemoryPlan(getRootQueueMetrics(), adPolicy,
         getAgent(planQueuePath), totCap, planStepSize, rescCalc, minAllocation,
         maxAllocation, planQueueName, getReplanner(planQueuePath),
-        getReservationSchedulerConfiguration().getMoveOnExpiry(planQueuePath),
+        getReservationSchedulerConfiguration().getMoveOnExpiry(new QueuePath(planQueuePath)),
         maxPeriodicity, rmContext);
     LOG.info("Initialized plan {} based on reservable queue {}",
         plan.toString(), planQueueName);
@@ -432,7 +441,7 @@ public abstract class AbstractReservationSystem extends AbstractService
   protected Planner getReplanner(String planQueueName) {
     ReservationSchedulerConfiguration reservationConfig =
         getReservationSchedulerConfiguration();
-    String plannerClassName = reservationConfig.getReplanner(planQueueName);
+    String plannerClassName = reservationConfig.getReplanner(new QueuePath(planQueueName));
     LOG.info("Using Replanner: " + plannerClassName + " for queue: "
         + planQueueName);
     try {
@@ -455,7 +464,7 @@ public abstract class AbstractReservationSystem extends AbstractService
   protected ReservationAgent getAgent(String queueName) {
     ReservationSchedulerConfiguration reservationConfig =
         getReservationSchedulerConfiguration();
-    String agentClassName = reservationConfig.getReservationAgent(queueName);
+    String agentClassName = reservationConfig.getReservationAgent(new QueuePath(queueName));
     LOG.info("Using Agent: " + agentClassName + " for queue: " + queueName);
     try {
       Class<?> agentClazz = conf.getClassByName(agentClassName);
@@ -479,7 +488,7 @@ public abstract class AbstractReservationSystem extends AbstractService
     ReservationSchedulerConfiguration reservationConfig =
         getReservationSchedulerConfiguration();
     String admissionPolicyClassName =
-        reservationConfig.getReservationAdmissionPolicy(queueName);
+        reservationConfig.getReservationAdmissionPolicy(new QueuePath(queueName));
     LOG.info("Using AdmissionPolicy: " + admissionPolicyClassName
         + " for queue: " + queueName);
     try {

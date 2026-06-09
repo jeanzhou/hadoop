@@ -20,14 +20,20 @@ package org.apache.hadoop.hdfs.protocol.datatransfer.sasl;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.util.Map;
+import java.util.Objects;
 import javax.security.auth.callback.CallbackHandler;
 import javax.security.sasl.Sasl;
 import javax.security.sasl.SaslClient;
+import javax.security.sasl.SaslClientFactory;
 import javax.security.sasl.SaslException;
 import javax.security.sasl.SaslServer;
+import javax.security.sasl.SaslServerFactory;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair;
+import org.apache.hadoop.security.FastSaslClientFactory;
+import org.apache.hadoop.security.FastSaslServerFactory;
+import org.apache.hadoop.security.SaslMechanismFactory;
 import org.apache.hadoop.security.SaslInputStream;
 import org.apache.hadoop.security.SaslOutputStream;
 
@@ -46,12 +52,26 @@ class SaslParticipant {
   // a short string.
   private static final String SERVER_NAME = "0";
   private static final String PROTOCOL = "hdfs";
-  private static final String MECHANISM = "DIGEST-MD5";
+  private static final String[] MECHANISM_ARRAY = {SaslMechanismFactory.getMechanism()};
+  private static final byte[] EMPTY_BYTE_ARRAY = {};
 
   // One of these will always be null.
   private final SaslServer saslServer;
   private final SaslClient saslClient;
+  private static SaslServerFactory saslServerFactory;
+  private static SaslClientFactory saslClientFactory;
 
+  private static void initializeSaslServerFactory() {
+    if (saslServerFactory == null) {
+      saslServerFactory = new FastSaslServerFactory(null);
+    }
+  }
+
+  private static void initializeSaslClientFactory() {
+    if (saslClientFactory == null) {
+      saslClientFactory = new FastSaslClientFactory(null);
+    }
+  }
   /**
    * Creates a SaslParticipant wrapping a SaslServer.
    *
@@ -63,7 +83,8 @@ class SaslParticipant {
   public static SaslParticipant createServerSaslParticipant(
       Map<String, String> saslProps, CallbackHandler callbackHandler)
       throws SaslException {
-    return new SaslParticipant(Sasl.createSaslServer(MECHANISM,
+    initializeSaslServerFactory();
+    return new SaslParticipant(saslServerFactory.createSaslServer(MECHANISM_ARRAY[0],
       PROTOCOL, SERVER_NAME, saslProps, callbackHandler));
   }
 
@@ -79,8 +100,10 @@ class SaslParticipant {
   public static SaslParticipant createClientSaslParticipant(String userName,
       Map<String, String> saslProps, CallbackHandler callbackHandler)
       throws SaslException {
-    return new SaslParticipant(Sasl.createSaslClient(new String[] { MECHANISM },
-      userName, PROTOCOL, SERVER_NAME, saslProps, callbackHandler));
+    initializeSaslClientFactory();
+    return new SaslParticipant(
+        saslClientFactory.createSaslClient(MECHANISM_ARRAY, userName,
+            PROTOCOL, SERVER_NAME, saslProps, callbackHandler));
   }
 
   /**
@@ -89,7 +112,7 @@ class SaslParticipant {
    * @param saslServer to wrap
    */
   private SaslParticipant(SaslServer saslServer) {
-    this.saslServer = saslServer;
+    this.saslServer = Objects.requireNonNull(saslServer, "saslServer == null");
     this.saslClient = null;
   }
 
@@ -100,7 +123,17 @@ class SaslParticipant {
    */
   private SaslParticipant(SaslClient saslClient) {
     this.saslServer = null;
-    this.saslClient = saslClient;
+    this.saslClient = Objects.requireNonNull(saslClient, "saslClient == null");
+  }
+
+  byte[] createFirstMessage() throws SaslException {
+    if (saslClient != null) {
+      return saslClient.hasInitialResponse()
+          ? saslClient.evaluateChallenge(EMPTY_BYTE_ARRAY)
+          : EMPTY_BYTE_ARRAY;
+    }
+    throw new IllegalStateException(
+        "createFirstMessage must only be called for clients");
   }
 
   /**
@@ -206,5 +239,10 @@ class SaslParticipant {
           new SaslInputStream(in, saslServer),
           new SaslOutputStream(out, saslServer));
     }
+  }
+
+  @Override
+  public String toString() {
+    return "Sasl" + (saslServer != null? "Server" : "Client");
   }
 }

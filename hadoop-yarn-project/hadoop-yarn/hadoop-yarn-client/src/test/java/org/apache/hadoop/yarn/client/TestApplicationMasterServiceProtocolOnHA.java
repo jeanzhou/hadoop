@@ -21,7 +21,6 @@ package org.apache.hadoop.yarn.client;
 import java.io.IOException;
 import java.util.ArrayList;
 
-import org.junit.Assert;
 
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
@@ -34,30 +33,34 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ResourceBlacklistRequest;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.exceptions.YarnException;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
+@Timeout(180)
 public class TestApplicationMasterServiceProtocolOnHA
     extends ApplicationMasterServiceProtoTestBase {
-  @Before
+
+  @BeforeEach
   public void initialize() throws Exception {
     startHACluster(0, false, false, true);
     super.startupHAAndSetupClient();
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testRegisterApplicationMasterOnHA() throws YarnException,
       IOException {
     RegisterApplicationMasterRequest request =
         RegisterApplicationMasterRequest.newInstance("localhost", 0, "");
     RegisterApplicationMasterResponse response =
         getAMClient().registerApplicationMaster(request);
-    Assert.assertEquals(response,
+    assertEquals(response,
         this.cluster.createFakeRegisterApplicationMasterResponse());
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testFinishApplicationMasterOnHA() throws YarnException,
       IOException {
     FinishApplicationMasterRequest request =
@@ -65,11 +68,11 @@ public class TestApplicationMasterServiceProtocolOnHA
             FinalApplicationStatus.SUCCEEDED, "", "");
     FinishApplicationMasterResponse response =
         getAMClient().finishApplicationMaster(request);
-    Assert.assertEquals(response,
+    assertEquals(response,
         this.cluster.createFakeFinishApplicationMasterResponse());
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testAllocateOnHA() throws YarnException, IOException {
     AllocateRequest request = AllocateRequest.newInstance(0, 50f,
         new ArrayList<ResourceRequest>(),
@@ -77,6 +80,6 @@ public class TestApplicationMasterServiceProtocolOnHA
         ResourceBlacklistRequest.newInstance(new ArrayList<String>(),
             new ArrayList<String>()));
     AllocateResponse response = getAMClient().allocate(request);
-    Assert.assertEquals(response, this.cluster.createFakeAllocateResponse());
+    assertEquals(response, this.cluster.createFakeAllocateResponse());
   }
 }

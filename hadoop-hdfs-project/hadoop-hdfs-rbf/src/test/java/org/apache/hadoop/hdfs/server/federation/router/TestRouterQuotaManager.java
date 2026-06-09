@@ -17,16 +17,16 @@
  */
 package org.apache.hadoop.hdfs.server.federation.router;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Set;
 
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests for class {@link RouterQuotaManager}.
@@ -34,12 +34,12 @@ import org.junit.Test;
 public class TestRouterQuotaManager {
   private static RouterQuotaManager manager;
 
-  @Before
+  @BeforeEach
   public void setup() {
     manager = new RouterQuotaManager();
   }
 
-  @After
+  @AfterEach
   public void cleanup() {
     manager.clear();
   }
@@ -75,51 +75,51 @@ public class TestRouterQuotaManager {
   public void testGetQuotaUsage() {
     RouterQuotaUsage quotaGet;
 
-    // test case1: get quota with an non-exist path
+    // test case1: get quota with a non-exist path
     quotaGet = manager.getQuotaUsage("/non-exist-path");
     assertNull(quotaGet);
 
-    // test case2: get quota from an no-quota set path
+    // test case2: get quota from a no-quota set path
     RouterQuotaUsage.Builder quota = new RouterQuotaUsage.Builder()
-        .quota(HdfsConstants.QUOTA_DONT_SET)
-        .spaceQuota(HdfsConstants.QUOTA_DONT_SET);
+        .quota(HdfsConstants.QUOTA_RESET)
+        .spaceQuota(HdfsConstants.QUOTA_RESET);
     manager.put("/noQuotaSet", quota.build());
     quotaGet = manager.getQuotaUsage("/noQuotaSet");
     // it should return null
     assertNull(quotaGet);
 
-    // test case3: get quota from an quota-set path
+    // test case3: get quota from a quota-set path
     quota.quota(1);
-    quota.spaceQuota(HdfsConstants.QUOTA_DONT_SET);
+    quota.spaceQuota(HdfsConstants.QUOTA_RESET);
     manager.put("/hasQuotaSet", quota.build());
     quotaGet = manager.getQuotaUsage("/hasQuotaSet");
     assertEquals(1, quotaGet.getQuota());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quotaGet.getSpaceQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quotaGet.getSpaceQuota());
 
-    // test case4: get quota with an non-exist child path
+    // test case4: get quota with a non-exist child path
     quotaGet = manager.getQuotaUsage("/hasQuotaSet/file");
     // it will return the nearest ancestor which quota was set
     assertEquals(1, quotaGet.getQuota());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quotaGet.getSpaceQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quotaGet.getSpaceQuota());
 
-    // test case5: get quota with an child path which its parent
+    // test case5: get quota with a child path which its parent
     // wasn't quota set
-    quota.quota(HdfsConstants.QUOTA_DONT_SET);
-    quota.spaceQuota(HdfsConstants.QUOTA_DONT_SET);
+    quota.quota(HdfsConstants.QUOTA_RESET);
+    quota.spaceQuota(HdfsConstants.QUOTA_RESET);
     manager.put("/hasQuotaSet/noQuotaSet", quota.build());
-    // here should returns the quota of path /hasQuotaSet
+    // here should return the quota of path /hasQuotaSet
     // (the nearest ancestor which quota was set)
     quotaGet = manager.getQuotaUsage("/hasQuotaSet/noQuotaSet/file");
     assertEquals(1, quotaGet.getQuota());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quotaGet.getSpaceQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quotaGet.getSpaceQuota());
 
-    // test case6: get quota with an child path which its parent was quota set
+    // test case6: get quota with a child path which its parent was quota set
     quota.quota(2);
-    quota.spaceQuota(HdfsConstants.QUOTA_DONT_SET);
+    quota.spaceQuota(HdfsConstants.QUOTA_RESET);
     manager.put("/hasQuotaSet/hasQuotaSet", quota.build());
     // here should return the quota of path /hasQuotaSet/hasQuotaSet
     quotaGet = manager.getQuotaUsage("/hasQuotaSet/hasQuotaSet/file");
     assertEquals(2, quotaGet.getQuota());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quotaGet.getSpaceQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quotaGet.getSpaceQuota());
   }
 }

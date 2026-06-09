@@ -27,6 +27,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
+import org.apache.hadoop.yarn.api.records.LocalizationStatus;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.event.Dispatcher;
@@ -39,7 +40,9 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Cont
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerState;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ResourceMappings;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ResourceSet;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerExecutionException;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
+import org.apache.hadoop.yarn.util.resource.Resources;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -71,7 +74,7 @@ public class MockContainer implements Container {
     this.containerTokenIdentifier =
         BuilderUtils.newContainerTokenIdentifier(BuilderUtils
           .newContainerToken(id, 0, "127.0.0.1", 1234, user,
-            BuilderUtils.newResource(1024, 1), currentTime + 10000, 123,
+            Resources.createResource(1024), currentTime + 10000, 123,
             "password".getBytes(), currentTime));
     this.state = ContainerState.NEW;
   }
@@ -118,6 +121,11 @@ public class MockContainer implements Container {
 
   @Override
   public String toString() {
+    return "";
+  }
+
+  @Override
+  public String localizationCountersAsString() {
     return "";
   }
 
@@ -174,6 +182,16 @@ public class MockContainer implements Container {
   }
 
   @Override
+  public String getCsiVolumesRootDir() {
+    return null;
+  }
+
+  @Override
+  public void setCsiVolumesRootDir(String volumesRootDir) {
+
+  }
+
+  @Override
   public String getLogDir() {
     return null;
   }
@@ -190,6 +208,10 @@ public class MockContainer implements Container {
   @Override
   public void setIpAndHost(String[] ipAndHost) {
 
+  }
+
+  @Override
+  public void setExposedPorts(String ports) {
   }
 
   @Override
@@ -242,6 +264,11 @@ public class MockContainer implements Container {
   }
 
   @Override
+  public long getContainerLaunchTime() {
+    return 0;
+  }
+
+  @Override
   public ResourceMappings getResourceMappings() {
     return null;
   }
@@ -249,5 +276,23 @@ public class MockContainer implements Container {
   @Override
   public void sendPauseEvent(String description) {
 
+  }
+  @Override public boolean isContainerInFinalStates() {
+    return false;
+  }
+
+  @Override
+  public List<LocalizationStatus> getLocalizationStatuses() {
+    return null;
+  }
+
+  @Override
+  public void setContainerRuntimeData(Object containerRuntimeData) {
+  }
+
+  @Override
+  public <T> T getContainerRuntimeData(Class<T> runtimeClazz)
+      throws ContainerExecutionException {
+    return null;
   }
 }

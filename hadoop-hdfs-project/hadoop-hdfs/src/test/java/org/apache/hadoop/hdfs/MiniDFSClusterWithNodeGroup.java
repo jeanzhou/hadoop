@@ -21,8 +21,8 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_HOST_NAME_KEY;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
@@ -39,7 +39,8 @@ import org.apache.hadoop.security.UserGroupInformation;
 public class MiniDFSClusterWithNodeGroup extends MiniDFSCluster {
 
   private static String[] NODE_GROUPS = null;
-  private static final Log LOG = LogFactory.getLog(MiniDFSClusterWithNodeGroup.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(MiniDFSClusterWithNodeGroup.class);
   
   public MiniDFSClusterWithNodeGroup(Builder builder) throws IOException {
     super(builder);
@@ -117,7 +118,7 @@ public class MiniDFSClusterWithNodeGroup extends MiniDFSCluster {
     for (int i = curDatanodesNum; i < curDatanodesNum+numDataNodes; i++) {
       Configuration dnConf = new HdfsConfiguration(conf);
       // Set up datanode address
-      setupDatanodeAddress(dnConf, setupHostsFile, checkDataNodeAddrConfig);
+      setupDatanodeAddress(dnConf, setupHostsFile, checkDataNodeAddrConfig, 0, 0);
       if (manageDfsDirs) {
         String dirs = makeDataNodeDirs(i, storageTypes == null ? null : storageTypes[i]);
         dnConf.set(DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY, dirs);
@@ -234,7 +235,9 @@ public class MiniDFSClusterWithNodeGroup extends MiniDFSCluster {
       boolean setupHostsFile,
       boolean checkDataNodeAddrConfig,
       boolean checkDataNodeHostConfig,
-      Configuration[] dnConfOverlays) throws IOException {
+      Configuration[] dnConfOverlays,
+      int[] dnHttpPorts,
+      int[] dnIpcPorts) throws IOException {
     startDataNodes(conf, numDataNodes, storageTypes, manageDfsDirs, operation, racks,
         NODE_GROUPS, hosts, storageCapacities, simulatedCapacities, setupHostsFile,
         checkDataNodeAddrConfig, checkDataNodeHostConfig);

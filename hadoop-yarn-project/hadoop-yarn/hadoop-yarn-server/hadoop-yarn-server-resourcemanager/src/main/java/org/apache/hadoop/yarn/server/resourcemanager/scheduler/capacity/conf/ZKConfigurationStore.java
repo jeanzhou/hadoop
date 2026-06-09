@@ -18,9 +18,11 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.conf;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.io.serialization.ValidatingObjectInputStream;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.zookeeper.KeeperException.NodeExistsException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.curator.ZKCuratorManager;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -31,22 +33,23 @@ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.data.ACL;
 
+import java.io.IOException;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A Zookeeper-based implementation of {@link YarnConfigurationStore}.
  */
 public class ZKConfigurationStore extends YarnConfigurationStore {
 
-  public static final Log LOG =
-      LogFactory.getLog(ZKConfigurationStore.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(ZKConfigurationStore.class);
 
   private long maxLogs;
 
@@ -54,33 +57,35 @@ public class ZKConfigurationStore extends YarnConfigurationStore {
   protected static final Version CURRENT_VERSION_INFO = Version
       .newInstance(0, 1);
   private Configuration conf;
-  private LogMutation pendingMutation;
-
-  private String znodeParentPath;
 
   private static final String ZK_VERSION_PATH = "VERSION";
   private static final String LOGS_PATH = "LOGS";
   private static final String CONF_STORE_PATH = "CONF_STORE";
   private static final String FENCING_PATH = "FENCING";
-
+  private static final String CONF_VERSION_PATH = "CONF_VERSION";
+  private static final String NODEEXISTS_MSG = "Encountered NodeExists error."
+      + " Skipping znode creation since another RM has already created it";
+  private String znodeParentPath;
   private String zkVersionPath;
   private String logsPath;
   private String confStorePath;
   private String fencingNodePath;
+  private String confVersionPath;
 
-  @VisibleForTesting
-  protected ZKCuratorManager zkManager;
+  private ZKCuratorManager zkManager;
   private List<ACL> zkAcl;
 
   @Override
   public void initialize(Configuration config, Configuration schedConf,
       RMContext rmContext) throws Exception {
     this.conf = config;
+
+    this.znodeParentPath = conf.get(
+        YarnConfiguration.RM_SCHEDCONF_STORE_ZK_PARENT_PATH,
+        YarnConfiguration.DEFAULT_RM_SCHEDCONF_STORE_ZK_PARENT_PATH);
+
     this.maxLogs = conf.getLong(YarnConfiguration.RM_SCHEDCONF_MAX_LOGS,
         YarnConfiguration.DEFAULT_RM_SCHEDCONF_ZK_MAX_LOGS);
-    this.znodeParentPath =
-        conf.get(YarnConfiguration.RM_SCHEDCONF_STORE_ZK_PARENT_PATH,
-            YarnConfiguration.DEFAULT_RM_SCHEDCONF_STORE_ZK_PARENT_PATH);
     this.zkManager =
         rmContext.getResourceManager().createAndStartZKManager(conf);
     this.zkAcl = ZKCuratorManager.getZKAcls(conf);
@@ -89,33 +94,40 @@ public class ZKConfigurationStore extends YarnConfigurationStore {
     this.logsPath = getNodePath(znodeParentPath, LOGS_PATH);
     this.confStorePath = getNodePath(znodeParentPath, CONF_STORE_PATH);
     this.fencingNodePath = getNodePath(znodeParentPath, FENCING_PATH);
+    this.confVersionPath = getNodePath(znodeParentPath, CONF_VERSION_PATH);
 
-    zkManager.createRootDirRecursively(znodeParentPath);
+    try {
+      zkManager.createRootDirRecursively(znodeParentPath, zkAcl);
+    } catch(NodeExistsException e) {
+      LOG.warn(NODEEXISTS_MSG, e);
+    }
     zkManager.delete(fencingNodePath);
 
-    if (!zkManager.exists(logsPath)) {
-      zkManager.create(logsPath);
-      zkManager.setData(logsPath,
-          serializeObject(new LinkedList<LogMutation>()), -1);
+    if (createNewZkPath(logsPath)) {
+      setZkData(logsPath, new LinkedList<LogMutation>());
     }
 
-    if (!zkManager.exists(confStorePath)) {
-      zkManager.create(confStorePath);
+    if (createNewZkPath(confVersionPath)) {
+      setZkData(confVersionPath, String.valueOf(0));
+    }
+
+    if (createNewZkPath(confStorePath)) {
       HashMap<String, String> mapSchedConf = new HashMap<>();
       for (Map.Entry<String, String> entry : schedConf) {
         mapSchedConf.put(entry.getKey(), entry.getValue());
       }
-      zkManager.setData(confStorePath, serializeObject(mapSchedConf), -1);
+      setZkData(confStorePath, mapSchedConf);
+      long configVersion = getConfigVersion() + 1L;
+      setZkData(confVersionPath, String.valueOf(configVersion));
     }
   }
 
   @VisibleForTesting
+  @Override
   protected LinkedList<LogMutation> getLogs() throws Exception {
-    return (LinkedList<LogMutation>)
-        deserializeObject(zkManager.getData(logsPath));
+    return unsafeCast(deserializeObject(getZkData(logsPath)));
   }
 
-  // TODO: following version-related code is taken from ZKRMStateStore
   @Override
   public Version getCurrentVersion() {
     return CURRENT_VERSION_INFO;
@@ -124,7 +136,7 @@ public class ZKConfigurationStore extends YarnConfigurationStore {
   @Override
   public Version getConfStoreVersion() throws Exception {
     if (zkManager.exists(zkVersionPath)) {
-      byte[] data = zkManager.getData(zkVersionPath);
+      byte[] data = getZkData(zkVersionPath);
       return new VersionPBImpl(YarnServerCommonProtos.VersionProto
           .parseFrom(data));
     }
@@ -133,37 +145,41 @@ public class ZKConfigurationStore extends YarnConfigurationStore {
   }
 
   @Override
+  public void format() throws Exception {
+    zkManager.delete(znodeParentPath);
+  }
+
+  @Override
   public synchronized void storeVersion() throws Exception {
     byte[] data =
         ((VersionPBImpl) CURRENT_VERSION_INFO).getProto().toByteArray();
 
     if (zkManager.exists(zkVersionPath)) {
-      zkManager.safeSetData(zkVersionPath, data, -1, zkAcl, fencingNodePath);
+      safeSetZkData(zkVersionPath, data);
     } else {
-      zkManager.safeCreate(zkVersionPath, data, zkAcl, CreateMode.PERSISTENT,
-          zkAcl, fencingNodePath);
+      safeCreateZkData(zkVersionPath, data);
     }
   }
 
   @Override
   public void logMutation(LogMutation logMutation) throws Exception {
-    byte[] storedLogs = zkManager.getData(logsPath);
-    LinkedList<LogMutation> logs = new LinkedList<>();
-    if (storedLogs != null) {
-      logs = (LinkedList<LogMutation>) deserializeObject(storedLogs);
+    if (maxLogs > 0) {
+      byte[] storedLogs = getZkData(logsPath);
+      LinkedList<LogMutation> logs = new LinkedList<>();
+      if (storedLogs != null) {
+        logs = unsafeCast(deserializeObject(storedLogs));
+      }
+      logs.add(logMutation);
+      if (logs.size() > maxLogs) {
+        logs.remove(logs.removeFirst());
+      }
+      safeSetZkData(logsPath, logs);
     }
-    logs.add(logMutation);
-    if (logs.size() > maxLogs) {
-      logs.remove(logs.removeFirst());
-    }
-    zkManager.safeSetData(logsPath, serializeObject(logs), -1, zkAcl,
-        fencingNodePath);
-    pendingMutation = logMutation;
   }
 
   @Override
-  public void confirmMutation(boolean isValid)
-      throws Exception {
+  public void confirmMutation(LogMutation pendingMutation,
+      boolean isValid) throws Exception {
     if (isValid) {
       Configuration storedConfigs = retrieve();
       Map<String, String> mapConf = new HashMap<>();
@@ -178,25 +194,26 @@ public class ZKConfigurationStore extends YarnConfigurationStore {
           mapConf.put(confChange.getKey(), confChange.getValue());
         }
       }
-      zkManager.safeSetData(confStorePath, serializeObject(mapConf), -1,
-          zkAcl, fencingNodePath);
+      safeSetZkData(confStorePath, mapConf);
+      long configVersion = getConfigVersion() + 1L;
+      setZkData(confVersionPath, String.valueOf(configVersion));
+
     }
-    pendingMutation = null;
   }
 
   @Override
   public synchronized Configuration retrieve() {
     byte[] serializedSchedConf;
     try {
-      serializedSchedConf = zkManager.getData(confStorePath);
+      serializedSchedConf = getZkData(confStorePath);
     } catch (Exception e) {
       LOG.error("Failed to retrieve configuration from zookeeper store", e);
       return null;
     }
     try {
       Map<String, String> map =
-          (HashMap<String, String>) deserializeObject(serializedSchedConf);
-      Configuration c = new Configuration();
+          unsafeCast(deserializeObject(serializedSchedConf));
+      Configuration c = new Configuration(false);
       for (Map.Entry<String, String> e : map.entrySet()) {
         c.set(e.getKey(), e.getValue());
       }
@@ -209,8 +226,106 @@ public class ZKConfigurationStore extends YarnConfigurationStore {
   }
 
   @Override
+  public long getConfigVersion() throws Exception {
+    String version = zkManager.getStringData(confVersionPath);
+    if (version == null) {
+      throw new IllegalStateException("Config version can not be properly " +
+          "serialized. Check Zookeeper config version path to locate " +
+          "the error!");
+    }
+
+    return Long.parseLong(version);
+  }
+
+  @Override
   public List<LogMutation> getConfirmedConfHistory(long fromId) {
     return null; // unimplemented
+  }
+
+  /**
+   * Creates a new path in Zookeeper only, if it does not already exist.
+   *
+   * @param path Value of the Zookeeper path
+   * @return <code>true</code>if the creation executed; <code>false</code>
+   * otherwise.
+   * @throws Exception
+   */
+  private boolean createNewZkPath(String path) throws Exception {
+    if (!zkManager.exists(path)) {
+      try {
+        zkManager.create(path, zkAcl);
+      } catch(NodeExistsException e) {
+        LOG.warn(NODEEXISTS_MSG, e);
+        return false;
+      }
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  @VisibleForTesting
+  protected byte[] getZkData(String path) throws Exception {
+    // If the 'yarn resourcemanager -format-conf-store' command is issued
+    // while one of the RMs is in a starting state, the RM may fail. This
+    // occurs because the /confstore/CONF_STORE path may not yet exist.
+    // Alternatively, if the confstore is in the process of being written,
+    // the getZkData method returns a null value, causing the crash.
+    //To prevent this, added a re-try mechanism before giving up.
+    int maxRetries = 6;
+    int attempt = 1;
+    int sleepBetweenRetries = conf.getInt(
+        YarnConfiguration.RM_SCHEDCONF_STORE_ZK_READ_RETRY_SECS,
+        YarnConfiguration.DEFAULT_RM_SCHEDCONF_STORE_ZK_READ_RETRY_SECS);
+
+    while (attempt < maxRetries) {
+      if(zkManager.exists(path)) {
+        LOG.debug("zkManager.exists(path) {} exists.", path);
+        byte[] zkData = zkManager.getData(path);
+        if (zkData != null && zkData.length > 0) {
+          LOG.debug("We are returning the zkData OK!");
+          return zkData;
+        }
+      }
+      LOG.warn("The ZK CONFSTORE path or the ZkData was null. Retrying in {} "
+              + "seconds... (Attempt {})", sleepBetweenRetries, attempt);
+      TimeUnit.SECONDS.sleep(sleepBetweenRetries);
+      attempt++;
+    }
+    LOG.error("The ZK CONFSTORE path or the ZkData was null. Giving up.");
+    return new byte[0];
+  }
+
+
+  @VisibleForTesting
+  protected void setZkData(String path, byte[] data) throws Exception {
+    zkManager.setData(path, data, -1);
+  }
+
+  private void setZkData(String path, Object data) throws Exception {
+    setZkData(path, serializeObject(data));
+  }
+
+  private void setZkData(String path, String data) throws Exception {
+    zkManager.setData(path, data, -1);
+  }
+
+  private void safeSetZkData(String path, byte[] data) throws Exception {
+    zkManager.safeSetData(path, data, -1, zkAcl, fencingNodePath);
+  }
+
+  private void safeSetZkData(String path, Object data) throws Exception {
+    safeSetZkData(path, serializeObject(data));
+  }
+
+  @VisibleForTesting
+  protected void safeCreateZkData(String path, byte[] data) throws Exception {
+    try {
+      zkManager.safeCreate(path, data, zkAcl, CreateMode.PERSISTENT,
+          zkAcl, fencingNodePath);
+    } catch(NodeExistsException e) {
+      LOG.warn(NODEEXISTS_MSG, e);
+    }
   }
 
   private static String getNodePath(String root, String nodeName) {
@@ -229,8 +344,30 @@ public class ZKConfigurationStore extends YarnConfigurationStore {
 
   private static Object deserializeObject(byte[] bytes) throws Exception {
     try (ByteArrayInputStream bais = new ByteArrayInputStream(bytes);
-        ObjectInputStream ois = new ObjectInputStream(bais);) {
+         ValidatingObjectInputStream ois = new ValidatingObjectInputStream(bais);) {
+      ois.accept(LinkedList.class, LogMutation.class, HashMap.class, String.class);
       return ois.readObject();
+    }
+  }
+
+  /**
+   * Casts an object of type Object to type T. It is essential to emphasize,
+   * that it is an unsafe operation.
+   *
+   * @param o Object to be cast from
+   * @param <T> Type to cast to
+   * @return casted object of type T
+   * @throws ClassCastException
+   */
+  @SuppressWarnings("unchecked")
+  private static <T> T unsafeCast(Object o) throws ClassCastException {
+    return (T)o;
+  }
+
+  @Override
+  public void close() throws IOException {
+    if (zkManager  != null) {
+      zkManager.close();
     }
   }
 }

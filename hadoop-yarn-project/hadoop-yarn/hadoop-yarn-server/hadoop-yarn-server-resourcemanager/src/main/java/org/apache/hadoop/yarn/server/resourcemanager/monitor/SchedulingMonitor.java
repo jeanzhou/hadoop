@@ -23,18 +23,20 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 public class SchedulingMonitor extends AbstractService {
 
   private final SchedulingEditPolicy scheduleEditPolicy;
-  private static final Log LOG = LogFactory.getLog(SchedulingMonitor.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(SchedulingMonitor.class);
 
   // ScheduledExecutorService which schedules the PreemptionChecker to run
   // periodically.
@@ -69,7 +71,7 @@ public class SchedulingMonitor extends AbstractService {
     assert !stopped : "starting when already stopped";
     ses = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
       public Thread newThread(Runnable r) {
-        Thread t = new Thread(r);
+        Thread t = new SubjectInheritingThread(r);
         t.setName(getName());
         return t;
       }

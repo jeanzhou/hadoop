@@ -18,8 +18,8 @@
 -->
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
-<meta http-equiv="X-UA-Compatible" content="IE=9" />
-<link rel="stylesheet" type="text/css" href="/static/bootstrap-3.0.2/css/bootstrap.min.css" />
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<link rel="stylesheet" type="text/css" href="/static/bootstrap-3.4.1/css/bootstrap.min.css" />
 <link rel="stylesheet" type="text/css" href="/static/hadoop.css" />
 <title>DataNode Information</title>
 </head>
@@ -36,7 +36,11 @@
     <li class="dropdown">
       <a href="#" class="dropdown-toggle" data-toggle="dropdown">Utilities <b class="caret"></b></a>
       <ul class="dropdown-menu">
-        <li><a href="logs">Logs</a></li>
+        <li><a href="logs/">Logs</a></li>
+        <li><a href="logLevel">Log Level</a></li>
+        <li><a href="jmx">Metrics</a></li>
+        <li><a href="conf">Configuration</a></li>
+        <li><a href="stacks">Process Thread Dump</a></li>
       </ul>
     </li>
   </ul>
@@ -64,9 +68,10 @@
 
 <script type="text/x-dust-template" id="tmpl-dn">
 {#dn}
-<div class="page-header"><h1>DataNode on <small>{HostName}:{DataPort}</small></h1></div>
+<div class="page-header"><h1>DataNode on <small>{HostName}:{RpcPort}</small></h1></div>
 <table class="table table-bordered table-striped">
   <tr><th>Cluster ID:</th><td>{ClusterId}</td></tr>
+  <tr><th>Started:</th><td>{DNStartedTimeInMillis|date_tostring}</td></tr>
   <tr><th>Version:</th><td>{Version}</td></tr>
 </table>
 {/dn}
@@ -76,9 +81,11 @@
   <thead>
     <tr>
       <th>Namenode Address</th>
+      <th>Namenode HA State</th>
       <th>Block Pool ID</th>
       <th>Actor State</th>
-      <th>Last Heartbeat</th>
+      <th>Last Heartbeat Sent</th>
+      <th>Last Heartbeat Response</th>
       <th>Last Block Report</th>
       <th>Last Block Report Size (Max Size)</th>
     </tr>
@@ -86,9 +93,11 @@
   {#dn.BPServiceActorInfo}
     <tr>
       <td>{NamenodeAddress}</td>
+      <td>{NamenodeHaState}</td>
       <td>{BlockPoolID}</td>
       <td>{ActorState}</td>
       <td>{LastHeartbeat}s</td>
+      <td>{LastHeartbeatResponseTime}s</td>
       <td>{#helper_relative_time value="{LastBlockReport}"/}</td>
       <td>{maxBlockReportSize|fmt_bytes} ({maxDataLength|fmt_bytes})</td>
     </tr>
@@ -121,8 +130,8 @@
   {/dn.VolumeInfo}
 </script>
 
-<script type="text/javascript" src="/static/jquery-1.10.2.min.js"></script>
-<script type="text/javascript" src="/static/bootstrap-3.0.2/js/bootstrap.min.js"></script>
+<script type="text/javascript" src="/static/jquery-3.6.0.min.js"></script>
+<script type="text/javascript" src="/static/bootstrap-3.4.1/js/bootstrap.min.js"></script>
 <script type="text/javascript" src="/static/moment.min.js"></script>
 <script type="text/javascript" src="/static/dust-full-2.0.0.min.js"></script>
 <script type="text/javascript" src="/static/dust-helpers-1.1.1.min.js"></script>

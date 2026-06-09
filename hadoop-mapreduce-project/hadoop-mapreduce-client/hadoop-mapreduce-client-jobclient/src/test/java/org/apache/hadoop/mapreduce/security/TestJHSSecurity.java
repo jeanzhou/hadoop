@@ -18,15 +18,16 @@
 
 package org.apache.hadoop.mapreduce.security;
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
 
-import org.junit.Assert;
+import org.apache.hadoop.security.token.SecretManager;
+import org.apache.hadoop.test.LambdaTestUtils;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -37,7 +38,6 @@ import org.apache.hadoop.mapreduce.v2.api.protocolrecords.CancelDelegationTokenR
 import org.apache.hadoop.mapreduce.v2.api.protocolrecords.GetDelegationTokenRequest;
 import org.apache.hadoop.mapreduce.v2.api.protocolrecords.GetJobReportRequest;
 import org.apache.hadoop.mapreduce.v2.api.protocolrecords.RenewDelegationTokenRequest;
-import org.apache.hadoop.mapreduce.v2.hs.HistoryClientService;
 import org.apache.hadoop.mapreduce.v2.hs.HistoryServerStateStoreService;
 import org.apache.hadoop.mapreduce.v2.hs.JHSDelegationTokenSecretManager;
 import org.apache.hadoop.mapreduce.v2.hs.JobHistoryServer;
@@ -52,7 +52,7 @@ import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
 import org.apache.log4j.Level;
 import org.apache.log4j.LogManager;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,7 +62,7 @@ public class TestJHSSecurity {
       LoggerFactory.getLogger(TestJHSSecurity.class);
   
   @Test
-  public void testDelegationToken() throws IOException, InterruptedException {
+  public void testDelegationToken() throws Exception {
 
     org.apache.log4j.Logger rootLogger = LogManager.getRootLogger();
     rootLogger.setLevel(Level.DEBUG);
@@ -81,7 +81,7 @@ public class TestJHSSecurity {
     final long renewInterval = 10000l;
 
     JobHistoryServer jobHistoryServer = null;
-    MRClientProtocol clientUsingDT = null;
+    MRClientProtocol clientUsingDT;
     long tokenFetchTime;
     try {
       jobHistoryServer = new JobHistoryServer() {
@@ -92,22 +92,10 @@ public class TestJHSSecurity {
         @Override
         protected JHSDelegationTokenSecretManager createJHSSecretManager(
             Configuration conf, HistoryServerStateStoreService store) {
-          return new JHSDelegationTokenSecretManager(initialInterval, 
+          return new JHSDelegationTokenSecretManager(initialInterval,
               maxLifetime, renewInterval, 3600000, store);
         }
-
-        @Override
-        protected HistoryClientService createHistoryClientService() {
-          return new HistoryClientService(historyContext, 
-            this.jhsDTSecretManager) {
-            @Override
-            protected void initializeWebApp(Configuration conf) {
-              // Don't need it, skip.;
-              }
-          };
-        }
       };
-//      final JobHistoryServer jobHistoryServer = jhServer;
       jobHistoryServer.init(conf);
       jobHistoryServer.start();
       final MRClientProtocol hsService = jobHistoryServer.getClientService()
@@ -116,8 +104,8 @@ public class TestJHSSecurity {
       // Fake the authentication-method
       UserGroupInformation loggedInUser = UserGroupInformation
           .createRemoteUser("testrenewer@APACHE.ORG");
-      Assert.assertEquals("testrenewer", loggedInUser.getShortUserName());
-   // Default realm is APACHE.ORG
+      assertEquals("testrenewer", loggedInUser.getShortUserName());
+      // Default realm is APACHE.ORG
       loggedInUser.setAuthenticationMethod(AuthenticationMethod.KERBEROS);
 
 
@@ -136,7 +124,7 @@ public class TestJHSSecurity {
       try {
         clientUsingDT.getJobReport(jobReportRequest);
       } catch (IOException e) {
-        Assert.assertEquals("Unknown job job_123456_0001", e.getMessage());
+        assertEquals("Unknown job job_123456_0001", e.getMessage());
       }
       
    // Renew after 50% of token age.
@@ -159,7 +147,7 @@ public class TestJHSSecurity {
       try {
         clientUsingDT.getJobReport(jobReportRequest);
       } catch (IOException e) {
-        Assert.assertEquals("Unknown job job_123456_0001", e.getMessage());
+        assertEquals("Unknown job job_123456_0001", e.getMessage());
       }
       
       // Wait for expiry.
@@ -168,14 +156,11 @@ public class TestJHSSecurity {
       }
       Thread.sleep(50l);
       LOG.info("At time: " + System.currentTimeMillis() + ", token should be invalid");
-      // Token should have expired.      
-      try {
-        clientUsingDT.getJobReport(jobReportRequest);
-        fail("Should not have succeeded with an expired token");
-      } catch (IOException e) {
-        assertTrue(e.getCause().getMessage().contains("is expired"));
-      }
-      
+      // Token should have expired.
+      final MRClientProtocol finalClientUsingDT = clientUsingDT;
+      LambdaTestUtils.intercept(SecretManager.InvalidToken.class, "has expired",
+          () -> finalClientUsingDT.getJobReport(jobReportRequest));
+
       // Test cancellation
       // Stop the existing proxy, start another.
       if (clientUsingDT != null) {

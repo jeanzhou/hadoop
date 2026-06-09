@@ -31,8 +31,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.google.common.base.Supplier;
-
+import java.util.function.Supplier;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -42,6 +41,7 @@ import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.fs.FileSystemTestHelper;
 import org.apache.hadoop.fs.FileSystemTestWrapper;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -52,7 +52,6 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.client.CreateEncryptionZoneFlag;
 import org.apache.hadoop.hdfs.client.HdfsAdmin;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.ReencryptAction;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.ReencryptionStatus;
 import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
 import org.apache.hadoop.hdfs.protocol.ZoneReencryptionStatus;
@@ -60,27 +59,28 @@ import org.apache.hadoop.hdfs.server.namenode.ReencryptionUpdater.ZoneSubmission
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.RetriableException;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-
-import org.junit.rules.Timeout;
-import org.mockito.internal.util.reflection.Whitebox;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
 
 /**
  * Test class for re-encryption.
  */
+@Timeout(180)
+@Tag("slow")
 public class TestReencryption {
 
   protected static final org.slf4j.Logger LOG =
@@ -107,10 +107,7 @@ public class TestReencryption {
         testRootDir.toString(), "test.jks").toUri();
   }
 
-  @Rule
-  public Timeout globalTimeout = new Timeout(180 * 1000);
-
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     conf = new HdfsConfiguration();
     fsHelper = new FileSystemTestHelper();
@@ -153,7 +150,7 @@ public class TestReencryption {
         .setKeyProvider(cluster.getNameNode().getNamesystem().getProvider());
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -210,8 +207,7 @@ public class TestReencryption {
     ZoneReencryptionStatus zs = it.next();
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertNotEquals(fei0.getEzKeyVersionName(), zs.getEzKeyVersionName());
     assertEquals(fei1.getEzKeyVersionName(), zs.getEzKeyVersionName());
     assertEquals(10, zs.getFilesReencrypted());
@@ -417,8 +413,8 @@ public class TestReencryption {
 
     assertKeyVersionEquals(encFile0, fei0new);
     assertKeyVersionEquals(encFile9, fei9new);
-    assertNull("Re-encrypt queue should be empty after restart",
-        getReencryptionStatus().getNextUnprocessedZone());
+    assertNull(getReencryptionStatus().getNextUnprocessedZone(),
+        "Re-encrypt queue should be empty after restart");
   }
 
   @Test
@@ -497,18 +493,18 @@ public class TestReencryption {
     restartClusterDisableReencrypt();
 
     final Long zoneId = fsn.getFSDirectory().getINode(zone.toString()).getId();
-    assertEquals("Re-encrypt should restore to the last checkpoint zone",
-        zoneId, getReencryptionStatus().getNextUnprocessedZone());
-    assertEquals("Re-encrypt should restore to the last checkpoint file",
-        new Path(subdir, "4").toString(),
-        getEzManager().getZoneStatus(zone.toString()).getLastCheckpointFile());
+    assertEquals(zoneId, getReencryptionStatus().getNextUnprocessedZone(),
+        "Re-encrypt should restore to the last checkpoint zone");
+    assertEquals(new Path(subdir, "4").toString(),
+        getEzManager().getZoneStatus(zone.toString()).getLastCheckpointFile(),
+        "Re-encrypt should restore to the last checkpoint file");
 
     getEzManager().resumeReencryptForTesting();
     waitForReencryptedZones(1);
     assertKeyVersionChanged(encFile0, fei0);
     assertKeyVersionChanged(encFile9, fei9);
-    assertNull("Re-encrypt queue should be empty after restart",
-        getReencryptionStatus().getNextUnprocessedZone());
+    assertNull(getReencryptionStatus().getNextUnprocessedZone(),
+        "Re-encrypt queue should be empty after restart");
     assertEquals(11, getZoneStatus(zone.toString()).getFilesReencrypted());
   }
 
@@ -541,15 +537,15 @@ public class TestReencryption {
 
     final FileEncryptionInfo fei0new = getFileEncryptionInfo(encFile0);
     final FileEncryptionInfo fei9new = getFileEncryptionInfo(encFile9);
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     fs.saveNamespace();
-    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
     restartClusterDisableReencrypt();
 
     assertKeyVersionEquals(encFile0, fei0new);
     assertKeyVersionEquals(encFile9, fei9new);
-    assertNull("Re-encrypt queue should be empty after restart",
-        getReencryptionStatus().getNextUnprocessedZone());
+    assertNull(getReencryptionStatus().getNextUnprocessedZone(),
+        "Re-encrypt queue should be empty after restart");
   }
 
   @Test
@@ -603,12 +599,25 @@ public class TestReencryption {
     final ZoneReencryptionStatus zs = it.next();
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     if (fei != null) {
       assertNotEquals(fei.getEzKeyVersionName(), zs.getEzKeyVersionName());
     }
     assertEquals(expectedFiles, zs.getFilesReencrypted());
+  }
+
+  /**
+   * Verify the zone status' completion time is larger than 0, and is no less
+   * than submission time.
+   */
+  private void verifyZoneCompletionTime(final ZoneReencryptionStatus zs) {
+    assertNotNull(zs);
+    assertTrue(zs.getCompletionTime() > 0,
+        "Completion time should be positive. " + zs.getCompletionTime());
+    assertTrue(zs.getCompletionTime() >= zs.getSubmissionTime(),
+        "Completion time " + zs.getCompletionTime()
+        + " should be no less than submission time "
+        + zs.getSubmissionTime());
   }
 
   @Test
@@ -641,9 +650,9 @@ public class TestReencryption {
     dfsAdmin.reencryptEncryptionZone(zone, ReencryptAction.START);
     waitForQueuedZones(1);
 
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     fs.saveNamespace();
-    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
 
     // verify after loading from fsimage the command is loaded
     restartClusterDisableReencrypt();
@@ -706,9 +715,9 @@ public class TestReencryption {
     }
 
     // Verify the same is true after loading from FSImage
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     fs.saveNamespace();
-    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
 
     restartClusterDisableReencrypt();
     waitForQueuedZones(numZones - cancelled.size());
@@ -1371,15 +1380,15 @@ public class TestReencryption {
   private void assertKeyVersionChanged(final Path file,
       final FileEncryptionInfo original) throws Exception {
     final FileEncryptionInfo actual = getFileEncryptionInfo(file);
-    assertNotEquals("KeyVersion should be different",
-        original.getEzKeyVersionName(), actual.getEzKeyVersionName());
+    assertNotEquals(original.getEzKeyVersionName(), actual.getEzKeyVersionName(),
+        "KeyVersion should be different");
   }
 
   private void assertKeyVersionEquals(final Path file,
       final FileEncryptionInfo expected) throws Exception {
     final FileEncryptionInfo actual = getFileEncryptionInfo(file);
-    assertEquals("KeyVersion should be the same",
-        expected.getEzKeyVersionName(), actual.getEzKeyVersionName());
+    assertEquals(expected.getEzKeyVersionName(), actual.getEzKeyVersionName(),
+        "KeyVersion should be the same");
   }
 
   @Test
@@ -1479,7 +1488,7 @@ public class TestReencryption {
       }
 
       @Override
-      public void reencryptEncryptedKeys() throws IOException {
+      public synchronized void reencryptEncryptedKeys() throws IOException {
         if (exceptionCount > 0) {
           exceptionCount--;
           try {
@@ -1540,8 +1549,7 @@ public class TestReencryption {
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
     assertTrue(zs.isCanceled());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(0, zs.getFilesReencrypted());
 
     assertTrue(getUpdater().isRunning());
@@ -1563,8 +1571,7 @@ public class TestReencryption {
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
     assertFalse(zs.isCanceled());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(10, zs.getFilesReencrypted());
   }
 
@@ -1582,8 +1589,7 @@ public class TestReencryption {
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
     assertTrue(zs.isCanceled());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(0, zs.getFilesReencrypted());
 
     // verify re-encryption works after restart.
@@ -1595,8 +1601,7 @@ public class TestReencryption {
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
     assertFalse(zs.isCanceled());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(10, zs.getFilesReencrypted());
   }
 
@@ -1682,8 +1687,7 @@ public class TestReencryption {
     ZoneReencryptionStatus zs = it.next();
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(10, zs.getFilesReencrypted());
   }
 
@@ -1709,7 +1713,7 @@ public class TestReencryption {
     dfsAdmin.reencryptEncryptionZone(zone, ReencryptAction.START);
     waitForReencryptedFiles(zone.toString(), 5);
 
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     getEzManager().resumeReencryptForTesting();
     for (int i = 0; i < 3; ++i) {
       Thread.sleep(1000);
@@ -1722,7 +1726,7 @@ public class TestReencryption {
       assertEquals(5, zs.getFilesReencrypted());
     }
 
-    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
     // trigger the background thread to run, without having to
     // wait for DFS_NAMENODE_REENCRYPT_SLEEP_INTERVAL_KEY
     getHandler().notifyNewSubmission();
@@ -1739,7 +1743,7 @@ public class TestReencryption {
       }
 
       @Override
-      public void reencryptEncryptedKeys() throws IOException {
+      public synchronized void reencryptEncryptedKeys() throws IOException {
         if (exceptionCount > 0) {
           --exceptionCount;
           throw new IOException("Injected KMS failure");
@@ -1775,8 +1779,7 @@ public class TestReencryption {
     ZoneReencryptionStatus zs = it.next();
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(5, zs.getFilesReencrypted());
     assertEquals(5, zs.getNumReencryptionFailures());
   }
@@ -1791,7 +1794,8 @@ public class TestReencryption {
       }
 
       @Override
-      public void reencryptUpdaterProcessOneTask() throws IOException {
+      public synchronized void reencryptUpdaterProcessOneTask()
+          throws IOException {
         if (exceptionCount > 0) {
           --exceptionCount;
           throw new IOException("Injected process task failure");
@@ -1827,8 +1831,7 @@ public class TestReencryption {
     ZoneReencryptionStatus zs = it.next();
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(5, zs.getFilesReencrypted());
     assertEquals(1, zs.getNumReencryptionFailures());
   }
@@ -1844,7 +1847,8 @@ public class TestReencryption {
       }
 
       @Override
-      public void reencryptUpdaterProcessCheckpoint() throws IOException {
+      public synchronized void reencryptUpdaterProcessCheckpoint()
+          throws IOException {
         if (exceptionCount > 0) {
           --exceptionCount;
           throw new IOException("Injected process checkpoint failure");
@@ -1880,8 +1884,7 @@ public class TestReencryption {
     ZoneReencryptionStatus zs = it.next();
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(10, zs.getFilesReencrypted());
     assertEquals(1, zs.getNumReencryptionFailures());
   }
@@ -1896,7 +1899,8 @@ public class TestReencryption {
       }
 
       @Override
-      public void reencryptUpdaterProcessOneTask() throws IOException {
+      public synchronized void reencryptUpdaterProcessOneTask()
+          throws IOException {
         if (exceptionCount > 0) {
           --exceptionCount;
           throw new RetriableException("Injected process task failure");
@@ -1933,8 +1937,7 @@ public class TestReencryption {
     ZoneReencryptionStatus zs = it.next();
     assertEquals(zone.toString(), zs.getZoneName());
     assertEquals(ZoneReencryptionStatus.State.Completed, zs.getState());
-    assertTrue(zs.getCompletionTime() > 0);
-    assertTrue(zs.getCompletionTime() > zs.getSubmissionTime());
+    verifyZoneCompletionTime(zs);
     assertEquals(10, zs.getFilesReencrypted());
     assertEquals(0, zs.getNumReencryptionFailures());
   }

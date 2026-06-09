@@ -41,7 +41,6 @@ import java.util.regex.Pattern;
 
 import javax.crypto.KeyGenerator;
 
-import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -115,6 +114,7 @@ import org.apache.hadoop.mapreduce.v2.app.rm.RMContainerRequestor;
 import org.apache.hadoop.mapreduce.v2.app.rm.RMHeartbeatHandler;
 import org.apache.hadoop.mapreduce.v2.app.rm.preemption.AMPreemptionPolicy;
 import org.apache.hadoop.mapreduce.v2.app.rm.preemption.NoopAMPreemptionPolicy;
+import org.apache.hadoop.mapreduce.v2.app.security.authorize.TaskLevelSecurityEnforcer;
 import org.apache.hadoop.mapreduce.v2.app.speculate.DefaultSpeculator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.Speculator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.SpeculatorEvent;
@@ -135,6 +135,7 @@ import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.StringInterner;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.YarnUncaughtExceptionHandler;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.ApplicationConstants.Environment;
@@ -154,7 +155,7 @@ import org.apache.hadoop.yarn.security.client.ClientToAMTokenSecretManager;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.SystemClock;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -740,10 +741,10 @@ public class MRAppMaster extends CompositeService {
     public void handle(JobFinishEvent event) {
       // Create a new thread to shutdown the AM. We should not do it in-line
       // to avoid blocking the dispatcher itself.
-      new Thread() {
+      new SubjectInheritingThread() {
         
         @Override
-        public void run() {
+        public void work() {
           shutDownJob();
         }
       }.start();
@@ -1474,9 +1475,8 @@ public class MRAppMaster extends CompositeService {
 
   private List<AMInfo> readJustAMInfos() {
     List<AMInfo> amInfos = new ArrayList<AMInfo>();
-    FSDataInputStream inputStream = null;
-    try {
-      inputStream = getPreviousJobHistoryStream(getConfig(), appAttemptID);
+    try (FSDataInputStream inputStream =
+             getPreviousJobHistoryStream(getConfig(), appAttemptID)) {
       EventReader jobHistoryEventReader = new EventReader(inputStream);
 
       // All AMInfos are contiguous. Track when the first AMStartedEvent
@@ -1492,11 +1492,11 @@ public class MRAppMaster extends CompositeService {
           }
           AMStartedEvent amStartedEvent = (AMStartedEvent) event;
           amInfos.add(MRBuilderUtils.newAMInfo(
-            amStartedEvent.getAppAttemptId(), amStartedEvent.getStartTime(),
-            amStartedEvent.getContainerId(),
-            StringInterner.weakIntern(amStartedEvent.getNodeManagerHost()),
-            amStartedEvent.getNodeManagerPort(),
-            amStartedEvent.getNodeManagerHttpPort()));
+              amStartedEvent.getAppAttemptId(), amStartedEvent.getStartTime(),
+              amStartedEvent.getContainerId(),
+              StringInterner.weakIntern(amStartedEvent.getNodeManagerHost()),
+              amStartedEvent.getNodeManagerPort(),
+              amStartedEvent.getNodeManagerHttpPort()));
         } else if (amStartedEventsBegan) {
           // This means AMStartedEvents began and this event is a
           // non-AMStarted event.
@@ -1507,10 +1507,6 @@ public class MRAppMaster extends CompositeService {
     } catch (IOException e) {
       LOG.warn("Could not parse the old history file. "
           + "Will not have old AMinfos ", e);
-    } finally {
-      if (inputStream != null) {
-        IOUtils.closeQuietly(inputStream);
-      }
     }
     return amInfos;
   }
@@ -1688,6 +1684,7 @@ public class MRAppMaster extends CompositeService {
       String jobUserName = System
           .getenv(ApplicationConstants.Environment.USER.name());
       conf.set(MRJobConfig.USER_NAME, jobUserName);
+      TaskLevelSecurityEnforcer.validate(conf, UserGroupInformation.getCurrentUser());
       initAndStartAppMaster(appMaster, conf, jobUserName);
     } catch (Throwable t) {
       LOG.error("Error starting MRAppMaster", t);
@@ -1714,6 +1711,19 @@ public class MRAppMaster extends CompositeService {
       }
       appMaster.notifyIsLastAMRetry(appMaster.isLastAMRetry);
       appMaster.stop();
+      try {
+        JobContext jobContext = appMaster
+                .getJobContextFromConf(appMaster.getConfig());
+        appMaster.committer.abortJob(jobContext, State.KILLED);
+      } catch (FileNotFoundException e) {
+          System.out.println("Previous job temporary " +
+                "files do not exist, no clean up was necessary.");
+      } catch (Exception e) {
+        // the clean up of a previous attempt is not critical to the success
+        // of this job - only logging the error
+        System.err.println("Error while trying to " +
+                "clean up previous job's temporary files" + e);
+      }
     }
   }
 

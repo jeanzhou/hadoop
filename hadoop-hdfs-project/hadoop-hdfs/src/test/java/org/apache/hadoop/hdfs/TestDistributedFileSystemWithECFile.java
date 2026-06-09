@@ -21,22 +21,26 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileContext;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.io.IOUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Testing correctness of FileSystem.getFileBlockLocations and
@@ -61,7 +65,7 @@ public class TestDistributedFileSystemWithECFile {
     return StripedFileTestUtil.getDefaultECPolicy();
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     ecPolicy = getEcPolicy();
     cellSize = ecPolicy.getCellSize();
@@ -84,7 +88,7 @@ public class TestDistributedFileSystemWithECFile {
         ecPolicy.getName());
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (cluster != null) {
       cluster.shutdown();
@@ -100,7 +104,8 @@ public class TestDistributedFileSystemWithECFile {
     StripedFileTestUtil.verifyLength(fs, src, size);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testListECFilesSmallerThanOneCell() throws Exception {
     createFile("/ec/smallcell", 1);
     final List<LocatedFileStatus> retVal = new ArrayList<>();
@@ -134,7 +139,8 @@ public class TestDistributedFileSystemWithECFile {
     assertTrue(blockLocation.getHosts().length == 1 + parityBlocks);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testListECFilesSmallerThanOneStripe() throws Exception {
     int dataBlocksNum = dataBlocks;
     createFile("/ec/smallstripe", cellSize * dataBlocksNum);
@@ -165,7 +171,8 @@ public class TestDistributedFileSystemWithECFile {
     assertTrue(blockLocation.getLength() == dataBlocksNum * cellSize);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testListECFilesMoreThanOneBlockGroup() throws Exception {
     createFile("/ec/group", blockGroupSize + 123);
     RemoteIterator<LocatedFileStatus> iter =
@@ -199,7 +206,8 @@ public class TestDistributedFileSystemWithECFile {
     assertTrue(lastBlock.getLength() == lastBlockSize);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testReplayEditLogsForReplicatedFile() throws Exception {
     cluster.shutdown();
 
@@ -248,5 +256,41 @@ public class TestDistributedFileSystemWithECFile {
     assertNull(fs.getErasureCodingPolicy(replicatedFile));
     assertEquals(rs63, fs.getErasureCodingPolicy(ecFile));
     assertEquals(rs32, fs.getErasureCodingPolicy(ecFile2));
+  }
+
+  @SuppressWarnings("deprecation")
+  @Test
+  public void testStatistics() throws Exception {
+    final String fileName = "/ec/file";
+    final int size = 3200;
+    createFile(fileName, size);
+    InputStream in = null;
+    try {
+      in = fs.open(new Path(fileName));
+      IOUtils.copyBytes(in, System.out, 4096, false);
+    } finally {
+      IOUtils.closeStream(in);
+    }
+
+    // verify stats are correct
+    Long totalBytesRead = 0L;
+    Long ecBytesRead = 0L;
+    for (FileSystem.Statistics stat : FileSystem.getAllStatistics()) {
+      totalBytesRead += stat.getBytesRead();
+      ecBytesRead += stat.getBytesReadErasureCoded();
+    }
+    assertEquals(Long.valueOf(size), totalBytesRead);
+    assertEquals(Long.valueOf(size), ecBytesRead);
+
+    // verify thread local stats are correct
+    Long totalBytesReadThread = 0L;
+    Long ecBytesReadThread = 0L;
+    for (FileSystem.Statistics stat : FileSystem.getAllStatistics()) {
+      FileSystem.Statistics.StatisticsData data = stat.getThreadStatistics();
+      totalBytesReadThread += data.getBytesRead();
+      ecBytesReadThread += data.getBytesReadErasureCoded();
+    }
+    assertEquals(Long.valueOf(size), totalBytesReadThread);
+    assertEquals(Long.valueOf(size), ecBytesReadThread);
   }
 }

@@ -17,18 +17,27 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.util.ArrayList;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
-import org.junit.After;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * This class tests DatanodeDescriptor.getBlocksScheduled() at the
@@ -39,7 +48,7 @@ public class TestBlocksScheduledCounter {
   MiniDFSCluster cluster = null;
   FileSystem fs = null;
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (fs != null) {
       fs.close();
@@ -96,8 +105,8 @@ public class TestBlocksScheduledCounter {
     ArrayList<DatanodeDescriptor> dnList = new ArrayList<DatanodeDescriptor>();
     datanodeManager.fetchDatanodes(dnList, dnList, false);
     for (DatanodeDescriptor descriptor : dnList) {
-      assertEquals("Blocks scheduled should be 0 for " + descriptor.getName(),
-          0, descriptor.getBlocksScheduled());
+      assertEquals(0, descriptor.getBlocksScheduled(),
+          "Blocks scheduled should be 0 for " + descriptor.getName());
     }
 
     cluster.getDataNodes().get(0).shutdown();
@@ -112,21 +121,146 @@ public class TestBlocksScheduledCounter {
 
     DatanodeDescriptor abandonedDn = datanodeManager.getDatanode(cluster
         .getDataNodes().get(0).getDatanodeId());
-    assertEquals("for the abandoned dn scheduled counts should be 0", 0,
-        abandonedDn.getBlocksScheduled());
+    assertEquals(0, abandonedDn.getBlocksScheduled(),
+        "for the abandoned dn scheduled counts should be 0");
 
     for (DatanodeDescriptor descriptor : dnList) {
       if (descriptor.equals(abandonedDn)) {
         continue;
       }
-      assertEquals("Blocks scheduled should be 1 for " + descriptor.getName(),
-          1, descriptor.getBlocksScheduled());
+      assertEquals(1, descriptor.getBlocksScheduled(),
+          "Blocks scheduled should be 1 for " + descriptor.getName());
     }
     // close the file and the counter should go to zero.
     out.close();
     for (DatanodeDescriptor descriptor : dnList) {
-      assertEquals("Blocks scheduled should be 0 for " + descriptor.getName(),
-          0, descriptor.getBlocksScheduled());
+      assertEquals(0, descriptor.getBlocksScheduled(),
+          "Blocks scheduled should be 0 for " + descriptor.getName());
+    }
+  }
+
+  /**
+   * Test if Block Scheduled counter decrement if scheduled blocks file is.
+   * deleted
+   * @throws Exception
+   */
+  @Test
+  public void testScheduledBlocksCounterDecrementOnDeletedBlock()
+      throws Exception {
+    final Configuration conf = new HdfsConfiguration();
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, 1024);
+    conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(5).build();
+    cluster.waitActive();
+    BlockManager bm = cluster.getNamesystem().getBlockManager();
+    try {
+      DistributedFileSystem dfs = cluster.getFileSystem();
+      // 1. create a file
+      Path filePath = new Path("/tmp.txt");
+      DFSTestUtil.createFile(dfs, filePath, 1024, (short) 3, 0L);
+
+      // 2. disable the heartbeats
+      for (DataNode dn : cluster.getDataNodes()) {
+        DataNodeTestUtils.setHeartbeatsDisabledForTests(dn, true);
+      }
+
+      DatanodeManager datanodeManager =
+          cluster.getNamesystem().getBlockManager().getDatanodeManager();
+      ArrayList<DatanodeDescriptor> dnList =
+          new ArrayList<DatanodeDescriptor>();
+      datanodeManager.fetchDatanodes(dnList, dnList, false);
+
+      // 3. mark a couple of blocks as corrupt
+      LocatedBlock block = NameNodeAdapter
+          .getBlockLocations(cluster.getNameNode(), filePath.toString(), 0, 1)
+          .get(0);
+      DatanodeInfo[] locs = block.getLocations();
+      cluster.getNamesystem().writeLock(RwLockMode.BM);
+      try {
+        bm.findAndMarkBlockAsCorrupt(block.getBlock(), locs[0], "STORAGE_ID",
+            "TEST");
+        bm.findAndMarkBlockAsCorrupt(block.getBlock(), locs[1], "STORAGE_ID",
+            "TEST");
+        BlockManagerTestUtil.computeAllPendingWork(bm);
+        BlockManagerTestUtil.updateState(bm);
+        assertEquals(1L, bm.getPendingReconstructionBlocksCount());
+      } finally {
+        cluster.getNamesystem().writeUnlock(RwLockMode.BM,
+            "findAndMarkBlockAsCorrupt");
+      }
+
+      // 4. delete the file
+      dfs.delete(filePath, true);
+      BlockManagerTestUtil.waitForMarkedDeleteQueueIsEmpty(
+          cluster.getNamesystem(0).getBlockManager());
+      int blocksScheduled = 0;
+      for (DatanodeDescriptor descriptor : dnList) {
+        if (descriptor.getBlocksScheduled() != 0) {
+          blocksScheduled += descriptor.getBlocksScheduled();
+        }
+      }
+      assertEquals(0, blocksScheduled);
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
+  /**
+   * Test Block Scheduled counter on truncating a file.
+   * @throws Exception
+   */
+  @Test
+  public void testBlocksScheduledCounterOnTruncate() throws Exception {
+    final Configuration conf = new HdfsConfiguration();
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+    cluster.waitActive();
+    BlockManager bm = cluster.getNamesystem().getBlockManager();
+    try {
+      DistributedFileSystem dfs = cluster.getFileSystem();
+      // 1. stop a datanode
+      cluster.stopDataNode(0);
+
+      // 2. create a file
+      Path filePath = new Path("/tmp");
+      DFSTestUtil.createFile(dfs, filePath, 1024, (short) 3, 0L);
+
+      DatanodeManager datanodeManager =
+          cluster.getNamesystem().getBlockManager().getDatanodeManager();
+      ArrayList<DatanodeDescriptor> dnList =
+          new ArrayList<DatanodeDescriptor>();
+      datanodeManager.fetchDatanodes(dnList, dnList, false);
+
+      // 3. restart the stopped datanode
+      cluster.restartDataNode(0);
+
+      // 4. disable the heartbeats
+      for (DataNode dn : cluster.getDataNodes()) {
+        DataNodeTestUtils.setHeartbeatsDisabledForTests(dn, true);
+      }
+
+      cluster.getNamesystem().writeLock(RwLockMode.BM);
+      try {
+        BlockManagerTestUtil.computeAllPendingWork(bm);
+        BlockManagerTestUtil.updateState(bm);
+        assertEquals(1L, bm.getPendingReconstructionBlocksCount());
+      } finally {
+        cluster.getNamesystem().writeUnlock(RwLockMode.BM,
+            "testBlocksScheduledCounterOnTruncate");
+      }
+
+      // 5.truncate the file whose block exists in pending reconstruction
+      dfs.truncate(filePath, 10);
+      int blocksScheduled = 0;
+      for (DatanodeDescriptor descriptor : dnList) {
+        if (descriptor.getBlocksScheduled() != 0) {
+          blocksScheduled += descriptor.getBlocksScheduled();
+        }
+      }
+      assertEquals(0, blocksScheduled);
+    } finally {
+      cluster.shutdown();
     }
   }
 }

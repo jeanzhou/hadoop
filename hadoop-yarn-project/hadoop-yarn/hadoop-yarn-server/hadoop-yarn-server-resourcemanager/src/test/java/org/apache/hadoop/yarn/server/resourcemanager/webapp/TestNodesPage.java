@@ -17,18 +17,23 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.Map;
 
-import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.NodesPage.NodesBlock;
+import org.apache.hadoop.yarn.util.resource.CustomResourceTypesConfigurationProvider;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.webapp.test.WebAppTests;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.Mockito;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import com.google.inject.Binder;
 import com.google.inject.Injector;
@@ -48,14 +53,18 @@ public class TestNodesPage {
 
   // Number of Actual Table Headers for NodesPage.NodesBlock might change in
   // future. In that case this value should be adjusted to the new value.
-  private final int numberOfThInMetricsTable = 23;
-  private final int numberOfActualTableHeaders = 14;
+  private final int numberOfThInMetricsTable = 25;
+  private final int numberOfActualTableHeaders = 18;
   private final int numberOfThForOpportunisticContainers = 4;
 
   private Injector injector;
   
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
+    setUpInternal(false);
+  }
+
+  private void setUpInternal(final boolean useDRC) throws Exception {
     final RMContext mockRMContext =
         TestRMWebApp.mockRMContext(3, numberOfRacks, numberOfNodesPerRack,
           8 * TestRMWebApp.GiB);
@@ -66,7 +75,7 @@ public class TestNodesPage {
             public void configure(Binder binder) {
               try {
                 binder.bind(ResourceManager.class).toInstance(
-                  TestRMWebApp.mockRm(mockRMContext));
+                    TestRMWebApp.mockRm(mockRMContext, useDRC));
               } catch (IOException e) {
                 throw new IllegalStateException(e);
               }
@@ -80,11 +89,8 @@ public class TestNodesPage {
     PrintWriter writer = injector.getInstance(PrintWriter.class);
     WebAppTests.flushOutput(injector);
 
-    Mockito.verify(writer,
-        Mockito.times(numberOfActualTableHeaders + numberOfThInMetricsTable))
-        .print("<th");
-    Mockito.verify(writer, Mockito.times(numberOfThInMetricsTable))
-        .print("<td");
+    verify(writer, times(numberOfActualTableHeaders + numberOfThInMetricsTable)).print("<th");
+    verify(writer, times(numberOfThInMetricsTable)).print("<td");
   }
   
   @Test
@@ -95,13 +101,50 @@ public class TestNodesPage {
     PrintWriter writer = injector.getInstance(PrintWriter.class);
     WebAppTests.flushOutput(injector);
 
-    Mockito.verify(writer,
-        Mockito.times(numberOfActualTableHeaders + numberOfThInMetricsTable))
+    verify(writer,
+        times(numberOfActualTableHeaders + numberOfThInMetricsTable))
         .print("<th");
-    Mockito.verify(writer, Mockito.times(numberOfThInMetricsTable))
+    verify(writer, times(numberOfThInMetricsTable))
         .print("<td");
   }
-  
+
+  @Test
+  public void testNodesBlockRenderForLostNodesWithGPUResources()
+      throws Exception {
+    Map<String, ResourceInformation> oldRtMap =
+        ResourceUtils.getResourceTypes();
+    CustomResourceTypesConfigurationProvider.
+        initResourceTypes(ResourceInformation.GPU_URI);
+    this.setUpInternal(true);
+    try {
+      // Test gpu as a custom resource.
+      //<th class="yarn io/gpu">
+      //  yarn.io/gpu Used
+      //</th>
+      //<th class="yarn io/gpu">
+      //   yarn.io/gpu Avail
+      //</th>
+      this.testNodesBlockRenderForLostNodesWithGPU();
+    } finally {
+      ResourceUtils.initializeResourcesFromResourceInformationMap(oldRtMap);
+    }
+  }
+
+  public void testNodesBlockRenderForLostNodesWithGPU() {
+    NodesBlock nodesBlock = injector.getInstance(NodesBlock.class);
+    nodesBlock.set("node.state", "lost");
+    nodesBlock.render();
+    PrintWriter writer = injector.getInstance(PrintWriter.class);
+    WebAppTests.flushOutput(injector);
+
+    verify(writer,
+        times(numberOfActualTableHeaders
+            + numberOfThInMetricsTable + 2))
+        .print("<th");
+    verify(writer, times(numberOfThInMetricsTable))
+        .print("<td");
+  }
+
   @Test
   public void testNodesBlockRenderForNodeLabelFilterWithNonEmptyLabel() {
     NodesBlock nodesBlock = injector.getInstance(NodesBlock.class);
@@ -109,9 +152,9 @@ public class TestNodesPage {
     nodesBlock.render();
     PrintWriter writer = injector.getInstance(PrintWriter.class);
     WebAppTests.flushOutput(injector);
-    Mockito.verify(writer, Mockito.times(numberOfThInMetricsTable))
+    verify(writer, times(numberOfThInMetricsTable))
         .print("<td");
-    Mockito.verify(writer, Mockito.times(1)).print("<script");
+    verify(writer, times(1)).print("<script");
   }
   
   @Test
@@ -122,7 +165,7 @@ public class TestNodesPage {
     PrintWriter writer = injector.getInstance(PrintWriter.class);
     WebAppTests.flushOutput(injector);
 
-    Mockito.verify(writer, Mockito.times(numberOfThInMetricsTable))
+    verify(writer, times(numberOfThInMetricsTable))
         .print("<td");
   }
   
@@ -134,7 +177,7 @@ public class TestNodesPage {
     PrintWriter writer = injector.getInstance(PrintWriter.class);
     WebAppTests.flushOutput(injector);
 
-    Mockito.verify(writer, Mockito.times(numberOfThInMetricsTable))
+    verify(writer, times(numberOfThInMetricsTable))
         .print("<td");
   }
 
@@ -162,10 +205,10 @@ public class TestNodesPage {
     PrintWriter writer = injector.getInstance(PrintWriter.class);
     WebAppTests.flushOutput(injector);
 
-    Mockito.verify(writer, Mockito.times(
+    verify(writer, times(
         numberOfActualTableHeaders + numberOfThInMetricsTable +
             numberOfThForOpportunisticContainers)).print("<th");
-    Mockito.verify(writer, Mockito.times(numberOfThInMetricsTable))
+    verify(writer, times(numberOfThInMetricsTable))
         .print("<td");
   }
 }

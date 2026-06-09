@@ -20,8 +20,8 @@ package org.apache.hadoop.yarn.security;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
@@ -36,7 +36,8 @@ public class AdminACLsManager {
   /**
    * Log object for this class
    */
-  static Log LOG = LogFactory.getLog(AdminACLsManager.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AdminACLsManager.class);
 
   /**
    * The current user at the time of object creation
@@ -92,7 +93,7 @@ public class AdminACLsManager {
    *
    * @see YarnConfiguration#YARN_ACL_ENABLE
    * @see YarnConfiguration#DEFAULT_YARN_ACL_ENABLE
-   * @return <tt>true</tt> if ACLs are enabled
+   * @return <code>true</code> if ACLs are enabled
    */
   public boolean areACLsEnabled() {
     return aclsEnabled;
@@ -102,7 +103,7 @@ public class AdminACLsManager {
    * Returns whether the specified user/group is an administrator
    *
    * @param callerUGI user/group to to check
-   * @return <tt>true</tt> if the UserGroupInformation specified
+   * @return <code>true</code> if the UserGroupInformation specified
    *         is a member of the access control list for administrators
    */
   public boolean isAdmin(UserGroupInformation callerUGI) {

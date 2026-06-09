@@ -24,12 +24,15 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.security.PrivilegedExceptionAction;
 
+import net.jodah.failsafe.RetryPolicy;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
+import org.apache.hadoop.security.authentication.server.PseudoAuthenticationHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
@@ -51,14 +54,15 @@ import org.apache.hadoop.yarn.security.client.TimelineDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.webapp.YarnJacksonJaxbJsonProvider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.annotations.VisibleForTesting;
-import com.sun.jersey.api.client.Client;
+import org.apache.hadoop.classification.VisibleForTesting;
+import javax.ws.rs.client.Client;
 
 @Private
 @Evolving
 public class TimelineClientImpl extends TimelineClient {
 
-  private static final Log LOG = LogFactory.getLog(TimelineClientImpl.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TimelineClientImpl.class);
   private static final ObjectMapper MAPPER = new ObjectMapper();
   private static final String RESOURCE_URI_STR_V1 = "/ws/v1/timeline/";
 
@@ -82,10 +86,11 @@ public class TimelineClientImpl extends TimelineClient {
   @VisibleForTesting
   protected String doAsUser;
 
-  private float timelineServiceVersion;
+  private boolean timelineServiceV15Enabled;
   private TimelineWriter timelineWriter;
 
   private String timelineServiceAddress;
+  private String authType;
 
   @Private
   @VisibleForTesting
@@ -96,15 +101,15 @@ public class TimelineClientImpl extends TimelineClient {
   }
 
   protected void serviceInit(Configuration conf) throws Exception {
-    timelineServiceVersion =
-        conf.getFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION,
-            YarnConfiguration.DEFAULT_TIMELINE_SERVICE_VERSION);
     if (!YarnConfiguration.timelineServiceV1Enabled(conf)) {
       throw new IOException("Timeline V1 client is not properly configured. "
           + "Either timeline service is not enabled or version is not set to"
           + " 1.x");
     }
-    LOG.info("Timeline service address: " + getTimelineServiceAddress());
+
+    timelineServiceV15Enabled =
+        YarnConfiguration.timelineServiceV15Enabled(conf);
+
     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
     UserGroupInformation realUgi = ugi.getRealUser();
     if (realUgi != null) {
@@ -126,6 +131,13 @@ public class TimelineClientImpl extends TimelineClient {
           conf.get(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
               YarnConfiguration.DEFAULT_TIMELINE_SERVICE_WEBAPP_ADDRESS);
     }
+
+    String defaultAuth = UserGroupInformation.isSecurityEnabled() ?
+        KerberosAuthenticationHandler.TYPE :
+        PseudoAuthenticationHandler.TYPE;
+    authType = conf.get(YarnConfiguration.TIMELINE_HTTP_AUTH_TYPE,
+        defaultAuth);
+    LOG.info("Timeline service address: " + getTimelineServiceAddress());
     super.serviceInit(conf);
   }
 
@@ -141,17 +153,16 @@ public class TimelineClientImpl extends TimelineClient {
   protected void serviceStart() throws Exception {
     timelineWriter = createTimelineWriter(getConfig(), authUgi,
         connector.getClient(), TimelineConnector.constructResURI(getConfig(),
-            timelineServiceAddress, RESOURCE_URI_STR_V1));
+            timelineServiceAddress, RESOURCE_URI_STR_V1), connector.getRetryPolicy());
   }
 
   protected TimelineWriter createTimelineWriter(Configuration conf,
-      UserGroupInformation ugi, Client webClient, URI uri)
+      UserGroupInformation ugi, Client webClient, URI uri, RetryPolicy<Object> retryPolicy)
       throws IOException {
-    if (Float.compare(this.timelineServiceVersion, 1.5f) == 0) {
-      return new FileSystemTimelineWriter(
-          conf, ugi, webClient, uri);
+    if (timelineServiceV15Enabled) {
+      return new FileSystemTimelineWriter(conf, ugi, webClient, uri, retryPolicy);
     } else {
-      return new DirectTimelineWriter(ugi, webClient, uri);
+      return new DirectTimelineWriter(ugi, webClient, uri, retryPolicy);
     }
   }
 
@@ -190,6 +201,12 @@ public class TimelineClientImpl extends TimelineClient {
   @Override
   public Token<TimelineDelegationTokenIdentifier> getDelegationToken(
       final String renewer) throws IOException, YarnException {
+    if(authType.equals(PseudoAuthenticationHandler.TYPE)) {
+      LOG.info("Skipping get timeline delegation token since authType="
+          + PseudoAuthenticationHandler.TYPE);
+      // Null tokens are ignored by YarnClient so this is safe
+      return null;
+    }
     PrivilegedExceptionAction<Token<TimelineDelegationTokenIdentifier>>
         getDTAction =
         new PrivilegedExceptionAction<Token<TimelineDelegationTokenIdentifier>>() {
@@ -216,6 +233,12 @@ public class TimelineClientImpl extends TimelineClient {
   public long renewDelegationToken(
       final Token<TimelineDelegationTokenIdentifier> timelineDT)
           throws IOException, YarnException {
+    if(authType.equals(PseudoAuthenticationHandler.TYPE)) {
+      LOG.info("Skipping renew timeline delegation token since authType="
+          + PseudoAuthenticationHandler.TYPE);
+      // RM will skip renew if expirytime less than 0
+      return -1;
+    }
     final boolean isTokenServiceAddrEmpty =
         timelineDT.getService().toString().isEmpty();
     final String scheme = isTokenServiceAddrEmpty ? null
@@ -254,6 +277,11 @@ public class TimelineClientImpl extends TimelineClient {
   public void cancelDelegationToken(
       final Token<TimelineDelegationTokenIdentifier> timelineDT)
       throws IOException, YarnException {
+    if(authType.equals(PseudoAuthenticationHandler.TYPE)) {
+      LOG.info("Skipping cancel timeline delegation token since authType="
+          + PseudoAuthenticationHandler.TYPE);
+      return;
+    }
     final boolean isTokenServiceAddrEmpty =
         timelineDT.getService().toString().isEmpty();
     final String scheme = isTokenServiceAddrEmpty ? null
@@ -347,7 +375,9 @@ public class TimelineClientImpl extends TimelineClient {
     client.start();
     try {
       if (UserGroupInformation.isSecurityEnabled()
-          && conf.getBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, false)) {
+          && conf.getBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, false)
+          && conf.get(YarnConfiguration.TIMELINE_HTTP_AUTH_TYPE)
+              .equals(KerberosAuthenticationHandler.TYPE)) {
         Token<TimelineDelegationTokenIdentifier> token =
             client.getDelegationToken(
                 UserGroupInformation.getCurrentUser().getUserName());
@@ -406,10 +436,9 @@ public class TimelineClientImpl extends TimelineClient {
   public TimelinePutResponse putEntities(ApplicationAttemptId appAttemptId,
       TimelineEntityGroupId groupId, TimelineEntity... entities)
       throws IOException, YarnException {
-    if (Float.compare(this.timelineServiceVersion, 1.5f) != 0) {
+    if (!timelineServiceV15Enabled) {
       throw new YarnException(
-        "This API is not supported under current Timeline Service Version: "
-            + timelineServiceVersion);
+        "This API is not supported under current Timeline Service Version:");
     }
 
     return timelineWriter.putEntities(appAttemptId, groupId, entities);
@@ -418,10 +447,9 @@ public class TimelineClientImpl extends TimelineClient {
   @Override
   public void putDomain(ApplicationAttemptId appAttemptId,
       TimelineDomain domain) throws IOException, YarnException {
-    if (Float.compare(this.timelineServiceVersion, 1.5f) != 0) {
+    if (!timelineServiceV15Enabled) {
       throw new YarnException(
-        "This API is not supported under current Timeline Service Version: "
-            + timelineServiceVersion);
+        "This API is not supported under current Timeline Service Version:");
     }
     timelineWriter.putDomain(appAttemptId, domain);
   }
@@ -430,5 +458,11 @@ public class TimelineClientImpl extends TimelineClient {
   @VisibleForTesting
   public void setTimelineWriter(TimelineWriter writer) {
     this.timelineWriter = writer;
+  }
+
+  @Private
+  @VisibleForTesting
+  public TimelineConnector getConnector() {
+    return connector;
   }
 }

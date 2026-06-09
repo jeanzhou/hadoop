@@ -18,15 +18,18 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
-import com.google.common.base.Optional;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import javax.crypto.SecretKey;
-
 import org.apache.curator.test.TestingServer;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
@@ -34,6 +37,7 @@ import org.apache.hadoop.util.ToolRunner;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
@@ -41,20 +45,16 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.Applicatio
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.security.AMRMTokenSecretManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.junit.Before;
-import org.junit.After;
-import org.junit.Test;
-
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestZKRMStateStorePerf extends RMStateStoreTestBase
     implements Tool {
-  public static final Log LOG = LogFactory.getLog(TestZKRMStateStore.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestZKRMStateStore.class);
 
   final String version = "0.1";
 
@@ -78,12 +78,12 @@ public class TestZKRMStateStorePerf extends RMStateStoreTestBase
   private ClientToAMTokenSecretManagerInRM clientToAMTokenMgr;
   private TestingServer curatorTestingServer;
 
-  @Before
+  @BeforeEach
   public void setUpZKServer() throws Exception {
     curatorTestingServer = new TestingServer();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (store != null) {
       store.stop();
@@ -97,12 +97,12 @@ public class TestZKRMStateStorePerf extends RMStateStoreTestBase
   }
 
   private void initStore(String hostPort) {
-    Optional<String> optHostPort = Optional.fromNullable(hostPort);
+    Optional<String> optHostPort = Optional.ofNullable(hostPort);
     RMContext rmContext = mock(RMContext.class);
 
     conf = new YarnConfiguration();
     conf.set(YarnConfiguration.RM_ZK_ADDRESS, optHostPort
-        .or((curatorTestingServer == null) ? "" : curatorTestingServer
+        .orElse((curatorTestingServer == null) ? "" : curatorTestingServer
             .getConnectString()));
     conf.set(YarnConfiguration.ZK_RM_STATE_STORE_PARENT_PATH, workingZnode);
 

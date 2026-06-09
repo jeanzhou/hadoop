@@ -17,20 +17,21 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * This class tests that blocks can be larger than 2GB
@@ -45,11 +46,13 @@ public class TestLargeBlock {
     GenericTestUtils.setLogLevel(TestLargeBlock.LOG, Level.ALL);
   }
  */
-  private static final Log LOG = LogFactory.getLog(TestLargeBlock.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestLargeBlock.class);
 
   // should we verify the data read back from the file? (slow)
   static final boolean verifyData = true;
   static final byte[] pattern = { 'D', 'E', 'A', 'D', 'B', 'E', 'E', 'F'};
+  static final int numDatanodes = 3;
 
   // creates a file 
   static FSDataOutputStream createFile(FileSystem fileSys, Path name, int repl,
@@ -133,13 +136,13 @@ public class TestLargeBlock {
       if (verifyData) {
         // verify data read
         if (thisread == readSize) {
-          assertTrue("file is corrupted at or after byte " +
-              (fileSize - bytesToRead), Arrays.equals(b, compb));
+          assertTrue(Arrays.equals(b, compb),
+              "file is corrupted at or after byte " + (fileSize - bytesToRead));
         } else {
           // b was only partially filled by last read
           for (int k = 0; k < thisread; k++) {
-            assertTrue("file is corrupted at or after byte " +
-                (fileSize - bytesToRead), b[k] == compb[k]);
+            assertTrue(b[k] == compb[k],
+                "file is corrupted at or after byte " + (fileSize - bytesToRead));
           }
         }
       }
@@ -158,7 +161,8 @@ public class TestLargeBlock {
    * timeout here.
    * @throws IOException in case of errors
    */
-  @Test (timeout = 900000)
+  @Test
+  @Timeout(value = 1800)
   public void testLargeBlockSize() throws IOException {
     final long blockSize = 2L * 1024L * 1024L * 1024L + 512L; // 2GB + 512B
     runTest(blockSize);
@@ -175,7 +179,8 @@ public class TestLargeBlock {
     final long fileSize = blockSize + 1L;
 
     Configuration conf = new Configuration();
-    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+            .numDataNodes(numDatanodes).build();
     FileSystem fs = cluster.getFileSystem();
     try {
 
@@ -187,8 +192,7 @@ public class TestLargeBlock {
           " blocksize " + blockSize);
 
       // verify that file exists in FS namespace
-      assertTrue(file1 + " should be a file", 
-                  fs.getFileStatus(file1).isFile());
+      assertTrue(fs.getFileStatus(file1).isFile(), file1 + " should be a file");
 
       // write to file
       writeFile(stm, fileSize);
@@ -203,9 +207,8 @@ public class TestLargeBlock {
 
       // verify that file size has changed
       long len = fs.getFileStatus(file1).getLen();
-      assertTrue(file1 + " should be of size " +  fileSize +
-                 " but found to be of size " + len, 
-                  len == fileSize);
+      assertTrue(len == fileSize,
+          file1 + " should be of size " + fileSize + " but found to be of size " + len);
 
     } finally {
       cluster.shutdown();

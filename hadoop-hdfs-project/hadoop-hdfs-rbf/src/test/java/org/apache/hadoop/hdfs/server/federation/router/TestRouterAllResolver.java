@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.federation.router;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.net.URI;
@@ -33,9 +33,10 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
-import org.apache.hadoop.hdfs.server.federation.RouterDFSCluster.NamenodeContext;
-import org.apache.hadoop.hdfs.server.federation.RouterDFSCluster.RouterContext;
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
 import org.apache.hadoop.hdfs.server.federation.StateStoreDFSCluster;
 import org.apache.hadoop.hdfs.server.federation.resolver.MountTableManager;
 import org.apache.hadoop.hdfs.server.federation.resolver.MultipleDestinationMountTableResolver;
@@ -46,9 +47,10 @@ import org.apache.hadoop.hdfs.server.federation.store.protocol.AddMountTableEntr
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetMountTableEntriesRequest;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetMountTableEntriesResponse;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.server.namenode.TestFileTruncate;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests the use of the resolvers that write in all subclusters from the
@@ -60,8 +62,10 @@ public class TestRouterAllResolver {
 
   /** Directory that will be in a HASH_ALL mount point. */
   private static final String TEST_DIR_HASH_ALL = "/hashall";
-  /** Directory that will be in a HASH_ALL mount point. */
+  /** Directory that will be in a RANDOM mount point. */
   private static final String TEST_DIR_RANDOM = "/random";
+  /** Directory that will be in a SPACE mount point. */
+  private static final String TEST_DIR_SPACE = "/space";
 
   /** Number of namespaces. */
   private static final int NUM_NAMESPACES = 2;
@@ -77,7 +81,7 @@ public class TestRouterAllResolver {
   private static List<FileSystem> nsFss = new LinkedList<>();
 
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     // 2 nameservices with 1 namenode each (no HA needed for this test)
     cluster = new StateStoreDFSCluster(
@@ -103,6 +107,7 @@ public class TestRouterAllResolver {
     // Setup the test mount point
     createMountTableEntry(TEST_DIR_HASH_ALL, DestinationOrder.HASH_ALL);
     createMountTableEntry(TEST_DIR_RANDOM, DestinationOrder.RANDOM);
+    createMountTableEntry(TEST_DIR_SPACE, DestinationOrder.SPACE);
 
     // Get filesystems for federated and each namespace
     routerFs = routerContext.getFileSystem();
@@ -116,7 +121,7 @@ public class TestRouterAllResolver {
     assertEquals(NUM_NAMESPACES, nsFss.size());
   }
 
-  @After
+  @AfterEach
   public void cleanup() {
     cluster.shutdown();
     cluster = null;
@@ -133,6 +138,11 @@ public class TestRouterAllResolver {
   @Test
   public void testRandomAll() throws Exception {
     testAll(TEST_DIR_RANDOM);
+  }
+
+  @Test
+  public void testSpaceAll() throws Exception {
+    testAll(TEST_DIR_SPACE);
   }
 
   /**
@@ -175,13 +185,22 @@ public class TestRouterAllResolver {
     String testFile = path + "/dir2/dir22/dir220/file-append.txt";
     createTestFile(routerFs, testFile);
     Path testFilePath = new Path(testFile);
-    assertTrue("Created file is too small",
-        routerFs.getFileStatus(testFilePath).getLen() > 50);
+    assertTrue(routerFs.getFileStatus(testFilePath).getLen() > 50, "Created file is too small");
     appendTestFile(routerFs, testFile);
-    assertTrue("Append file is too small",
-        routerFs.getFileStatus(testFilePath).getLen() > 110);
+    assertTrue(routerFs.getFileStatus(testFilePath).getLen() > 110, "Append file is too small");
     assertDirsEverywhere(path, 9);
     assertFilesDistributed(path, 15);
+
+    // Test truncate
+    String testTruncateFile = path + "/dir2/dir22/dir220/file-truncate.txt";
+    createTestFile(routerFs, testTruncateFile);
+    Path testTruncateFilePath = new Path(testTruncateFile);
+    routerFs.truncate(testTruncateFilePath, 10);
+    TestFileTruncate.checkBlockRecovery(testTruncateFilePath,
+        (DistributedFileSystem) routerFs);
+    assertEquals(10, routerFs.getFileStatus(testTruncateFilePath).getLen(), "Truncate file fails");
+    assertDirsEverywhere(path, 9);
+    assertFilesDistributed(path, 16);
 
     // Removing a directory should remove it from every subcluster
     routerFs.delete(new Path(path + "/dir2/dir22/dir220"), true);
@@ -216,8 +235,7 @@ public class TestRouterAllResolver {
         Path checkPath = getRelativePath(dirPath);
         for (FileSystem nsFs : nsFss) {
           FileStatus fileStatus1 = nsFs.getFileStatus(checkPath);
-          assertTrue(file + " should be a directory",
-              fileStatus1.isDirectory());
+          assertTrue(fileStatus1.isDirectory(), file + " should be a directory");
         }
       }
     }
@@ -257,7 +275,7 @@ public class TestRouterAllResolver {
     assertEquals(numRouterFiles, sumNsFiles);
     if (expectedNumFiles > 0) {
       for (int numFiles : numNsFiles) {
-        assertTrue("Files not distributed: " + numNsFiles, numFiles > 0);
+        assertTrue(numFiles > 0, "Files not distributed: " + numNsFiles);
       }
     }
   }

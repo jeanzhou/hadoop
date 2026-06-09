@@ -18,8 +18,9 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.rmapp;
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -32,6 +33,7 @@ import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationTimeoutsRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -48,6 +50,8 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmissionData;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
 import org.apache.hadoop.yarn.server.resourcemanager.TestRMRestart;
 import org.apache.hadoop.yarn.server.resourcemanager.TestWorkPreservingRMRestart;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
@@ -57,27 +61,26 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import org.apache.hadoop.yarn.util.Times;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Test class for application life time monitor feature test.
  */
-@RunWith(Parameterized.class)
 public class TestApplicationLifetimeMonitor {
   private final long maxLifetime = 30L;
+  private static final QueuePath ROOT = new QueuePath(CapacitySchedulerConfiguration.ROOT);
+  private static final String CQ1 = "child1";
+  private static final QueuePath CQ1_QUEUE_PATH = ROOT.createNewLeaf(CQ1);
+  private static final QueuePath DEFAULT_QUEUE_PATH = ROOT.createNewLeaf("default");
 
   private YarnConfiguration conf;
 
-  @Parameterized.Parameters
   public static Collection<Object[]> data() {
     Collection<Object[]> params = new ArrayList<Object[]>();
     params.add(new Object[]{CapacityScheduler.class});
@@ -87,11 +90,12 @@ public class TestApplicationLifetimeMonitor {
 
   private Class scheduler;
 
-  public TestApplicationLifetimeMonitor(Class schedulerParameter) {
+  private void initTestApplicationLifetimeMonitor(Class schedulerParameter)
+      throws IOException {
     scheduler = schedulerParameter;
+    setup();
   }
 
-  @Before
   public void setup() throws IOException {
     if (scheduler.equals(CapacityScheduler.class)) {
       // Since there is limited lifetime monitoring support in fair scheduler
@@ -106,16 +110,18 @@ public class TestApplicationLifetimeMonitor {
     // Always run for CS, since other scheduler do not support this.
     conf.setClass(YarnConfiguration.RM_SCHEDULER,
         scheduler, ResourceScheduler.class);
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
     UserGroupInformation.setConfiguration(conf);
     conf.setLong(YarnConfiguration.RM_APPLICATION_MONITOR_INTERVAL_MS,
         3000L);
   }
 
-  @Test(timeout = 60000)
-  public void testApplicationLifetimeMonitor()
+  @Timeout(value = 60)
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testApplicationLifetimeMonitor(Class schedulerParameter)
       throws Exception {
+    initTestApplicationLifetimeMonitor(schedulerParameter);
     MockRM rm = null;
     try {
       rm = new MockRM(conf);
@@ -127,18 +133,34 @@ public class TestApplicationLifetimeMonitor {
       Map<ApplicationTimeoutType, Long> timeouts =
           new HashMap<ApplicationTimeoutType, Long>();
       timeouts.put(ApplicationTimeoutType.LIFETIME, 10L);
-      RMApp app1 = rm.submitApp(1024, appPriority, timeouts);
+      RMApp app1 = MockRMAppSubmitter.submit(rm,
+          MockRMAppSubmissionData.Builder.createWithMemory(1024, rm)
+              .withAppPriority(appPriority)
+              .withApplicationTimeouts(timeouts)
+              .build());
 
       // 20L seconds
       timeouts.put(ApplicationTimeoutType.LIFETIME, 20L);
-      RMApp app2 = rm.submitApp(1024, appPriority, timeouts);
+      RMApp app2 = MockRMAppSubmitter.submit(rm,
+          MockRMAppSubmissionData.Builder.createWithMemory(1024, rm)
+              .withAppPriority(appPriority)
+              .withApplicationTimeouts(timeouts)
+              .build());
 
       // user not set lifetime, so queue max lifetime will be considered.
-      RMApp app3 = rm.submitApp(1024, appPriority, Collections.emptyMap());
+      RMApp app3 = MockRMAppSubmitter.submit(rm,
+          MockRMAppSubmissionData.Builder.createWithMemory(1024, rm)
+              .withAppPriority(appPriority)
+              .withApplicationTimeouts(Collections.emptyMap())
+              .build());
 
       // asc lifetime exceeds queue max lifetime
       timeouts.put(ApplicationTimeoutType.LIFETIME, 40L);
-      RMApp app4 = rm.submitApp(1024, appPriority, timeouts);
+      RMApp app4 = MockRMAppSubmitter.submit(rm,
+          MockRMAppSubmissionData.Builder.createWithMemory(1024, rm)
+              .withAppPriority(appPriority)
+              .withApplicationTimeouts(timeouts)
+              .build());
 
       nm1.nodeHeartbeat(true);
       // Send launch Event
@@ -146,8 +168,8 @@ public class TestApplicationLifetimeMonitor {
           rm.sendAMLaunched(app1.getCurrentAppAttempt().getAppAttemptId());
       am1.registerAppAttempt();
       rm.waitForState(app1.getApplicationId(), RMAppState.KILLED);
-      Assert.assertTrue("Application killed before lifetime value",
-          (System.currentTimeMillis() - app1.getSubmitTime()) > 10000);
+      assertTrue((System.currentTimeMillis() - app1.getSubmitTime()) > 10000,
+          "Application killed before lifetime value");
 
       Map<ApplicationTimeoutType, String> updateTimeout =
           new HashMap<ApplicationTimeoutType, String>();
@@ -175,8 +197,8 @@ public class TestApplicationLifetimeMonitor {
       long afterUpdate =
           applicationTimeouts.get(ApplicationTimeoutType.LIFETIME);
 
-      Assert.assertTrue("Application lifetime value not updated",
-          afterUpdate > beforeUpdate);
+      assertTrue(afterUpdate > beforeUpdate,
+          "Application lifetime value not updated");
 
       // verify for application report.
       RecordFactory recordFactory =
@@ -187,17 +209,16 @@ public class TestApplicationLifetimeMonitor {
       Map<ApplicationTimeoutType, ApplicationTimeout> appTimeouts = rm
           .getRMContext().getClientRMService().getApplicationReport(appRequest)
           .getApplicationReport().getApplicationTimeouts();
-      Assert.assertTrue("Application Timeout are empty.",
-          !appTimeouts.isEmpty());
+      assertTrue(!appTimeouts.isEmpty(), "Application Timeout are empty.");
       ApplicationTimeout timeout =
           appTimeouts.get(ApplicationTimeoutType.LIFETIME);
-      Assert.assertTrue("Application remaining time is incorrect",
-          timeout.getRemainingTime() > 0);
+      assertTrue(timeout.getRemainingTime() > 0,
+          "Application remaining time is incorrect");
 
       rm.waitForState(app2.getApplicationId(), RMAppState.KILLED);
       // verify for app killed with updated lifetime
-      Assert.assertTrue("Application killed before lifetime value",
-          app2.getFinishTime() > afterUpdate);
+      assertTrue(app2.getFinishTime() > afterUpdate,
+          "Application killed before lifetime value");
 
       if (scheduler.equals(CapacityScheduler.class)) {
         // Supported only on capacity scheduler
@@ -206,21 +227,22 @@ public class TestApplicationLifetimeMonitor {
         // app4 submitted exceeding queue max lifetime,
         // so killed after queue max lifetime.
         rm.waitForState(app4.getApplicationId(), RMAppState.KILLED);
-        long totalTimeRun =
-            (app4.getFinishTime() - app4.getSubmitTime()) / 1000;
-        Assert.assertTrue("Application killed before lifetime value",
-            totalTimeRun > maxLifetime);
-        Assert.assertTrue(
-            "Application killed before lifetime value " + totalTimeRun,
-            totalTimeRun < maxLifetime + 10L);
+        long totalTimeRun = app4.getFinishTime() - app4.getSubmitTime();
+        assertTrue(totalTimeRun > (maxLifetime * 1000),
+            "Application killed before lifetime value");
+        assertTrue(totalTimeRun < ((maxLifetime + 10L) * 1000),
+            "Application killed before lifetime value " + totalTimeRun);
       }
     } finally {
       stopRM(rm);
     }
   }
 
-  @Test(timeout = 180000)
-  public void testApplicationLifetimeOnRMRestart() throws Exception {
+  @Timeout(value = 180)
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testApplicationLifetimeOnRMRestart(Class schedulerParameter) throws Exception {
+    initTestApplicationLifetimeMonitor(schedulerParameter);
     conf.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
     conf.setBoolean(YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_ENABLED,
         true);
@@ -238,7 +260,11 @@ public class TestApplicationLifetimeMonitor {
     Map<ApplicationTimeoutType, Long> timeouts =
         new HashMap<ApplicationTimeoutType, Long>();
     timeouts.put(ApplicationTimeoutType.LIFETIME, appLifetime);
-    RMApp app1 = rm1.submitApp(200, Priority.newInstance(0), timeouts);
+    RMApp app1 = MockRMAppSubmitter.submit(rm1,
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+            .withAppPriority(Priority.newInstance(0))
+            .withApplicationTimeouts(timeouts)
+            .build());
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     // Re-start RM
@@ -286,14 +312,16 @@ public class TestApplicationLifetimeMonitor {
 
     // wait for app life time and application to be in killed state.
     rm2.waitForState(recoveredApp1.getApplicationId(), RMAppState.KILLED);
-    Assert.assertTrue("Application killed before lifetime value",
-        recoveredApp1.getFinishTime() > (recoveredApp1.getSubmitTime()
-            + appLifetime * 1000));
+    assertTrue(recoveredApp1.getFinishTime() > (recoveredApp1.getSubmitTime()
+        + appLifetime * 1000), "Application killed before lifetime value");
   }
 
-  @Test(timeout = 60000)
-  public void testUpdateApplicationTimeoutForStateStoreUpdateFail()
+  @Timeout(value = 60)
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testUpdateApplicationTimeoutForStateStoreUpdateFail(Class schedulerParameter)
       throws Exception {
+    initTestApplicationLifetimeMonitor(schedulerParameter);
     MockRM rm1 = null;
     try {
       MemoryRMStateStore memStore = new MemoryRMStateStore() {
@@ -322,7 +350,11 @@ public class TestApplicationLifetimeMonitor {
       Map<ApplicationTimeoutType, Long> timeouts =
           new HashMap<ApplicationTimeoutType, Long>();
       timeouts.put(ApplicationTimeoutType.LIFETIME, appLifetime);
-      RMApp app1 = rm1.submitApp(200, Priority.newInstance(0), timeouts);
+      RMApp app1 = MockRMAppSubmitter.submit(rm1,
+          MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+              .withAppPriority(Priority.newInstance(0))
+              .withApplicationTimeouts(timeouts)
+              .build());
 
       Map<ApplicationTimeoutType, String> updateTimeout =
           new HashMap<ApplicationTimeoutType, String>();
@@ -347,8 +379,8 @@ public class TestApplicationLifetimeMonitor {
         fail("Update application should fail.");
       } catch (YarnException e) {
         // expected
-        assertTrue("State-store exception does not containe appId",
-            e.getMessage().contains(app1.getApplicationId().toString()));
+        assertTrue(e.getMessage().contains(app1.getApplicationId().toString()),
+            "State-store exception does not containe appId");
       }
 
       applicationTimeouts = app1.getApplicationTimeouts();
@@ -356,14 +388,204 @@ public class TestApplicationLifetimeMonitor {
       long afterUpdate =
           applicationTimeouts.get(ApplicationTimeoutType.LIFETIME);
 
-      Assert.assertEquals("Application timeout is updated", beforeUpdate,
-          afterUpdate);
+      assertEquals(beforeUpdate, afterUpdate,
+          "Application timeout is updated");
       rm1.waitForState(app1.getApplicationId(), RMAppState.KILLED);
       // verify for app killed with updated lifetime
-      Assert.assertTrue("Application killed before lifetime value",
-          app1.getFinishTime() > afterUpdate);
+      assertTrue(app1.getFinishTime() > afterUpdate,
+          "Application killed before lifetime value");
     } finally {
       stopRM(rm1);
+    }
+  }
+
+  @Timeout(value = 120)
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testInheritAppLifetimeFromParentQueue(Class schedulerParameter) throws Exception {
+    initTestApplicationLifetimeMonitor(schedulerParameter);
+    YarnConfiguration yarnConf = conf;
+    long maxRootLifetime = 20L;
+    long defaultRootLifetime = 10L;
+    if (scheduler.equals(CapacityScheduler.class)) {
+      CapacitySchedulerConfiguration csConf =
+          new CapacitySchedulerConfiguration();
+      csConf.setQueues(ROOT, new String[] {CQ1});
+      csConf.setCapacity(CQ1_QUEUE_PATH, 100);
+      csConf.setMaximumLifetimePerQueue(ROOT, maxRootLifetime);
+      csConf.setDefaultLifetimePerQueue(ROOT, defaultRootLifetime);
+      yarnConf = new YarnConfiguration(csConf);
+    }
+
+    MockRM rm = null;
+    try {
+      rm = new MockRM(yarnConf);
+      rm.start();
+
+      Priority appPriority = Priority.newInstance(0);
+      MockNM nm1 = rm.registerNode("127.0.0.1:1234", 16 * 1024);
+
+      // user not set lifetime, so queue max lifetime will be considered.
+      RMApp app1 = MockRMAppSubmitter.submit(rm,
+          MockRMAppSubmissionData.Builder.createWithMemory(1024, rm)
+              .withAppPriority(appPriority)
+              .withApplicationTimeouts(Collections.emptyMap())
+              .withQueue(CQ1)
+              .build());
+
+      nm1.nodeHeartbeat(true);
+
+      if (scheduler.equals(CapacityScheduler.class)) {
+        // Supported only on capacity scheduler
+        CapacityScheduler csched =
+            (CapacityScheduler) rm.getResourceScheduler();
+
+        rm.waitForState(app1.getApplicationId(), RMAppState.KILLED);
+        long totalTimeRun = app1.getFinishTime() - app1.getSubmitTime();
+        // Child queue should have inherited parent max and default lifetimes.
+        assertEquals(maxRootLifetime,
+            csched.getQueue(CQ1).getMaximumApplicationLifetime(),
+            "Child queue max lifetime should have overridden"
+            + " parent value");
+        assertEquals(defaultRootLifetime,
+            csched.getQueue(CQ1).getDefaultApplicationLifetime(),
+            "Child queue default lifetime should have"
+            + "  overridden parent value");
+        // app1 (run in the 'child1' queue) should have run longer than the
+        // default lifetime but less than the max lifetime.
+        assertTrue(totalTimeRun > (defaultRootLifetime * 1000),
+            "Application killed before default lifetime value");
+        assertTrue(totalTimeRun < (maxRootLifetime * 1000),
+            "Application killed after max lifetime value " + totalTimeRun);
+      }
+    } finally {
+      stopRM(rm);
+    }
+  }
+
+  @Timeout(value = 120)
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testOverrideParentQueueMaxAppLifetime(Class schedulerParameter) throws Exception {
+    initTestApplicationLifetimeMonitor(schedulerParameter);
+    YarnConfiguration yarnConf = conf;
+    long maxRootLifetime = 20L;
+    long maxChildLifetime = 40L;
+    long defaultRootLifetime = 10L;
+    if (scheduler.equals(CapacityScheduler.class)) {
+      CapacitySchedulerConfiguration csConf =
+          new CapacitySchedulerConfiguration();
+      csConf.setQueues(ROOT, new String[] {CQ1});
+      csConf.setCapacity(CQ1_QUEUE_PATH, 100);
+      csConf.setMaximumLifetimePerQueue(ROOT, maxRootLifetime);
+      csConf.setMaximumLifetimePerQueue(CQ1_QUEUE_PATH, maxChildLifetime);
+      csConf.setDefaultLifetimePerQueue(ROOT, defaultRootLifetime);
+      csConf.setDefaultLifetimePerQueue(CQ1_QUEUE_PATH, maxChildLifetime);
+      yarnConf = new YarnConfiguration(csConf);
+    }
+
+    MockRM rm = null;
+    try {
+      rm = new MockRM(yarnConf);
+      rm.start();
+
+      Priority appPriority = Priority.newInstance(0);
+      MockNM nm1 = rm.registerNode("127.0.0.1:1234", 16 * 1024);
+
+      // user not set lifetime, so queue max lifetime will be considered.
+      RMApp app1 = MockRMAppSubmitter.submit(rm,
+          MockRMAppSubmissionData.Builder.createWithMemory(1024, rm)
+              .withAppPriority(appPriority)
+              .withApplicationTimeouts(Collections.emptyMap())
+              .withQueue(CQ1)
+              .build());
+
+      nm1.nodeHeartbeat(true);
+
+      if (scheduler.equals(CapacityScheduler.class)) {
+        // Supported only on capacity scheduler
+        CapacityScheduler csched =
+            (CapacityScheduler) rm.getResourceScheduler();
+
+        rm.waitForState(app1.getApplicationId(), RMAppState.KILLED);
+        long totalTimeRun = app1.getFinishTime() - app1.getSubmitTime();
+        // Child queue's max lifetime can override parent's and be larger.
+        assertTrue((maxRootLifetime < maxChildLifetime) &&
+            (totalTimeRun > (maxChildLifetime * 1000)),
+            "Application killed before default lifetime value");
+        assertEquals(maxRootLifetime, csched.getRootQueue().getMaximumApplicationLifetime(),
+            "Root queue max lifetime property set incorrectly");
+        assertEquals(maxChildLifetime, csched.getQueue(CQ1).getMaximumApplicationLifetime(),
+            "Child queue max lifetime should have overridden"
+            + " parent value");
+      }
+    } finally {
+      stopRM(rm);
+    }
+  }
+
+  @Timeout(value = 120)
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testOverrideParentQueueDefaultAppLifetime(
+      Class schedulerParameter) throws Exception {
+    initTestApplicationLifetimeMonitor(schedulerParameter);
+    YarnConfiguration yarnConf = conf;
+    long maxRootLifetime = -1L;
+    long maxChildLifetime = -1L;
+    long defaultChildLifetime = 10L;
+    if (scheduler.equals(CapacityScheduler.class)) {
+      CapacitySchedulerConfiguration csConf =
+          new CapacitySchedulerConfiguration();
+      csConf.setQueues(ROOT, new String[] {CQ1});
+      csConf.setCapacity(CQ1_QUEUE_PATH, 100);
+      csConf.setMaximumLifetimePerQueue(ROOT, maxRootLifetime);
+      csConf.setMaximumLifetimePerQueue(CQ1_QUEUE_PATH, maxChildLifetime);
+      csConf.setDefaultLifetimePerQueue(CQ1_QUEUE_PATH, defaultChildLifetime);
+      yarnConf = new YarnConfiguration(csConf);
+    }
+
+    MockRM rm = null;
+    try {
+      rm = new MockRM(yarnConf);
+      rm.start();
+
+      Priority appPriority = Priority.newInstance(0);
+      MockNM nm1 = rm.registerNode("127.0.0.1:1234", 16 * 1024);
+
+      // user not set lifetime, so queue max lifetime will be considered.
+      RMApp app1 = MockRMAppSubmitter.submit(rm,
+          MockRMAppSubmissionData.Builder.createWithMemory(1024, rm)
+              .withAppPriority(appPriority)
+              .withApplicationTimeouts(Collections.emptyMap())
+              .withQueue(CQ1)
+              .build());
+
+      nm1.nodeHeartbeat(true);
+
+      if (scheduler.equals(CapacityScheduler.class)) {
+        // Supported only on capacity scheduler
+        CapacityScheduler csched =
+            (CapacityScheduler) rm.getResourceScheduler();
+
+        rm.waitForState(app1.getApplicationId(), RMAppState.KILLED);
+        long totalTimeRun = app1.getFinishTime() - app1.getSubmitTime();
+        // app1 (run in 'child1' queue) should have overridden the parent's
+        // default lifetime.
+        assertTrue(totalTimeRun > (defaultChildLifetime * 1000),
+            "Application killed before default lifetime value");
+        // Root and child queue's max lifetime should be -1.
+        assertEquals(maxRootLifetime, csched.getRootQueue().getMaximumApplicationLifetime(),
+            "Root queue max lifetime property set incorrectly");
+        assertEquals(maxChildLifetime, csched.getQueue(CQ1).getMaximumApplicationLifetime(),
+            "Child queue max lifetime property set incorrectly");
+        // 'child1' queue's default lifetime should have overridden parent's.
+        assertEquals(defaultChildLifetime, csched.getQueue(CQ1).getDefaultApplicationLifetime(),
+            "Child queue default lifetime should have"
+            + " overridden parent value");
+      }
+    } finally {
+      stopRM(rm);
     }
   }
 
@@ -371,13 +593,11 @@ public class TestApplicationLifetimeMonitor {
       long defaultLifetime) {
     CapacitySchedulerConfiguration csConf =
         new CapacitySchedulerConfiguration();
-    csConf.setQueues(CapacitySchedulerConfiguration.ROOT,
+    csConf.setQueues(ROOT,
         new String[] {"default"});
-    csConf.setCapacity(CapacitySchedulerConfiguration.ROOT + ".default", 100);
-    csConf.setMaximumLifetimePerQueue(
-        CapacitySchedulerConfiguration.ROOT + ".default", maxLifetime);
-    csConf.setDefaultLifetimePerQueue(
-        CapacitySchedulerConfiguration.ROOT + ".default", defaultLifetime);
+    csConf.setCapacity(DEFAULT_QUEUE_PATH, 100);
+    csConf.setMaximumLifetimePerQueue(DEFAULT_QUEUE_PATH, maxLifetime);
+    csConf.setDefaultLifetimePerQueue(DEFAULT_QUEUE_PATH, defaultLifetime);
 
     return csConf;
   }

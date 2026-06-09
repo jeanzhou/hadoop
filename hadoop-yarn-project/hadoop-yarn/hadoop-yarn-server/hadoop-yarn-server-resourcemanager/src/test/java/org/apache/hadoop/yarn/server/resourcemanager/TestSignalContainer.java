@@ -18,14 +18,17 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
-import org.junit.Assert;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -36,20 +39,16 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatResponse;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestSignalContainer {
 
-  private static final Log LOG = LogFactory
-    .getLog(TestSignalContainer.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestSignalContainer.class);
 
   @Test
   public void testSignalRequestDeliveryToNM() throws Exception {
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
     MockRM rm = new MockRM();
     FairScheduler fs = null;
     if (rm.getResourceScheduler().getClass() == FairScheduler.class) {
@@ -59,7 +58,7 @@ public class TestSignalContainer {
 
     MockNM nm1 = rm.registerNode("h1:1234", 5000);
 
-    RMApp app = rm.submitApp(2000);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(2000, rm);
 
     //kick the scheduling
     nm1.nodeHeartbeat(true);
@@ -87,7 +86,7 @@ public class TestSignalContainer {
         nm1.nodeHeartbeat(true);
       }
     }
-    Assert.assertEquals(request, conts.size());
+    assertEquals(request, conts.size());
 
     for(Container container : conts) {
       rm.signalToContainer(container.getId(),
@@ -109,7 +108,7 @@ public class TestSignalContainer {
     }
 
     // Verify NM receives the expected number of signal container requests.
-    Assert.assertEquals(request, signaledConts);
+    assertEquals(request, signaledConts);
 
     am.unregisterAppAttempt();
     nm1.nodeHeartbeat(attempt.getAppAttemptId(), 1, ContainerState.COMPLETE);

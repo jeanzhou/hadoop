@@ -23,6 +23,7 @@ import java.util.zip.Checksum;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
+import org.apache.hadoop.io.compress.AlreadyClosedException;
 import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.io.compress.DoNotPool;
 import org.apache.hadoop.util.DataChecksum;
@@ -68,7 +69,7 @@ public class BuiltInGzipDecompressor implements Decompressor {
    * (Technically, the private variables localBuf through hasHeaderCRC are
    * also part of the state, so this enum is merely the label for it.)
    */
-  private enum GzipStateLabel {
+  public enum GzipStateLabel {
     /**
      * Immediately prior to or (strictly) within the 10-byte basic gzip header.
      */
@@ -94,6 +95,10 @@ public class BuiltInGzipDecompressor implements Decompressor {
      */
     DEFLATE_STREAM,
     /**
+     * Immediately prior to or within the main uncompressed (inflate) data stream.
+     */
+    INFLATE_STREAM,
+    /**
      * Immediately prior to or (strictly) within the 4-byte uncompressed CRC.
      */
     TRAILER_CRC,
@@ -105,7 +110,11 @@ public class BuiltInGzipDecompressor implements Decompressor {
      * Immediately after the trailer (and potentially prior to the next gzip
      * member/substream header), without reset() having been called.
      */
-    FINISHED;
+    FINISHED,
+    /**
+     * Immediately after end() has been called.
+     */
+    ENDED;
   }
 
   /**
@@ -181,6 +190,10 @@ public class BuiltInGzipDecompressor implements Decompressor {
   public synchronized int decompress(byte[] b, int off, int len)
   throws IOException {
     int numAvailBytes = 0;
+
+    if (state == GzipStateLabel.ENDED) {
+      throw new AlreadyClosedException("decompress called on closed decompressor");
+    }
 
     if (state != GzipStateLabel.DEFLATE_STREAM) {
       executeHeaderState();
@@ -404,7 +417,7 @@ public class BuiltInGzipDecompressor implements Decompressor {
 
   /**
    * Returns the total number of compressed bytes input so far, including
-   * gzip header/trailer bytes.</p>
+   * gzip header/trailer bytes.
    *
    * @return the total (non-negative) number of compressed bytes read so far
    */
@@ -420,7 +433,7 @@ public class BuiltInGzipDecompressor implements Decompressor {
    * non-zero value unless called after {@link #setInput(byte[] b, int off,
    * int len)} and before {@link #decompress(byte[] b, int off, int len)}.
    * (That is, after {@link #decompress(byte[] b, int off, int len)} it
-   * always returns zero, except in finished state with concatenated data.)</p>
+   * always returns zero, except in finished state with concatenated data.)
    *
    * @return the total (non-negative) number of unprocessed bytes in input
    */
@@ -441,7 +454,7 @@ public class BuiltInGzipDecompressor implements Decompressor {
 
   /**
    * Returns true if the end of the gzip substream (single "member") has been
-   * reached.</p>
+   * reached.
    */
   @Override
   public synchronized boolean finished() {
@@ -450,7 +463,7 @@ public class BuiltInGzipDecompressor implements Decompressor {
 
   /**
    * Resets everything, including the input buffer, regardless of whether the
-   * current gzip substream is finished.</p>
+   * current gzip substream is finished.
    */
   @Override
   public synchronized void reset() {
@@ -472,6 +485,8 @@ public class BuiltInGzipDecompressor implements Decompressor {
   @Override
   public synchronized void end() {
     inflater.end();
+
+    state = GzipStateLabel.ENDED;
   }
 
   /**

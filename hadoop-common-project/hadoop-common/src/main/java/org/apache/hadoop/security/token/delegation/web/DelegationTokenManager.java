@@ -33,7 +33,7 @@ import org.apache.hadoop.security.token.delegation.ZKDelegationTokenSecretManage
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Delegation Token Manager used by the
@@ -127,7 +127,7 @@ public class DelegationTokenManager {
   /**
    * Sets an external <code>DelegationTokenSecretManager</code> instance to
    * manage creation and verification of Delegation Tokens.
-   * <p/>
+   * <p>
    * This is useful for use cases where secrets must be shared across multiple
    * services.
    *

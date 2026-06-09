@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.resourcemanager.rmcontainer;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -30,7 +31,6 @@ import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
-import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.SchedulingRequest;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.ContainerRequest;
@@ -93,6 +93,10 @@ public interface RMContainer extends EventHandler<RMContainerEvent>,
   ContainerRequest getContainerRequest();
 
   String getNodeHttpAddress();
+
+  Map<String, List<Map<String, String>>> getExposedPorts();
+
+  void setExposedPorts(Map<String, List<Map<String, String>>> exposed);
   
   String getNodeLabelExpression();
 

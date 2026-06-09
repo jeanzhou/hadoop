@@ -18,11 +18,18 @@
 
 ## <a name="introduction"></a> Introduction
 
-Common problems working with S3 are
+Common problems working with S3 are:
 
-1. Classpath setup
-1. Authentication
-1. S3 Inconsistency side-effects
+1. [Classpath setup](#classpath)
+2. [Authentication](#authentication)
+3. [Access Denial](#access_denied)
+4. [Connectivity Problems](#connectivity)
+5. [File System Semantics](#semantics)
+6. [Encryption](#encryption)
+7. [Other Errors](#other)
+8. [SDK Upgrade Warnings](#upgrade_warnings)
+
+This document also includes some [best practises](#best) to aid troubleshooting.
 
 
 Troubleshooting IAM Assumed Roles is covered in its
@@ -63,14 +70,55 @@ These are Hadoop filesystem client classes, found in the `hadoop-aws` JAR.
 An exception reporting this class as missing means that this JAR is not on
 the classpath.
 
-### `ClassNotFoundException: com.amazonaws.services.s3.AmazonS3Client`
+
+### `java.lang.NoClassDefFoundError: software/amazon/awssdk/services/s3/model/S3Exception`
+
+This is one of the first stack traces which can surface when trying to instantiate
+an S3A filesystem instance without having the AWS V2 SDK `bundle.jar` on the classpath
+
+```
+java.lang.NoClassDefFoundError: software/amazon/awssdk/services/s3/model/S3Exception
+    at java.lang.ClassLoader.defineClass1(Native Method)
+    at java.lang.ClassLoader.defineClass(ClassLoader.java:756)
+    at java.security.SecureClassLoader.defineClass(SecureClassLoader.java:142)
+    at java.net.URLClassLoader.defineClass(URLClassLoader.java:473)
+    at java.net.URLClassLoader.access$100(URLClassLoader.java:74)
+    at java.net.URLClassLoader$1.run(URLClassLoader.java:369)
+    at java.net.URLClassLoader$1.run(URLClassLoader.java:363)
+    at java.security.AccessController.doPrivileged(Native Method)
+    at java.net.URLClassLoader.findClass(URLClassLoader.java:362)
+    at java.lang.ClassLoader.loadClass(ClassLoader.java:418)
+    at java.lang.ClassLoader.loadClass(ClassLoader.java:351)
+    at java.lang.Class.forName0(Native Method)
+    at java.lang.Class.forName(Class.java:348)
+    at org.apache.hadoop.conf.Configuration.getClassByNameOrNull(Configuration.java:2639)
+    at org.apache.hadoop.conf.Configuration.getClassByName(Configuration.java:2604)
+    at org.apache.hadoop.conf.Configuration.getClass(Configuration.java:2700)
+    at org.apache.hadoop.fs.FileSystem.getFileSystemClass(FileSystem.java:3414)
+    at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3449)
+    at org.apache.hadoop.fs.FileSystem.access$300(FileSystem.java:162)
+```
+
+Fix: add it to classpath.
+
+Maven/Ivy/SBT/Gradle builds which import `hadoop-aws` or
+`hadoop-cloud-storage` artifacts should get the artifact automatically.
+
+### `ClassNotFoundException: com.amazonaws.auth.AWSCredentials`
 
 (or other `com.amazonaws` class.)
 
-This means that the `aws-java-sdk-bundle.jar` JAR is not on the classpath:
-add it.
+With the move to the [V2 AWS SDK](../aws_sdk_upgrade.html),
+the v1 SDK classes are no longer on the classpath.
 
-### `java.lang.NoSuchMethodError` referencing a `com.amazonaws` class
+If this happens when trying to use a custom credential provider defined
+in `fs.s3a.aws.credentials.provider`, then add the `aws-sdk-bundle.jar`
+JAR to the classpath.
+
+If this happens in your own/third-party code, then again, add the JAR,
+and/or consider moving to the v2 sdk yourself.
+
+### `java.lang.NoSuchMethodError` referencing a `software.amazon` class
 
 This can be triggered by incompatibilities between the AWS SDK on the classpath
 and the version which Hadoop was compiled with.
@@ -79,11 +127,11 @@ The AWS SDK JARs change their signature enough between releases that the only
 way to safely update the AWS SDK version is to recompile Hadoop against the later
 version.
 
-The sole fix is to use the same version of the AWS SDK with which Hadoop
+The fix is to use the same version of the AWS SDK with which Hadoop
 was built.
 
 This can also be caused by having more than one version of an AWS SDK
-JAR on the classpath. If the full `aws-java-sdk-bundle<` JAR is on the
+JAR on the classpath. If the full `bundle.jar` JAR is on the
 classpath, do not add any of the `aws-sdk-` JARs.
 
 
@@ -92,6 +140,19 @@ classpath, do not add any of the `aws-sdk-` JARs.
 This happens if the `hadoop-aws` and `hadoop-common` JARs are out of sync.
 You can't mix them around: they have to have exactly matching version numbers.
 
+### `java.lang.NoClassDefFoundError: org/wildfly/openssl/OpenSSLProvider`
+
+This happens when <a href="performance.html#openssl">OpenSSL performance
+acceleration</a> has been configured by setting `fs.s3a.ssl.channel.mode`
+to `openssl` but the wildfly JAR is not on the classpath.
+
+Fixes:
+* Add it to the classpath
+* Use a different channel mode, including `default`, which will
+revert to the JVM SSL implementation when the wildfly
+or native openssl libraries cannot be loaded.
+
+
 ## <a name="authentication"></a> Authentication Failure
 
 If Hadoop cannot authenticate with the S3 service endpoint,
@@ -99,7 +160,6 @@ the client retries a number of times before eventually failing.
 When it finally gives up, it will report a message about signature mismatch:
 
 ```
-com.amazonaws.services.s3.model.AmazonS3Exception:
  The request signature we calculated does not match the signature you provided.
  Check your key and signing method.
   (Service: Amazon S3; Status Code: 403; Error Code: SignatureDoesNotMatch,
@@ -149,18 +209,21 @@ credentials, through a command such as:
 Note the trailing "/" here; without that the shell thinks you are trying to list
 your home directory under the bucket, which will only exist if explicitly created.
 
-Attempting to list a bucket using inline credentials is a
-means of verifying that the key and secret can access a bucket;
-
-    hadoop fs -ls s3a://key:secret@my-bucket/
-
-Do escape any `+` or `/` symbols in the secret, as discussed below, and never
-share the URL, logs generated using it, or use such an inline authentication
-mechanism in production.
-
 Finally, if you set the environment variables, you can take advantage of S3A's
 support of environment-variable authentication by attempting the same ls operation.
 That is: unset the `fs.s3a` secrets and rely on the environment variables.
+
+
+### Authentication failure "The Filesystem URI contains login details."
+
+```
+The Filesystem URI contains login details. This authentication mechanism is no longer supported.
+```
+
+The S3A connector no longer supports the dangerously insecure mechanism of
+passing login details within the S3A URLs.
+
+Fix: use a more secure mechanism to pass down the secrets.
 
 ### Authentication failure due to clock skew
 
@@ -173,75 +236,70 @@ read requests are allowed, but operations which write to the bucket are denied.
 
 Check the system clock.
 
-### Authentication failure when using URLs with embedded secrets
 
-If using the (strongly discouraged) mechanism of including the
-AWS Key and secret in a URL, then both "+" and "/" symbols need
-to encoded in the URL. As many AWS secrets include these characters,
-encoding problems are not uncommon.
+### `Class does not implement software.amazon.awssdk.auth.credentials.AwsCredentialsProvider`
 
-| symbol | encoded  value|
-|-----------|-------------|
-| `+` | `%2B` |
-| `/` | `%2F` |
-
-
-As an example, a URL for `bucket` with AWS ID `user1` and secret `a+b/c` would
-be represented as
+A credential provider listed in `fs.s3a.aws.credentials.provider` does not implement
+the interface `software.amazon.awssdk.auth.credentials.AwsCredentialsProvider`.
 
 ```
-s3a://user1:a%2Bb%2Fc@bucket/
+InstantiationIOException: `s3a://gcs/': Class org.apache.hadoop.fs.s3a.S3ARetryPolicy does not implement
+ software.amazon.awssdk.auth.credentials.AwsCredentialsProvider (configuration key fs.s3a.aws.credentials.provider)
+        at org.apache.hadoop.fs.s3a.impl.InstantiationIOException.isNotInstanceOf(InstantiationIOException.java:128)
+        at org.apache.hadoop.fs.s3a.S3AUtils.getInstanceFromReflection(S3AUtils.java:604)
+        at org.apache.hadoop.fs.s3a.auth.CredentialProviderListFactory.createAWSV2CredentialProvider(CredentialProviderListFactory.java:299)
+        at org.apache.hadoop.fs.s3a.auth.CredentialProviderListFactory.buildAWSProviderList(CredentialProviderListFactory.java:245)
+        at org.apache.hadoop.fs.s3a.auth.CredentialProviderListFactory.createAWSCredentialProviderList(CredentialProviderListFactory.java:144)
+        at org.apache.hadoop.fs.s3a.S3AFileSystem.bindAWSClient(S3AFileSystem.java:971)
+        at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:624)
+        at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3601)
+        at org.apache.hadoop.fs.FileSystem.access$300(FileSystem.java:171)
+        at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3702)
+        at org.apache.hadoop.fs.FileSystem$Cache.get(FileSystem.java:3653)
+        at org.apache.hadoop.fs.FileSystem.get(FileSystem.java:555)
+        at org.apache.hadoop.fs.Path.getFileSystem(Path.java:366)
+
 ```
 
-This technique is only needed when placing secrets in the URL. Again,
-this is something users are strongly advised against using.
+There's two main causes
 
-### <a name="bad_request"></a> "Bad Request" exception when working with AWS S3 Frankfurt, Seoul, or other "V4" endpoint
+1. A class listed there is not an implementation of the interface.
+   Fix: review the settings and correct as appropriate.
+1. A class listed there does implement the interface, but it has been loaded in a different
+   classloader, so the JVM does not consider it to be an implementation.
+   Fix: learn the entire JVM classloader model and see if you can then debug it.
+   Tip: having both the AWS Shaded SDK and individual AWS SDK modules on your classpath
+   may be a cause of this.
+
+If you see this and you are trying to use the S3A connector with Spark, then the cause can
+be that the isolated classloader used to load Hive classes is interfering with the S3A
+connector's dynamic loading of `software.amazon.awssdk` classes. To fix this, declare that
+the classes in the aws SDK are loaded from the same classloader which instantiated
+the S3A FileSystem instance:
+
+```
+spark.sql.hive.metastore.sharedPrefixes software.amazon.awssdk.
+```
 
 
-S3 Frankfurt and Seoul *only* support
-[the V4 authentication API](http://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-authenticating-requests.html).
+## <a name="400_bad_request"></a> 400 Bad Request errors
 
-Requests using the V2 API will be rejected with 400 `Bad Request`
+S3 stores return HTTP status code 400 "Bad Request" when the client make a request which
+the store considers invalid.
+
+This is most commonly caused by signing errors: secrets, region, even confusion between public and private
+S3 stores.
+
+### <a name="bad_request"></a> "Bad Request" exception when working with data stores in an AWS region other than us-east
+
 
 ```
 $ bin/hadoop fs -ls s3a://frankfurt/
 WARN s3a.S3AFileSystem: Client: Amazon S3 error 400: 400 Bad Request; Bad Request (retryable)
 
-com.amazonaws.services.s3.model.AmazonS3Exception: Bad Request (Service: Amazon S3;
- Status Code: 400; Error Code: 400 Bad Request; Request ID: 923C5D9E75E44C06),
-  S3 Extended Request ID: HDwje6k+ANEeDsM6aJ8+D5gUmNAMguOk2BvZ8PH3g9z0gpH+IuwT7N19oQOnIr5CIx7Vqb/uThE=
-    at com.amazonaws.http.AmazonHttpClient.handleErrorResponse(AmazonHttpClient.java:1182)
-    at com.amazonaws.http.AmazonHttpClient.executeOneRequest(AmazonHttpClient.java:770)
-    at com.amazonaws.http.AmazonHttpClient.executeHelper(AmazonHttpClient.java:489)
-    at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:310)
-    at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:3785)
-    at com.amazonaws.services.s3.AmazonS3Client.headBucket(AmazonS3Client.java:1107)
-    at com.amazonaws.services.s3.AmazonS3Client.doesBucketExist(AmazonS3Client.java:1070)
-    at org.apache.hadoop.fs.s3a.S3AFileSystem.verifyBucketExists(S3AFileSystem.java:307)
-    at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:284)
-    at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:2793)
-    at org.apache.hadoop.fs.FileSystem.access$200(FileSystem.java:101)
-    at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:2830)
-    at org.apache.hadoop.fs.FileSystem$Cache.get(FileSystem.java:2812)
-    at org.apache.hadoop.fs.FileSystem.get(FileSystem.java:389)
-    at org.apache.hadoop.fs.Path.getFileSystem(Path.java:356)
-    at org.apache.hadoop.fs.shell.PathData.expandAsGlob(PathData.java:325)
-    at org.apache.hadoop.fs.shell.Command.expandArgument(Command.java:235)
-    at org.apache.hadoop.fs.shell.Command.expandArguments(Command.java:218)
-    at org.apache.hadoop.fs.shell.FsCommand.processRawArguments(FsCommand.java:103)
-    at org.apache.hadoop.fs.shell.Command.run(Command.java:165)
-    at org.apache.hadoop.fs.FsShell.run(FsShell.java:315)
-    at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:76)
-    at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:90)
-    at org.apache.hadoop.fs.FsShell.main(FsShell.java:373)
-ls: doesBucketExist on frankfurt-new: com.amazonaws.services.s3.model.AmazonS3Exception:
+ls: doesBucketExist on frankfurt-new: S3Exception:
   Bad Request (Service: Amazon S3; Status Code: 400; Error Code: 400 Bad Request;
 ```
-
-This happens when trying to work with any S3 service which only supports the
-"V4" signing API —but the client is configured to use the default S3 service
-endpoint.
 
 The S3A client needs to be given the endpoint to use via the `fs.s3a.endpoint`
 property.
@@ -254,8 +312,159 @@ As an example, the endpoint for S3 Frankfurt is `s3.eu-central-1.amazonaws.com`:
   <value>s3.eu-central-1.amazonaws.com</value>
 </property>
 ```
+### <a name="AuthorizationHeaderMalformed"></a> "Authorization Header is Malformed"(400) exception when PrivateLink URL is used in "fs.s3a.endpoint"
 
-## <a name="access_denied"></a> `AccessDeniedException` "Access Denied"
+When [PrivateLink](https://docs.aws.amazon.com/AmazonS3/latest/userguide/privatelink-interface-endpoints.html) URL
+is used instead of standard s3a endpoint, it returns "authorization
+header is malformed" exception. So, if we set `fs.s3a.endpoint=bucket.vpce
+-<some_string>.s3.ca-central-1.vpce.amazonaws.com` and make s3 calls we get:
+```
+S3Exception: The authorization header is malformed; the region 'vpce' is wrong; expecting 'ca-central-1'
+(Service: Amazon S3; Status Code: 400; Error Code: AuthorizationHeaderMalformed; Request ID: req-id; S3 Extended Request ID: req-id-2), S3 Extended Request ID: req-id-2:AuthorizationHeaderMalformed: The authorization
+header is malformed; the region 'vpce' is wrong; expecting 'ca-central-1' (Service: Amazon S3; Status Code: 400; Error Code: AuthorizationHeaderMalformed; Request ID: req-id;
+```
+Cause:
+
+Since, endpoint parsing is done in a way that it assumes the AWS S3 region
+would be the 2nd component of the `fs.s3a.endpoint` URL delimited by ".", in
+case of PrivateLink URL, it can't figure out the region and throws an
+authorization exception. Thus, to add support to using PrivateLink URLs we use `fs.s3a.endpoint.region`
+to set the region and bypass this parsing of `fs.s3a.endpoint`, in the case shown above to make it work we'll set the AWS
+S3 region as `ca-central-1`.
+
+```xml
+<property>
+  <name>fs.s3a.endpoint.region</name>
+  <value>ca-central-1</value>
+</property>
+```
+
+### <a name="request_timeout"></a> 400 + RequestTimeout "Your socket connection to the server was not read from or written to within the timeout period"
+
+```
+org.apache.hadoop.fs.s3a.AWSBadRequestException: upload part #1 upload ID 1122334455:
+  software.amazon.awssdk.services.s3.model.S3Exception:
+  Your socket connection to the server was not read from or written to within the timeout period.
+  Idle connections will be closed.
+  (Service: S3, Status Code: 400, Request ID: 1122334455, Extended Request ID: ...):
+  RequestTimeout:
+   Your socket connection to the server was not read from or written to within the timeout period.
+   Idle connections will be closed. (Service: S3, Status Code: 400, Request ID: 1122334455, Extended Request ID: ...
+```
+
+This is an obscure failure which was encountered as part of
+[HADOOP-19221](https://issues.apache.org/jira/browse/HADOOP-19221) : an upload of part of a file could not
+be successfully retried after a failure was reported on the first attempt.
+
+1. It was only encountered during uploading files via the Staging Committers
+2. And is a regression in the V2 SDK.
+3. This should have been addressed in the S3A connector.
+
+* If it is encountered on a hadoop release with HADOOP-19221, then this is a regression -please report it.
+* If it is encountered on a release without the fix, please upgrade.
+
+It may be that the problem arises in the AWS SDK's "TransferManager", which is used for a
+higher performance upload of data from the local filesystem. If this is the case. disable this feature:
+```
+<property>
+  <name>fs.s3a.optimized.copy.from.local.enabled</name>
+  <value>false</value>
+</property>
+```
+
+### Status Code 400 "One or more of the specified parts could not be found"
+
+```
+org.apache.hadoop.fs.s3a.AWSBadRequestException: Completing multipart upload on job-00-fork-0003/test/testTwoPartUpload:
+software.amazon.awssdk.services.s3.model.S3Exception: One or more of the specified parts could not be found.
+The part may not have been uploaded, or the specified entity tag may not match the part's entity tag.
+(Service: S3, Status Code: 400, Request ID: EKNW2V7P34T7YK9E,
+ Extended Request ID: j64Dfdmfd2ZnjErbX1c05YmidLGx/5pJF9Io4B0w8Cx3aDTSFn1pW007BuzyxPeAbph/ZqXHjbU=):InvalidPart:
+```
+
+Happens if a multipart upload is being completed, but one of the parts is missing.
+* An upload took so long that the part was deleted by the store
+* A magic committer job's list of in-progress uploads somehow got corrupted
+* Bug in the S3A codebase (rare, but not impossible...)
+
+### <a name="object_lock_parameters"></a> Status Code 400 "Content-MD5 OR x-amz-checksum- HTTP header is required for Put Object requests with Object Lock parameters"
+```
+software.amazon.awssdk.services.s3.model.S3Exception: Content-MD5 OR x-amz-checksum- HTTP header is required for Put Object requests with Object Lock parameters (Service: S3, Status Code: 400, Request ID: 1122334455, Extended Request ID: ...):
+InvalidRequest: Content-MD5 OR x-amz-checksum- HTTP header is required for Put Object requests with Object Lock parameters (Service: S3, Status Code: 400, Request ID: 1122334455, Extended Request ID: ...)
+```
+
+This error happens if the S3 bucket has [Object Lock](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html) enabled.
+
+The Content-MD5 or x-amz-sdk-checksum-algorithm header is required for any request to upload an object
+with a retention period configured using Object Lock.
+
+If Object Lock can't be disabled in the S3 bucket, set a checksum algorithm to be used in the
+uploads via the `fs.s3a.create.checksum.algorithm` property. Note that enabling checksum on uploads can
+affect the performance.
+
+```xml
+<property>
+  <name>fs.s3a.create.checksum.algorithm</name>
+  <value>SHA256</value>
+</property>
+```
+
+### <a name="content-sha-256"></a> Status Code 400 "XAmzContentSHA256Mismatch: The Content-SHA256 you specified did not match what we receive"
+
+Seen when working with a third-party store
+
+```
+org.apache.hadoop.fs.s3a.AWSBadRequestException: PUT 0-byte object  on test:
+software.amazon.awssdk.services.s3.model.S3Exception:
+The Content-SHA256 you specified did not match what we received
+(Service: S3, Status Code: 400, Request ID: 0c07c87d:196d43d824a:d7bca:eeb, Extended Request ID: 2af53adb49ffb141a32b534ad7ffbdf33a247f6b95b422011e0b109649d1fab7) (SDK Attempt Count: 1):
+XAmzContentSHA256Mismatch: The Content-SHA256 you specified did not match what we received
+```
+
+This happens when a file create checksum has been enabled but the store does not support it/support it consistently with AWS S3.
+
+```xml
+  <property>
+    <name>fs.s3a.create.checksum.algorithm</name>
+    <value>none</value>
+  </property>
+```
+
+### <a name="content-sha-256"></a> Status Code 400 "x-amz-sdk-checksum-algorithm specified, but no corresponding x-amz-checksum-* or x-amz-trailer headers were found"
+
+```
+org.apache.hadoop.fs.s3a.AWSBadRequestException: PUT 0-byte object  on test
+software.amazon.awssdk.services.s3.model.InvalidRequestException
+x-amz-sdk-checksum-algorithm specified, but no corresponding x-amz-checksum-* or x-amz-trailer headers were found.
+  (Service: S3, Status Code: 400, Request ID: 012929bd17000198c8bc82d20509eecd6df79b1a, Extended Request ID: P9bq0Iv) (SDK Attempt Count: 1):
+```
+
+The checksum algorithm to be used is not one supported by the store.
+In particular, the value `unknown_to_sdk_version` appears to cause it.
+
+```xml
+  <property>
+    <name>fs.s3a.create.checksum.algorithm</name>
+    <value>unknown_to_sdk_version</value>
+  </property>
+```
+
+Fix: use a checksum the store knows about.
+
+## <a name="access_denied"></a> Access Denied
+
+HTTP error codes 401 and 403 are mapped to `AccessDeniedException` in the S3A connector.
+
+### "The security token included in the request is invalid"
+
+You are trying to use session/temporary credentials and the session token
+supplied is considered invalid.
+
+This can surface if your configuration is setting the `fs.s3a.secret.key`,
+`fs.s3a.access.key` and `fs.s3a.session.key` correctly, but the
+AWS credential provider list set in `AWS_CREDENTIALS_PROVIDER` does not include
+`org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider`.
+
 
 ### <a name="access_denied_unknown-ID"></a> AccessDeniedException "The AWS Access Key Id you provided does not exist in our records."
 
@@ -264,61 +473,13 @@ It may be mistyped, or the access key may have been deleted by one of the accoun
 
 ```
 java.nio.file.AccessDeniedException: bucket: doesBucketExist on bucket:
-    com.amazonaws.services.s3.model.AmazonS3Exception:
+    S3Exception:
     The AWS Access Key Id you provided does not exist in our records.
-     (Service: Amazon S3; Status Code: 403; Error Code: InvalidAccessKeyId;
-  at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:214)
-  at org.apache.hadoop.fs.s3a.Invoker.once(Invoker.java:111)
-  at org.apache.hadoop.fs.s3a.Invoker.lambda$retry$3(Invoker.java:260)
-  at org.apache.hadoop.fs.s3a.Invoker.retryUntranslated(Invoker.java:314)
-  at org.apache.hadoop.fs.s3a.Invoker.retry(Invoker.java:256)
-  at org.apache.hadoop.fs.s3a.Invoker.retry(Invoker.java:231)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.verifyBucketExists(S3AFileSystem.java:366)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:302)
-  at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3354)
-  at org.apache.hadoop.fs.FileSystem.access$200(FileSystem.java:124)
-  at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3403)
-  at org.apache.hadoop.fs.FileSystem$Cache.get(FileSystem.java:3371)
-  at org.apache.hadoop.fs.FileSystem.get(FileSystem.java:477)
-  at org.apache.hadoop.fs.contract.AbstractBondedFSContract.init(AbstractBondedFSContract.java:72)
-  at org.apache.hadoop.fs.contract.AbstractFSContractTestBase.setup(AbstractFSContractTestBase.java:177)
-  at org.apache.hadoop.fs.s3a.commit.AbstractCommitITest.setup(AbstractCommitITest.java:163)
-  at org.apache.hadoop.fs.s3a.commit.AbstractITCommitMRJob.setup(AbstractITCommitMRJob.java:129)
-  at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-  at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
-  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-  at java.lang.reflect.Method.invoke(Method.java:498)
-  at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:47)
-  at org.junit.internal.runners.model.ReflectiveCallable.run(ReflectiveCallable.java:12)
-  at org.junit.runners.model.FrameworkMethod.invokeExplosively(FrameworkMethod.java:44)
-  at org.junit.internal.runners.statements.RunBefores.evaluate(RunBefores.java:24)
-  at org.junit.internal.runners.statements.RunAfters.evaluate(RunAfters.java:27)
-  at org.junit.rules.ExternalResource$1.evaluate(ExternalResource.java:48)
-  at org.junit.rules.TestWatcher$1.evaluate(TestWatcher.java:55)
-  at org.junit.internal.runners.statements.FailOnTimeout$StatementThread.run(FailOnTimeout.java:74)
-Caused by: com.amazonaws.services.s3.model.AmazonS3Exception:
-               The AWS Access Key Id you provided does not exist in our records.
-                (Service: Amazon S3; Status Code: 403; Error Code: InvalidAccessKeyId;
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.handleErrorResponse(AmazonHttpClient.java:1638)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeOneRequest(AmazonHttpClient.java:1303)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1055)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.doExecute(AmazonHttpClient.java:743)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeWithTimer(AmazonHttpClient.java:717)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.execute(AmazonHttpClient.java:699)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.access$500(AmazonHttpClient.java:667)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutionBuilderImpl.execute(AmazonHttpClient.java:649)
-  at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:513)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:4229)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:4176)
-  at com.amazonaws.services.s3.AmazonS3Client.getAcl(AmazonS3Client.java:3381)
-  at com.amazonaws.services.s3.AmazonS3Client.getBucketAcl(AmazonS3Client.java:1160)
-  at com.amazonaws.services.s3.AmazonS3Client.getBucketAcl(AmazonS3Client.java:1150)
-  at com.amazonaws.services.s3.AmazonS3Client.doesBucketExist(AmazonS3Client.java:1266)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.lambda$verifyBucketExists$1(S3AFileSystem.java:367)
-  at org.apache.hadoop.fs.s3a.Invoker.once(Invoker.java:109)
-  ... 27 more
 
 ```
+
+If working with a third-party bucket, verify the `fs.s3a.endpoint` setting
+points to the third-party store.
 
 ###  <a name="access_denied_disabled"></a> `AccessDeniedException` All access to this object has been disabled
 
@@ -326,47 +487,12 @@ Caller has no permission to access the bucket at all.
 
 ```
 doesBucketExist on fdsd: java.nio.file.AccessDeniedException: fdsd: doesBucketExist on fdsd:
- com.amazonaws.services.s3.model.AmazonS3Exception: All access to this object has been disabled
+ S3Exception: All access to this object has been disabled
  (Service: Amazon S3; Status Code: 403; Error Code: AllAccessDisabled; Request ID: E6229D7F8134E64F;
   S3 Extended Request ID: 6SzVz2t4qa8J2Wxo/oc8yBuB13Mgrn9uMKnxVY0hsBd2kU/YdHzW1IaujpJdDXRDCQRX3f1RYn0=),
   S3 Extended Request ID: 6SzVz2t4qa8J2Wxo/oc8yBuB13Mgrn9uMKnxVY0hsBd2kU/YdHzW1IaujpJdDXRDCQRX3f1RYn0=:AllAccessDisabled
  All access to this object has been disabled (Service: Amazon S3; Status Code: 403;
-  at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:205)
-  at org.apache.hadoop.fs.s3a.S3ALambda.once(S3ALambda.java:122)
-  at org.apache.hadoop.fs.s3a.S3ALambda.lambda$retry$2(S3ALambda.java:233)
-  at org.apache.hadoop.fs.s3a.S3ALambda.retryUntranslated(S3ALambda.java:288)
-  at org.apache.hadoop.fs.s3a.S3ALambda.retry(S3ALambda.java:228)
-  at org.apache.hadoop.fs.s3a.S3ALambda.retry(S3ALambda.java:203)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.verifyBucketExists(S3AFileSystem.java:357)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:293)
-  at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3288)
-  at org.apache.hadoop.fs.FileSystem.access$200(FileSystem.java:123)
-  at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3337)
-  at org.apache.hadoop.fs.FileSystem$Cache.getUnique(FileSystem.java:3311)
-  at org.apache.hadoop.fs.FileSystem.newInstance(FileSystem.java:529)
-  at org.apache.hadoop.fs.s3a.s3guard.S3GuardTool$BucketInfo.run(S3GuardTool.java:997)
-  at org.apache.hadoop.fs.s3a.s3guard.S3GuardTool.run(S3GuardTool.java:309)
-  at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:76)
-  at org.apache.hadoop.fs.s3a.s3guard.S3GuardTool.run(S3GuardTool.java:1218)
-  at org.apache.hadoop.fs.s3a.s3guard.S3GuardTool.main(S3GuardTool.java:1227)
-Caused by: com.amazonaws.services.s3.model.AmazonS3Exception: All access to this object has been disabled
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.handleErrorResponse(AmazonHttpClient.java:1638)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeOneRequest(AmazonHttpClient.java:1303)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1055)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.doExecute(AmazonHttpClient.java:743)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeWithTimer(AmazonHttpClient.java:717)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.execute(AmazonHttpClient.java:699)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.access$500(AmazonHttpClient.java:667)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutionBuilderImpl.execute(AmazonHttpClient.java:649)
-  at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:513)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:4229)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:4176)
-  at com.amazonaws.services.s3.AmazonS3Client.getAcl(AmazonS3Client.java:3381)
-  at com.amazonaws.services.s3.AmazonS3Client.getBucketAcl(AmazonS3Client.java:1160)
-  at com.amazonaws.services.s3.AmazonS3Client.getBucketAcl(AmazonS3Client.java:1150)
-  at com.amazonaws.services.s3.AmazonS3Client.doesBucketExist(AmazonS3Client.java:1266)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.lambda$verifyBucketExists$1(S3AFileSystem.java:360)
-  at org.apache.hadoop.fs.s3a.S3ALambda.once(S3ALambda.java:120)
+
 ```
 
 Check the name of the bucket is correct, and validate permissions for the active user/role.
@@ -381,19 +507,9 @@ or the caller does not have the right to access the data.
 
 ```
 java.nio.file.AccessDeniedException: test/: PUT 0-byte object  on test/:
- com.amazonaws.services.s3.model.AmazonS3Exception: Access Denied (Service: Amazon S3; Status Code: 403;
+ S3Exception: Access Denied (Service: Amazon S3; Status Code: 403;
  Error Code: AccessDenied; Request ID: EDC662AD2EEEA33C;
-  at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:210)
-  at org.apache.hadoop.fs.s3a.Invoker.once(Invoker.java:110)
-  at org.apache.hadoop.fs.s3a.Invoker.lambda$retry$3(Invoker.java:259)
-  at org.apache.hadoop.fs.s3a.Invoker.retryUntranslated(Invoker.java:313)
-  at org.apache.hadoop.fs.s3a.Invoker.retry(Invoker.java:255)
-  at org.apache.hadoop.fs.s3a.Invoker.retry(Invoker.java:230)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.createEmptyObject(S3AFileSystem.java:2691)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.createFakeDirectory(S3AFileSystem.java:2666)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.innerMkdirs(S3AFileSystem.java:2030)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.mkdirs(S3AFileSystem.java:1965)
-  at org.apache.hadoop.fs.FileSystem.mkdirs(FileSystem.java:2305)
+
 ```
 
 In the AWS S3 management console, select the "permissions" tab for the bucket, then "bucket policy".
@@ -414,6 +530,45 @@ If the client using [assumed roles](assumed_roles.html), and a policy
 is set in `fs.s3a.assumed.role.policy`, then that policy declares
 _all_ the rights which the caller has.
 
+### <a name="access_denied_renaming"></a> `AccessDeniedException` in rename, "MultiObjectDeleteException: One or more objects could not be deleted"
+
+
+```
+mv: rename s3a://london/dest to s3a://london/src on
+s3a://london/dest:
+    MultiObjectDeleteException: One or more objects
+    could not be deleted (Service: null; Status Code: 200; Error Code: null; Request
+    ID: 5C9018EF245F02C5; S3 Extended Request ID:
+    5fQ2RVCPF0rdvADRv2XY3U4yb2J0gHRID/4jm1eqCXp7RxpU0dH9DliChYsCUD1aVCFtbwfWJWY=),
+    S3 Extended Request ID:
+    5fQ2RVCPF0rdvADRv2XY3U4yb2J0gHRID/4jm1eqCXp7RxpU0dH9DliChYsCUD1aVCFtbwfWJWY=:null:
+    AccessDenied: dest/file10: Access Denied
+```
+
+The S3A connector's emulation of file and directory rename is implemented by copying each file,
+then deleting the originals. This delete process is done in batches, by default in a single
+"multiple object delete request". If one or more of the objects listed in the request cannot
+be deleted, an error is returned in S3 listing which objects were not deleted.
+If the cause was "access denied", it is translated into an `AccessDeniedException`.
+
+The rename is halted at this point: files may be present in both the source and destination directories.
+Those files which could not be deleted from the source directory will also have been copied
+into the destination directory. Files which were successfully deleted from the source
+directory will _only_ be in the destination. And files for which the rename operation
+had yet to commence -they will only be in the source tree.
+
+The user has to recover from this themselves. Be assured: no data will have been deleted, it
+is just that the data may now be scattered across two directories.
+Note: this is one reason why any application which tries to atomically commit work
+via rename (classic Hadoop output committers, distcp with the `-atomic` option) are
+not safe to use with S3. It is not a file system.
+
+For an 'AccessDenied' failure, the root cause is IAM permissions.
+The user/role/bucket must have the permission
+`s3:DeleteObject` on the source path. It is safest to grant `s3:Delete*` so
+that if a future version of the S3A connector supported extra operations
+(explicit deletion of versioned files, get/set/delete object tagging, ...),
+the client will have the permission to use them.
 
 ### <a name="kms_access_denied"></a>  `AccessDeniedException` when using SSE-KMS
 
@@ -423,9 +578,176 @@ When trying to write or read SEE-KMS-encrypted data, the client gets a
 The caller does not have the permissions to access
 the key with which the data was encrypted.
 
+### <a name="access_denied_requester_pays"></a>`AccessDeniedException` when using a "Requester Pays" enabled bucket
+
+When making cross-account requests to a requester pays enabled bucket, all calls must acknowledge via a header that the requester will be billed.
+
+If you don't enable this acknowledgement within S3A, then you will see a message similar to this:
+
+```
+java.nio.file.AccessDeniedException: s3a://my-bucket/my-object: getFileStatus on s3a://my-bucket/my-object:
+S3Exception: Forbidden (Service: Amazon S3; Status Code: 403;
+Error Code: 403 Forbidden; Request ID: myshortreqid; S3 Extended Request ID: mylongreqid):403 Forbidden
+```
+
+To enable requester pays, set `fs.s3a.requester.pays.enabled` property to `true`.
+
+### <a name="access_denied_archive_storage_class"></a>`AccessDeniedException` "InvalidObjectState" when trying to read files
+
+```
+java.nio.file.AccessDeniedException: file1: copyFile(file1, file2) on file1: S3Exception: Operation is not valid for the source object's storage class (Service: Amazon S3; Status Code: 403; Error Code: InvalidObjectState; Request ID: SK9EMPC1YRX75VZR; S3 Extended Request ID: /nhUfdwJ+y5DLz6B4YR2FdA0FnQWwhDAkSCakn42zs2JssK3qWTrfwdNDiy6bOyXHOvJY0VAlHw=; Proxy: null), S3 Extended Request ID: /nhUfdwJ+y5DLz6B4YR2FdA0FnQWwhDAkSCakn42zs2JssK3qWTrfwdNDiy6bOyXHOvJY0VAlHw=:InvalidObjectState
+
+Caused by: S3Exception: Operation is not valid for the source object's storage class (Service: Amazon S3; Status Code: 403; Error Code: InvalidObjectState; Request ID: SK9EMPC1YRX75VZR; S3 Extended Request ID: /nhUfdwJ+y5DLz6B4YR2FdA0FnQWwhDAkSCakn42zs2JssK3qWTrfwdNDiy6bOyXHOvJY0VAlHw=; Proxy: null), S3 Extended Request ID: /nhUfdwJ+y5DLz6B4YR2FdA0FnQWwhDAkSCakn42zs2JssK3qWTrfwdNDiy6bOyXHOvJY0VAlHw=
+```
+
+This happens when you're trying to read or copy files that have archive storage class such as
+Glacier.
+
+If you want to access the file with S3A after writes, do not set `fs.s3a.create.storage.class` to `glacier` or `deep_archive`.
+
+### <a name="SignatureDoesNotMatch"></a>`AccessDeniedException` with `SignatureDoesNotMatch` on a third party bucket.
+
+This can surface when trying to interact, especially write data, to a third-party bucket
+
+```
+ Writing Object on example-file: software.amazon.awssdk.services.s3.model.S3Exception: Invalid argument. (Service: S3, Status Code: 403, Request ID: null) (SDK Attempt Count: 1):SignatureDoesNotMatch
+```
+
+The store does not recognize checksum calculation on every operation.
+Fix: disable it by setting `fs.s3a.checksum.generation` to `false`.
+
+```xml
+<property>
+  <name>fs.s3a.checksum.generation</name>
+  <value>false</value>
+  <description>Calculate and attach a message checksum on every operation. (default: false)</description>
+</property>
+```
+
+Full stack
+
+```
+> bin/hadoop fs -touchz s3a://gcs/example-file
+2025-10-21 16:23:27,642 [main] WARN  s3a.S3ABlockOutputStream (S3ABlockOutputStream.java:progressChanged(1335)) - Transfer failure of block FileBlock{index=1, destFile=/tmp/hadoop-stevel/s3a/s3ablock-0001-1358390699869033998.tmp, state=Upload, dataSize=0, limit=-1}
+2025-10-21 16:23:27,645 [main] DEBUG shell.Command (Command.java:displayError(481)) - touchz failure
+java.nio.file.AccessDeniedException: example-file: Writing Object on example-file: software.amazon.awssdk.services.s3.model.S3Exception: Invalid argument. (Service: S3, Status Code: 403, Request ID: null) (SDK Attempt Count: 1):SignatureDoesNotMatch
+   at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:271)
+   at org.apache.hadoop.fs.s3a.Invoker.once(Invoker.java:124)
+   at org.apache.hadoop.fs.s3a.Invoker.lambda$retry$4(Invoker.java:376)
+   at org.apache.hadoop.fs.s3a.Invoker.retryUntranslated(Invoker.java:468)
+   at org.apache.hadoop.fs.s3a.Invoker.retry(Invoker.java:372)
+   at org.apache.hadoop.fs.s3a.Invoker.retry(Invoker.java:347)
+   at org.apache.hadoop.fs.s3a.WriteOperationHelper.retry(WriteOperationHelper.java:210)
+   at org.apache.hadoop.fs.s3a.WriteOperationHelper.putObject(WriteOperationHelper.java:534)
+   at org.apache.hadoop.fs.s3a.S3ABlockOutputStream.putObject(S3ABlockOutputStream.java:726)
+   at org.apache.hadoop.fs.s3a.S3ABlockOutputStream.close(S3ABlockOutputStream.java:518)
+   at org.apache.hadoop.fs.FSDataOutputStream$PositionCache.close(FSDataOutputStream.java:77)
+   at org.apache.hadoop.fs.FSDataOutputStream.close(FSDataOutputStream.java:106)
+   at org.apache.hadoop.fs.shell.TouchCommands$Touchz.touchz(TouchCommands.java:89)
+   at org.apache.hadoop.fs.shell.TouchCommands$Touchz.processNonexistentPath(TouchCommands.java:85)
+   at org.apache.hadoop.fs.shell.Command.processArgument(Command.java:303)
+   at org.apache.hadoop.fs.shell.Command.processArguments(Command.java:285)
+   at org.apache.hadoop.fs.shell.FsCommand.processRawArguments(FsCommand.java:121)
+   at org.apache.hadoop.fs.shell.Command.run(Command.java:192)
+   at org.apache.hadoop.fs.FsShell.run(FsShell.java:327)
+   at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:82)
+   at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:97)
+   at org.apache.hadoop.fs.FsShell.main(FsShell.java:390)
+Caused by: software.amazon.awssdk.services.s3.model.S3Exception: Invalid argument. (Service: S3, Status Code: 403, Request ID: null) (SDK Attempt Count: 1)
+   at software.amazon.awssdk.services.s3.model.S3Exception$BuilderImpl.build(S3Exception.java:113)
+   at software.amazon.awssdk.services.s3.model.S3Exception$BuilderImpl.build(S3Exception.java:61)
+...
+   at software.amazon.awssdk.awscore.client.handler.AwsSyncClientHandler.execute(AwsSyncClientHandler.java:53)
+   at software.amazon.awssdk.services.s3.DefaultS3Client.putObject(DefaultS3Client.java:11883)
+   at software.amazon.awssdk.services.s3.DelegatingS3Client.lambda$putObject$89(DelegatingS3Client.java:9716)
+   at software.amazon.awssdk.services.s3.internal.crossregion.S3CrossRegionSyncClient.invokeOperation(S3CrossRegionSyncClient.java:67)
+   at software.amazon.awssdk.services.s3.DelegatingS3Client.putObject(DelegatingS3Client.java:9716)
+   at org.apache.hadoop.fs.s3a.S3AFileSystem.lambda$putObjectDirect$14(S3AFileSystem.java:3332)
+   at org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDurationOfSupplier(IOStatisticsBinding.java:650)
+   at org.apache.hadoop.fs.s3a.S3AFileSystem.putObjectDirect(S3AFileSystem.java:3330)
+   at org.apache.hadoop.fs.s3a.WriteOperationHelper.lambda$putObject$7(WriteOperationHelper.java:535)
+   at org.apache.hadoop.fs.store.audit.AuditingFunctions.lambda$withinAuditSpan$0(AuditingFunctions.java:62)
+   at org.apache.hadoop.fs.s3a.Invoker.once(Invoker.java:122)
+   ... 20 more
+   touchz: example-file: Writing Object on example-file: software.amazon.awssdk.services.s3.model.S3Exception: Invalid argument. (Service: S3, Status Code: 403, Request ID: null) (SDK Attempt Count: 1):SignatureDoesNotMatch
+```
+
+### <a name="no_region_session_credentials"></a> "Unable to find a region via the region provider chain." when using session credentials.
+
+Region must be provided when requesting session credentials, or an exception will be thrown with the
+message:
+
+```
+Unable to find a region via the region provider
+chain. Must provide an explicit region in the builder or setup environment to supply a region.
+```
+
+In this case you have to set the `fs.s3a.assumed.role.sts.endpoint` property to a valid S3 sts
+endpoint and region like the following:
+
+```xml
+
+<property>
+  <name>fs.s3a.assumed.role.sts.endpoint</name>
+  <value>${sts.endpoint}</value>
+</property>
+
+<property>
+  <name>fs.s3a.assumed.role.sts.endpoint.region</name>
+  <value>${sts.region}</value>
+</property>
+```
+## <a name="500_internal_error"></a> HTTP 500 status code "We encountered an internal error"
+
+```
+We encountered an internal error. Please try again.
+(Service: S3, Status Code: 500, Request ID: <id>, Extended Request ID: <extended-id>)
+```
+
+The [status code 500](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500) indicates
+the S3 store has reported an internal problem.
+When raised by Amazon S3, this is a rare sign of a problem within the S3 system
+or another part of the cloud infrastructure on which it depends.
+Retrying _should_ make it go away.
+
+The 500 error is considered retryable by the AWS SDK, which will have already
+tried it `fs.s3a.attempts.maximum` times before reaching the S3A client -which
+will also retry.
+
+The S3A client will attempt to retry on a 500 (or other 5xx error other than 501/503)
+if the option `fs.s3a.retry.http.5xx.errors` is set to `true`.
+This is the default.
+```xml
+<property>
+  <name>fs.s3a.retry.http.5xx.errors</name>
+  <value>true</value>
+</property>
+```
+
+If encountered against a third party store (the lack of an extended request ID always implies this),
+then it may be a permanent server-side failure.
+
+* All HTTP status codes other than 503 (service unavailable) and 501 (unsupported) are
+treated as 500 exceptions.
+* The S3A Filesystem IOStatistics counts the number of 500 errors received.
+
+## <a name="503 Throttling"></a> HTTP 503 status code "slow down" or 429 "Too Many Requests"
+
+The [status code 503](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503)
+is returned by AWS S3 when the IO rate limit of the bucket is reached.
+
+Google's cloud storage returns the response [429 Too Many Requests](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429)
+for the same situation.
+
+The AWS S3 documentation [covers this and suggests mitigation strategies](https://repost.aws/knowledge-center/http-5xx-errors-s3).
+Note that it can also be caused by throttling in the KMS bencryption subsystem if
+SSE-KMS or DSSE-KMS is used to encrypt data.
+
+Consult [performance - throttling](./performance.html#throttling) for details on throttling.
+
 ## <a name="connectivity"></a> Connectivity Problems
 
-### <a name="bad_endpoint"></a> Error message "The bucket you are attempting to access must be addressed using the specified endpoint"
+### <a name="bad_endpoint"></a> Error "The bucket you are attempting to access must be addressed using the specified endpoint"
 
 This surfaces when `fs.s3a.endpoint` is configured to use an S3 service endpoint
 which is neither the original AWS one, `s3.amazonaws.com` , nor the one where
@@ -461,9 +783,90 @@ can be used:
 </property>
 ```
 
-Using the explicit endpoint for the region is recommended for speed and
-to use the V4 signing API.
+Using the explicit endpoint for the region is recommended for speed.
 
+### <a name="NoRegion"></a>  `Unable to find a region via the region provider chain`
+
+S3A client creation fails, possibly after a pause of some seconds.
+
+This failure surfaces when _all_ the following conditions are met:
+
+1. Deployment outside EC2.
+1. `fs.s3a.endpoint` is unset.
+1. `fs.s3a.endpoint.region` is set to `""`.   (Hadoop 3.3.2+ only)
+1. Without the file `~/.aws/config` existing or without a region set in it.
+1. Without the JVM system property `aws.region` declaring a region.
+1. Without the environment variable `AWS_REGION` declaring a region.
+
+Stack trace (Hadoop 3.3.1):
+```
+Unable to find a region via the region provider chain.
+        Must provide an explicit region in the builder or setup environment to supply a region.
+
+```
+
+Log and stack trace on later releases, with
+"S3A filesystem client is using the SDK region resolution chain."
+warning that the SDK resolution chain is in use:
+
+```
+2021-06-23 19:56:55,971 [main] WARN  s3a.DefaultS3ClientFactory (LogExactlyOnce.java:warn(39)) -
+    S3A filesystem client is using the SDK region resolution chain.
+
+2021-06-23 19:56:56,073 [main] WARN  fs.FileSystem (FileSystem.java:createFileSystem(3464)) -
+    Failed to initialize filesystem s3a://osm-pds/planet:
+ org.apache.hadoop.fs.s3a.AWSClientIOException: creating AWS S3 client on s3a://osm-pds:
+  com.amazonaws.SdkClientException: Unable to find a region via the region provider chain.
+  Must provide an explicit region in the builder or setup environment to supply a region.:
+   Unable to find a region via the region provider chain.
+    Must provide an explicit region in the builder or setup environment to supply a region.
+    at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:208)
+    at org.apache.hadoop.fs.s3a.DefaultS3ClientFactory.createS3Client(DefaultS3ClientFactory.java:122)
+    at org.apache.hadoop.fs.s3a.S3AFileSystem.bindAWSClient(S3AFileSystem.java:788)
+    at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:478)
+    at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3460)
+    at org.apache.hadoop.fs.FileSystem.access$300(FileSystem.java:172)
+    at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3565)
+    at org.apache.hadoop.fs.FileSystem$Cache.getUnique(FileSystem.java:3518)
+    at org.apache.hadoop.fs.FileSystem.newInstance(FileSystem.java:592)
+
+```
+
+Due to changes in S3 client construction in Hadoop 3.3.1 this option surfaces in
+non-EC2 deployments where no AWS endpoint was declared:
+[HADOOP-17771](https://issues.apache.org/jira/browse/HADOOP-17771). On Hadoop
+3.3.2 and later it takes active effort to create this stack trace.
+
+**Fix: set `fs.s3a.endpoint` to `s3.amazonaws.com`**
+
+Set `fs.s3a.endpoint` to the endpoint where the data is stored
+(best), or to `s3.amazonaws.com` (second-best).
+
+```xml
+<property>
+  <name>fs.s3a.endpoint</name>
+  <value>s3.amazonaws.com</value>
+</property>
+```
+
+For Apache Spark, this can be done in `spark-defaults.conf`
+
+```
+spark.hadoop.fs.s3a.endpoint s3.amazonaws.com
+```
+
+Or in Scala by editing the spark configuration during setup.
+
+```scala
+sc.hadoopConfiguration.set("fs.s3a.endpoint", "s3.amazonaws.com")
+```
+
+Tip: set the logging of `org.apache.hadoop.fs.s3a.DefaultS3ClientFactory`
+to `DEBUG` to see how the endpoint and region configuration is determined.
+
+```
+log4j.logger.org.apache.hadoop.fs.s3a.DefaultS3ClientFactory=DEBUG
+```
 
 ### <a name="timeout_from_pool"></a> "Timeout waiting for connection from pool" when writing data
 
@@ -472,33 +875,9 @@ This happens when using the output stream thread pool runs out of capacity.
 ```
 [s3a-transfer-shared-pool1-t20] INFO  http.AmazonHttpClient (AmazonHttpClient.java:executeHelper(496))
  - Unable to execute HTTP request:
-  Timeout waiting for connection from poolorg.apache.http.conn.ConnectionPoolTimeoutException:
+   org.apache.http.conn.ConnectionPoolTimeoutException:
    Timeout waiting for connection from pool
-  at org.apache.http.impl.conn.PoolingClientConnectionManager.leaseConnection(PoolingClientConnectionManager.java:230)
-  at org.apache.http.impl.conn.PoolingClientConnectionManager$1.getConnection(PoolingClientConnectionManager.java:199)
-  at sun.reflect.GeneratedMethodAccessor13.invoke(Unknown Source)
-  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-  at java.lang.reflect.Method.invoke(Method.java:498)
-  at com.amazonaws.http.conn.ClientConnectionRequestFactory$Handler.invoke(ClientConnectionRequestFactory.java:70)
-  at com.amazonaws.http.conn.$Proxy10.getConnection(Unknown Source)
-  at org.apache.http.impl.client.DefaultRequestDirector.execute(DefaultRequestDirector.java:424)
-  at org.apache.http.impl.client.AbstractHttpClient.doExecute(AbstractHttpClient.java:884)
-  at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:82)
-  at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:55)
-  at com.amazonaws.http.AmazonHttpClient.executeOneRequest(AmazonHttpClient.java:728)
-  at com.amazonaws.http.AmazonHttpClient.executeHelper(AmazonHttpClient.java:489)
-  at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:310)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:3785)
-  at com.amazonaws.services.s3.AmazonS3Client.doUploadPart(AmazonS3Client.java:2921)
-  at com.amazonaws.services.s3.AmazonS3Client.uploadPart(AmazonS3Client.java:2906)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.uploadPart(S3AFileSystem.java:1025)
-  at org.apache.hadoop.fs.s3a.S3ABlockOutputStream$MultiPartUpload$1.call(S3ABlockOutputStream.java:360)
-  at org.apache.hadoop.fs.s3a.S3ABlockOutputStream$MultiPartUpload$1.call(S3ABlockOutputStream.java:355)
-  at org.apache.hadoop.fs.s3a.BlockingThreadPoolExecutorService$CallableWithPermitRelease.call(BlockingThreadPoolExecutorService.java:239)
-  at java.util.concurrent.FutureTask.run(FutureTask.java:266)
-  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
-  at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
-  at java.lang.Thread.run(Thread.java:745)
+
 ```
 
 Make sure that `fs.s3a.connection.maximum` is at least larger
@@ -507,12 +886,12 @@ than `fs.s3a.threads.max`.
 ```xml
 <property>
   <name>fs.s3a.threads.max</name>
-  <value>20</value>
+  <value>64</value>
 </property>
 
 <property>
   <name>fs.s3a.connection.maximum</name>
-  <value>30</value>
+  <value>64</value>
 </property>
 ```
 
@@ -530,38 +909,14 @@ Set `fs.s3a.connection.maximum` to a larger value (and at least as large as
 The HTTP Server did not respond.
 
 ```
-2017-02-07 10:01:07,950 INFO [s3a-transfer-shared-pool1-t7] com.amazonaws.http.AmazonHttpClient:
-  Unable to execute HTTP request: bucket.s3.amazonaws.com:443 failed to respond
+2017-02-07 10:01:07,950 INFO [s3a-transfer-shared-pool1-t7]   Unable to execute HTTP request: bucket.s3.amazonaws.com:443 failed to respond
 org.apache.http.NoHttpResponseException: bucket.s3.amazonaws.com:443 failed to respond
-  at org.apache.http.impl.conn.DefaultHttpResponseParser.parseHead(DefaultHttpResponseParser.java:143)
-  at org.apache.http.impl.conn.DefaultHttpResponseParser.parseHead(DefaultHttpResponseParser.java:57)
-  at org.apache.http.impl.io.AbstractMessageParser.parse(AbstractMessageParser.java:261)
-  at org.apache.http.impl.AbstractHttpClientConnection.receiveResponseHeader(AbstractHttpClientConnection.java:283)
-  at org.apache.http.impl.conn.DefaultClientConnection.receiveResponseHeader(DefaultClientConnection.java:259)
-  at org.apache.http.impl.conn.ManagedClientConnectionImpl.receiveResponseHeader(ManagedClientConnectionImpl.java:209)
-  at org.apache.http.protocol.HttpRequestExecutor.doReceiveResponse(HttpRequestExecutor.java:272)
-  at com.amazonaws.http.protocol.SdkHttpRequestExecutor.doReceiveResponse(SdkHttpRequestExecutor.java:66)
-  at org.apache.http.protocol.HttpRequestExecutor.execute(HttpRequestExecutor.java:124)
-  at org.apache.http.impl.client.DefaultRequestDirector.tryExecute(DefaultRequestDirector.java:686)
-  at org.apache.http.impl.client.DefaultRequestDirector.execute(DefaultRequestDirector.java:488)
-  at org.apache.http.impl.client.AbstractHttpClient.doExecute(AbstractHttpClient.java:884)
-  at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:82)
-  at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:55)
-  at com.amazonaws.http.AmazonHttpClient.executeOneRequest(AmazonHttpClient.java:728)
-  at com.amazonaws.http.AmazonHttpClient.executeHelper(AmazonHttpClient.java:489)
-  at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:310)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:3785)
-  at com.amazonaws.services.s3.AmazonS3Client.copyPart(AmazonS3Client.java:1731)
-  at com.amazonaws.services.s3.transfer.internal.CopyPartCallable.call(CopyPartCallable.java:41)
-  at com.amazonaws.services.s3.transfer.internal.CopyPartCallable.call(CopyPartCallable.java:28)
-  at org.apache.hadoop.fs.s3a.SemaphoredDelegatingExecutor$CallableWithPermitRelease.call(SemaphoredDelegatingExecutor.java:222)
-  at java.util.concurrent.FutureTask.run(FutureTask.java:266)
-  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
-  at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
-  at java.lang.Thread.run(Thread.java:745)
+
 ```
 
 Probably network problems, unless it really is an outage of S3.
+
+If you are working with a third party store, check its network configuration.
 
 
 ### Out of heap memory when writing with via Fast Upload
@@ -616,19 +971,8 @@ for up to date advice.
 
 ```
 org.apache.hadoop.fs.s3a.AWSClientIOException: getFileStatus on test/testname/streaming/:
-  com.amazonaws.AmazonClientException: Failed to sanitize XML document
-  destined for handler class com.amazonaws.services.s3.model.transform.XmlResponsesSaxParser$ListBucketHandler:
-  Failed to sanitize XML document destined for handler class
-   com.amazonaws.services.s3.model.transform.XmlResponsesSaxParser$ListBucketHandler
-    at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:105)
-    at org.apache.hadoop.fs.s3a.S3AFileSystem.getFileStatus(S3AFileSystem.java:1462)
-    at org.apache.hadoop.fs.s3a.S3AFileSystem.innerListStatus(S3AFileSystem.java:1227)
-    at org.apache.hadoop.fs.s3a.S3AFileSystem.listStatus(S3AFileSystem.java:1203)
-    at org.apache.hadoop.fs.s3a.S3AGlobber.listStatus(S3AGlobber.java:69)
-    at org.apache.hadoop.fs.s3a.S3AGlobber.doGlob(S3AGlobber.java:210)
-    at org.apache.hadoop.fs.s3a.S3AGlobber.glob(S3AGlobber.java:125)
-    at org.apache.hadoop.fs.s3a.S3AFileSystem.globStatus(S3AFileSystem.java:1853)
-    at org.apache.hadoop.fs.s3a.S3AFileSystem.globStatus(S3AFileSystem.java:1841)
+  Failed to sanitize XML document
+
 ```
 
 We believe this is caused by the connection to S3 being broken.
@@ -638,12 +982,275 @@ It may go away if the operation is retried.
 
 ### JSON Parse Error from AWS SDK
 
-Sometimes a JSON Parse error is reported with the stack trace in the `com.amazonaws`,
+Sometimes a JSON Parse error is reported with the stack trace from `software.amazon.awssdk`,
 
 Again, we believe this is caused by the connection to S3 being broken.
 
 It may go away if the operation is retried.
 
+
+## <a name="semantics"></a>File System Semantics
+
+These are the issues where S3 does not appear to behave the way a filesystem
+"should". That's because it "isn't".
+
+
+### File not visible/saved
+
+The files in an object store are not visible until the write has been completed.
+In-progress writes are simply saved to a local file/cached in RAM and only uploaded.
+at the end of a write operation. If a process terminated unexpectedly, or failed
+to call the `close()` method on an output stream, the pending data will have
+been lost.
+
+### File `flush()` calls do not save data to S3
+
+Again, this is due to the fact that the data is cached locally until the
+`close()` operation. The S3A filesystem cannot be used as a store of data
+if it is required that the data is persisted durably after every
+`Syncable.hflush()` or `Syncable.hsync()` call.
+This includes resilient logging, HBase-style journaling
+and the like. The standard strategy here is to save to HDFS and then copy to S3.
+
+### <a name="syncable"></a> `UnsupportedOperationException` "S3A streams are not Syncable. See HADOOP-17597."
+
+The application has tried to call either the `Syncable.hsync()` or `Syncable.hflush()`
+methods on an S3A output stream. This has been rejected because the
+connector isn't saving any data at all. The `Syncable` API, especially the
+`hsync()` call, are critical for applications such as HBase to safely
+persist data.
+
+When configured to do so, the S3A connector throws an `UnsupportedOperationException`
+when these API calls are made, because the API guarantees absolutely cannot be met:
+_nothing is being flushed or saved_.
+
+* Applications which intend to invoke the Syncable APIs should call `hasCapability("hsync")` on
+  the stream to see if they are supported.
+* Or catch and downgrade `UnsupportedOperationException`.
+
+These recommendations _apply to all filesystems_.
+
+For consistency with other filesystems, S3A output streams
+do not by default reject the `Syncable` calls -instead
+they print a warning of its use.
+
+
+The count of invocations of the two APIs are collected in the S3A filesystem
+Statistics/IOStatistics and so their use can be monitored.
+
+To switch the S3A connector to rejecting all use of
+`hsync()` or `hflush()` calls, set the option
+`fs.s3a.downgrade.syncable.exceptions` to `false`.
+
+```xml
+<property>
+  <name>fs.s3a.downgrade.syncable.exceptions</name>
+  <value>false</value>
+</property>
+```
+
+Regardless of the setting, the `Syncable` API calls do not work.
+Telling the store to *not* downgrade the calls is a way to
+1. Prevent applications which require Syncable to work from being deployed
+  against S3.
+2. Identify applications which are making the calls even though they don't
+  need to. These applications can then be fixed -something which may take
+  time.
+
+Put differently: it is safest to disable downgrading syncable exceptions.
+However, enabling the downgrade stops applications unintentionally using the API
+from breaking.
+
+*Tip*: try turning it on in staging environments to see what breaks.
+
+### `RemoteFileChangedException` and read-during-overwrite
+
+```
+org.apache.hadoop.fs.s3a.RemoteFileChangedException: re-open `s3a://my-bucket/test/file.txt':
+  Change reported by S3 while reading at position 1949.
+  ETag f9c186d787d4de9657e99f280ba26555 was unavailable
+
+```
+
+If an S3 object is updated while an S3A filesystem reader has an open
+`InputStream` on it, the reader may encounter `RemoteFileChangedException`.  This
+occurs if the S3A `InputStream` needs to re-open the object (e.g. during a seek())
+and detects the change.
+
+If the change detection mode is configured to 'warn', a warning like the
+following will be seen instead of `RemoteFileChangedException`:
+
+```
+WARN  - ETag change detected on re-open s3a://my-bucket/test/readFileToChange.txt at 1949.
+ Expected f9c186d787d4de9657e99f280ba26555 got 043abff21b7bd068d2d2f27ccca70309
+```
+
+Using a third-party S3 implementation that doesn't support eTags might result in
+the following error.
+
+```
+org.apache.hadoop.fs.s3a.NoVersionAttributeException: `s3a://my-bucket/test/file.txt':
+ Change detection policy requires ETag
+  at org.apache.hadoop.fs.s3a.impl.ChangeTracker.processResponse(ChangeTracker.java:153)
+
+```
+
+If the change policy is `versionid` there are a number of possible causes
+
+* The bucket does not have object versioning enabled.
+* The bucket does have versioning enabled, but the object being read was created
+before versioning was enabled.
+* The bucket is on a third-party store which does not support object versioning.
+
+See [Handling Read-During-Overwrite](./index.html#handling_read-during-overwrite)
+for more information.
+
+
+### Rename not behaving as "expected"
+
+S3 is not a filesystem. The S3A connector mimics file and directory rename by
+
+* HEAD then LIST of source path. The source MUST exist, else a `FileNotFoundException`
+  is raised.
+* HEAD then LIST of the destination path.
+  This SHOULD NOT exist.
+  If it does and if the source is a directory, the destination MUST be an empty directory.
+  If the source is a file, the destination MAY be a directory, empty or not.
+  If the destination exists and relevant conditions are not met, a `FileAlreadyExistsException`
+  is raised.
+* If the destination path does not exist, a HEAD request of the parent path
+  to verify that there is no object there.
+  Directory markers are not checked for, nor that the path has any children,
+* File-by-file copy of source objects to destination.
+  Parallelized, with page listings of directory objects and issuing of DELETE requests.
+* Post-delete recreation of source parent directory marker, if needed.
+
+This is slow (`O(data)`) and can cause timeouts on code which is required
+to send regular progress reports/heartbeats -for example, distCp.
+It is _very unsafe_ if the calling code expects atomic renaming as part
+of any commit algorithm.
+This is why the [S3A Committers](committers.md) or similar are needed to safely
+commit output.
+
+There is also the risk of race conditions arising if many processes/threads
+are working with the same directory tree
+[HADOOP-16721](https://issues.apache.org/jira/browse/HADOOP-16721).
+
+To reduce this risk, since Hadoop 3.3.1, the S3A connector no longer verifies the parent directory
+of the destination of a rename is a directory -only that it is _not_ a file.
+You can rename a directory or file deep under a file if you try -after which
+there is no guarantee of the files being found in listings. Try not to do that.
+
+### <a name="not_all_bytes_were_read"></a> Message appears in logs "Not all bytes were read from the S3ObjectInputStream"
+
+
+This is a message which can be generated by the Amazon SDK when the client application
+calls `abort()` on the HTTP input stream, rather than reading to the end of
+the file/stream and causing `close()`. The S3A client does call `abort()` when
+seeking round large files, [so leading to the message](https://github.com/aws/aws-sdk-java/issues/1211).
+
+No ASF Hadoop releases have shipped with an SDK which prints this message
+when used by the S3A client. However third party and private builds of Hadoop
+may cause the message to be logged.
+
+Ignore it. The S3A client does call `abort()`, but that's because our benchmarking
+shows that it is generally more efficient to abort the TCP connection and initiate
+a new one than read to the end of a large file.
+
+Note: the threshold when data is read rather than the stream aborted can be tuned
+by `fs.s3a.readahead.range`; seek policy in `fs.s3a.experimental.input.fadvise`.
+
+### <a name="upload_failure"></a> `PathIOException` Number of parts in multipart upload exceeded.
+
+Number of parts in multipart upload exceeded
+
+```
+org.apache.hadoop.fs.PathIOException: `test/testMultiPartUploadFailure': Number of parts in multipart upload exceeded. Current part count = X, Part count limit = Y
+
+    at org.apache.hadoop.fs.s3a.WriteOperationHelper.newUploadPartRequest(WriteOperationHelper.java:432)
+    at org.apache.hadoop.fs.s3a.S3ABlockOutputStream$MultiPartUpload.uploadBlockAsync(S3ABlockOutputStream.java:627)
+    at org.apache.hadoop.fs.s3a.S3ABlockOutputStream$MultiPartUpload.access$000(S3ABlockOutputStream.java:532)
+    at org.apache.hadoop.fs.s3a.S3ABlockOutputStream.uploadCurrentBlock(S3ABlockOutputStream.java:316)
+    at org.apache.hadoop.fs.s3a.S3ABlockOutputStream.write(S3ABlockOutputStream.java:301)
+```
+
+This is a known issue where upload fails if number of parts
+is more than 10000 (specified by aws SDK). You can configure
+`fs.s3a.multipart.size` to reduce the number of parts.
+
+### <a name="no_such_bucket"></a> `UnknownStoreException` Bucket does not exist.
+
+The bucket does not exist.
+
+```
+org.apache.hadoop.fs.s3a.UnknownStoreException: `s3a://random-bucket-7d9217b0-b426-4344-82ea-25d6cbb316f1/':
+        Bucket does not exist: software.amazon.awssdk.services.s3.model.NoSuchBucketException: null
+    (Service: S3, Status Code: 404, Request ID: RD254TC8EVDV98AK,
+    Extended Request ID: 49F5CO1IKavFsz+VBecf2uwZeNVar3InHkdIrONvAK5yQ73gqZ1hFoAEMo8/x5wRNe3OXO3aebvZkev2bS81kw==)
+    (Service: S3, Status Code: 404, Request ID: RD254TC8EVDV98AK): null
+    (Service: S3, Status Code: 404, Request ID: RD254TC8EVDV98AK, Extended Request ID: 49F5CO1IKavFsz+VBecf2uwZeNVar3InHkdIrONvAK5yQ73gqZ1hFoAEMo8/x5wRNe3OXO3aebvZkev2bS81kw==)
+    (Service: S3, Status Code: 404, Request ID: RD254TC8EVDV98AK)
+```
+
+Check the URI is correct, and that the bucket actually exists.
+
+If using a third-party store, verify that you've configured
+the client to talk to the specific server in `fs.s3a.endpoint`.
+Forgetting to update this value and asking the AWS S3 endpoint
+for a bucket is not an unusual occurrence.
+
+This can surface during filesystem API calls if the bucket is deleted while you are using it,
+ -or the startup check for bucket existence has been disabled by setting `fs.s3a.bucket.probe` to 0.
+
+
+## <a name="s3guard"></a> S3Guard Errors
+
+S3Guard has been completely cut from the s3a connector
+[HADOOP-17409 Remove S3Guard - no longer needed](HADOOP-17409 Remove S3Guard - no longer needed).
+
+To avoid consistency problems with older releases, if an S3A filesystem is configured to use DynamoDB the filesystem
+will fail to initialize.
+
+### <a name="s3guard unsupported"></a> S3Guard is no longer needed/supported
+
+The option `fs.s3a.metadatastore.impl` or the per-bucket version has a value of
+`org.apache.hadoop.fs.s3a.s3guard.DynamoDBMetadataStore`
+
+```
+org.apache.hadoop.fs.PathIOException: `s3a://production-london': S3Guard is no longer needed/supported,
+ yet s3a://production-london is configured to use DynamoDB as the S3Guard metadata store.
+ This is no longer needed or supported.
+ Origin of setting is fs.s3a.bucket.production-london.metadatastore.impl via [core-site.xml]
+        at org.apache.hadoop.fs.s3a.s3guard.S3Guard.checkNoS3Guard(S3Guard.java:111)
+        at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:540)
+        at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3459)
+        at org.apache.hadoop.fs.FileSystem.access$300(FileSystem.java:171)
+        at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3564)
+        at org.apache.hadoop.fs.FileSystem$Cache.get(FileSystem.java:3511)
+        at org.apache.hadoop.fs.FileSystem.get(FileSystem.java:538)
+        at org.apache.hadoop.fs.Path.getFileSystem(Path.java:366)
+        at org.apache.hadoop.fs.shell.PathData.expandAsGlob(PathData.java:342)
+        at org.apache.hadoop.fs.shell.Command.expandArgument(Command.java:252)
+        at org.apache.hadoop.fs.shell.Command.expandArguments(Command.java:235)
+        at org.apache.hadoop.fs.shell.FsCommand.processRawArguments(FsCommand.java:105)
+        at org.apache.hadoop.fs.shell.Command.run(Command.java:179)
+        at org.apache.hadoop.fs.FsShell.run(FsShell.java:327)
+        at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:81)
+        at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:95)
+        at org.apache.hadoop.fs.FsShell.main(FsShell.java:390)
+
+ls: `s3a://production-london': S3Guard is no longer needed/supported,
+    yet s3a://production-london is configured to use DynamoDB as the S3Guard metadata store.
+    This is no longer needed or supported.
+    Origin of setting is fs.s3a.bucket.production-london.metadatastore.impl via [core-site.xml]
+```
+
+The error message will state the property from where it came, here `fs.s3a.bucket.production-london.metadatastore.impl` and which
+file the option was set if known, here `core-site.xml`.
+
+Fix: remove the configuration options enabling S3Guard.
+
+Consult the [S3Guard documentation](s3guard.html) for more details.
 
 ## <a name="other"></a> Other Errors
 
@@ -685,134 +1292,96 @@ PUT/POSTed. When S3 returns the checksum of the uploaded data, that is compared
 with the local checksum. If there is a mismatch, this error is reported.
 
 The uploaded data is already on S3 and will stay there, though if this happens
-during a multipart upload, it may not be visible (but still billed: clean up your
-multipart uploads via the `hadoop s3guard uploads` command).
+during a multipart upload, it may not be visible (but still billed: clean up
+your multipart uploads via the `hadoop s3guard uploads` command).
 
 Possible causes for this
 
 1. A (possibly transient) network problem, including hardware faults.
 1. A proxy server is doing bad things to the data.
-1. Some signing problem, especially with third-party S3-compatible object stores.
+1. Some signing problem, especially with third-party S3-compatible object
+   stores.
 
 This is a very, very rare occurrence.
 
-If the problem is a signing one, try changing the signature algorithm.
-
-```xml
-<property>
-  <name>fs.s3a.signing-algorithm</name>
-  <value>S3SignerType</value>
-</property>
-```
-
-We cannot make any promises that it will work,
-only that it has been known to make the problem go away "once"
 
 ### `AWSS3IOException` The Content-MD5 you specified did not match what we received
 
 Reads work, but writes, even `mkdir`, fail:
 
-```
-org.apache.hadoop.fs.s3a.AWSS3IOException: copyFromLocalFile(file:/tmp/hello.txt, s3a://bucket/hello.txt)
-    on file:/tmp/hello.txt:
-    The Content-MD5 you specified did not match what we received.
-    (Service: Amazon S3; Status Code: 400; Error Code: BadDigest; Request ID: 4018131225),
-    S3 Extended Request ID: null
-  at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:127)
-	at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:69)
-	at org.apache.hadoop.fs.s3a.S3AFileSystem.copyFromLocalFile(S3AFileSystem.java:1494)
-	at org.apache.hadoop.tools.cloudup.Cloudup.uploadOneFile(Cloudup.java:466)
-	at org.apache.hadoop.tools.cloudup.Cloudup.access$000(Cloudup.java:63)
-	at org.apache.hadoop.tools.cloudup.Cloudup$1.call(Cloudup.java:353)
-	at org.apache.hadoop.tools.cloudup.Cloudup$1.call(Cloudup.java:350)
-	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
-	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
-	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
-	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
-	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
-	at java.lang.Thread.run(Thread.java:748)
-Caused by: com.amazonaws.services.s3.model.AmazonS3Exception:
-    The Content-MD5 you specified did not match what we received.
-    (Service: Amazon S3; Status Code: 400; Error Code: BadDigest; Request ID: 4018131225),
-    S3 Extended Request ID: null
-  at com.amazonaws.http.AmazonHttpClient.handleErrorResponse(AmazonHttpClient.java:1307)
-	at com.amazonaws.http.AmazonHttpClient.executeOneRequest(AmazonHttpClient.java:894)
-	at com.amazonaws.http.AmazonHttpClient.executeHelper(AmazonHttpClient.java:597)
-	at com.amazonaws.http.AmazonHttpClient.doExecute(AmazonHttpClient.java:363)
-	at com.amazonaws.http.AmazonHttpClient.executeWithTimer(AmazonHttpClient.java:329)
-	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:308)
-	at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:3659)
-	at com.amazonaws.services.s3.AmazonS3Client.putObject(AmazonS3Client.java:1422)
-	at com.amazonaws.services.s3.transfer.internal.UploadCallable.uploadInOneChunk(UploadCallable.java:131)
-	at com.amazonaws.services.s3.transfer.internal.UploadCallable.call(UploadCallable.java:123)
-	at com.amazonaws.services.s3.transfer.internal.UploadMonitor.call(UploadMonitor.java:139)
-	at com.amazonaws.services.s3.transfer.internal.UploadMonitor.call(UploadMonitor.java:47)
-	at org.apache.hadoop.fs.s3a.BlockingThreadPoolExecutorService$CallableWithPermitRelease.call(BlockingThreadPoolExecutorService.java:239)
-	... 4 more
-```
+This has been seen with third party stores.
 
-This stack trace was seen when interacting with a third-party S3 store whose
-expectations of headers related to the AWS V4 signing mechanism was not
-compatible with that of the specific AWS SDK Hadoop was using.
+If the store is configured to require content-MD5 headers with data uploaded: disable it.
 
-Workaround: revert to V2 signing.
-
-```xml
-<property>
-  <name>fs.s3a.signing-algorithm</name>
-  <value>S3SignerType</value>
-</property>
-```
+If the store requires the use of the v2 signing algorithm, know that it is unsupported on this release.
 
 ### When writing data: "java.io.FileNotFoundException: Completing multi-part upload"
-
 
 A multipart upload was trying to complete, but failed as there was no upload
 with that ID.
 
 ```
 java.io.FileNotFoundException: Completing multi-part upload on fork-5/test/multipart/1c397ca6-9dfb-4ac1-9cf7-db666673246b:
- com.amazonaws.services.s3.model.AmazonS3Exception: The specified upload does not exist.
+ S3Exception: The specified upload does not exist.
   The upload ID may be invalid, or the upload may have been aborted or completed.
    (Service: Amazon S3; Status Code: 404; Error Code: NoSuchUpload;
-  at com.amazonaws.http.AmazonHttpClient.handleErrorResponse(AmazonHttpClient.java:1182)
-  at com.amazonaws.http.AmazonHttpClient.executeOneRequest(AmazonHttpClient.java:770)
-  at com.amazonaws.http.AmazonHttpClient.executeHelper(AmazonHttpClient.java:489)
-  at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:310)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:3785)
-  at com.amazonaws.services.s3.AmazonS3Client.completeMultipartUpload(AmazonS3Client.java:2705)
-  at org.apache.hadoop.fs.s3a.S3ABlockOutputStream$MultiPartUpload.complete(S3ABlockOutputStream.java:473)
-  at org.apache.hadoop.fs.s3a.S3ABlockOutputStream$MultiPartUpload.access$200(S3ABlockOutputStream.java:382)
-  at org.apache.hadoop.fs.s3a.S3ABlockOutputStream.close(S3ABlockOutputStream.java:272)
-  at org.apache.hadoop.fs.FSDataOutputStream$PositionCache.close(FSDataOutputStream.java:72)
-  at org.apache.hadoop.fs.FSDataOutputStream.close(FSDataOutputStream.java:106)
 ```
 
-This can happen when all outstanding uploads have been aborted, including
-the active ones.
+This can happen when all outstanding uploads have been aborted, including the
+active ones.
 
-If the bucket has a lifecycle policy of deleting multipart uploads, make
-sure that the expiry time of the deletion is greater than that required
-for all open writes to complete the write,
-*and for all jobs using the S3A committers to commit their work.*
+When working with S3A committers and multipart uploads (MPUs), consider these important guidelines:
 
+1. **Bucket Lifecycle Policies:**
+   - If your bucket has a lifecycle policy for deleting multipart uploads
+   - Set the deletion expiry time long enough to:
+     - Complete all open write operations
+     - Allow S3A committers to finish their commit process
+
+2. **Directory Operations and MPUs:**
+   - Setting `fs.s3a.directory.operations.purge.uploads=true` will abort all pending MPUs before directory cleanup
+   - For jobs using S3A committers:
+     - Set `fs.s3a.directory.operations.purge.uploads=false` when directories need to be overwritten before job completion
+     - This prevents accidental abortion of active uploads during the commit phase
+
+
+### S3 Express Store directory object not getting deleted
+
+When working with S3 Express store buckets (unlike standard S3 buckets), follow these steps to purge a directory object:
+
+1. Set `fs.s3a.directory.operations.purge.uploads=true` if you need to delete a directory object that has pending multipart uploads (MPUs).
+
+2. This setting ensures that all pending MPUs are aborted before the directory object is deleted, which is a requirement specific to S3 Express store buckets.
+
+## Status Code: 200 + "PreconditionFailed: At least one of the pre-conditions you specified did not hold"
+
+```
+software.amazon.awssdk.services.s3.model.S3Exception: At least one of the pre-conditions you specified did not hold
+(Service: S3, Status Code: 200, Request ID: 01a396cff3000198cc0439e40509a95e33467bdc, Extended Request ID: TZrsG8pBzlmXoV) (SDK Attempt Count: 1):
+PreconditionFailed: At least one of the pre-conditions you specified did not hold
+```
+
+An attempt to write to S3Express bucket using conditional overwrite failed because another process was writing at the same time.
+
+Conditional overwrite during file creation is used when conditional creation has been enabled (`fs.s3a.create.conditional.enabled`).
+This is true by default.
+
+* A file is created using the `createFile()` API with the option `fs.option.create.conditional.overwrite` set to true.
+* File create performance has been enabled with (`fs.s3a.performance.flags` including `create` or being `*`)
 
 ### Application hangs after reading a number of files
 
+The pool of https client connections and/or IO threads have been used up, and
+none are being freed.
 
-The pool of https client connections and/or IO threads have been used up,
-and none are being freed.
-
-
-1. The pools aren't big enough. See ["Timeout waiting for connection from pool"](#timeout_from_pool)
+1. The pools aren't big enough.
+   See ["Timeout waiting for connection from pool"](#timeout_from_pool)
 2. Likely root cause: whatever code is reading files isn't calling `close()`
-on the input streams. Make sure your code does this!
-And if it's someone else's: make sure you have a recent version; search their
-issue trackers to see if its a known/fixed problem.
-If not, it's time to work with the developers, or come up with a workaround
-(i.e closing the input stream yourself).
-
-
+   on the input streams. Make sure your code does this!
+   And if it's someone else's: make sure you have a recent version; search their
+   issue trackers to see if its a known/fixed problem. If not, it's time to work
+   with the developers, or come up with a workaround
+   (i.e closing the input stream yourself).
 
 ### Issue: when writing data, HTTP Exceptions logged at info from `AmazonHttpClient`
 
@@ -853,250 +1422,78 @@ will attempt to retry the operation; it may just be a transient event. If there
 are many such exceptions in logs, it may be a symptom of connectivity or network
 problems.
 
+The above error could be because of a stale http connections. The default value in AWS
+SDK is set to -1 (infinite) which means the connection will be reused indefinitely.
+We have introduced a new config `fs.s3a.connection.ttl` to configure this.
+Tuning this setting down (together with an appropriately-low setting for Java's DNS cache TTL)
+ensures that your application will quickly rotate over to new IP addresses when the
+service begins announcing them through DNS, at the cost of having to re-establish new
+connections more frequently.
+
+```xml
+<property>
+  <name>fs.s3a.connection.ttl</name>
+  <value>300000</value>
+  <description>
+      Expiration time for a connection in the connection pool in milliseconds.
+      When a connection is retrieved from the connection pool,
+      this parameter is checked to see if the connection can be reused.
+      Default value is 5 minutes.
+  </description>
+</property>
+```
 ### `AWSBadRequestException` IllegalLocationConstraintException/The unspecified location constraint is incompatible
 
 ```
  Cause: org.apache.hadoop.fs.s3a.AWSBadRequestException: put on :
-  com.amazonaws.services.s3.model.AmazonS3Exception:
+  S3Exception:
    The unspecified location constraint is incompatible for the region specific
     endpoint this request was sent to.
     (Service: Amazon S3; Status Code: 400; Error Code: IllegalLocationConstraintException;
-
-  at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:178)
-  at org.apache.hadoop.fs.s3a.S3ALambda.execute(S3ALambda.java:64)
-  at org.apache.hadoop.fs.s3a.WriteOperationHelper.uploadObject(WriteOperationHelper.java:451)
-  at org.apache.hadoop.fs.s3a.commit.magic.MagicCommitTracker.aboutToComplete(MagicCommitTracker.java:128)
-  at org.apache.hadoop.fs.s3a.S3ABlockOutputStream.close(S3ABlockOutputStream.java:373)
-  at org.apache.hadoop.fs.FSDataOutputStream$PositionCache.close(FSDataOutputStream.java:72)
-  at org.apache.hadoop.fs.FSDataOutputStream.close(FSDataOutputStream.java:101)
-  at org.apache.hadoop.hive.ql.io.orc.WriterImpl.close(WriterImpl.java:2429)
-  at org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat$OrcRecordWriter.close(OrcOutputFormat.java:106)
-  at org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat$OrcRecordWriter.close(OrcOutputFormat.java:91)
   ...
-  Cause: com.amazonaws.services.s3.model.AmazonS3Exception:
+  Cause: S3Exception:
    The unspecified location constraint is incompatible for the region specific endpoint
    this request was sent to. (Service: Amazon S3; Status Code: 400; Error Code: IllegalLocationConstraintException;
    Request ID: EEBC5A08BCB3A645)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.handleErrorResponse(AmazonHttpClient.java:1588)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeOneRequest(AmazonHttpClient.java:1258)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1030)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.doExecute(AmazonHttpClient.java:742)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeWithTimer(AmazonHttpClient.java:716)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.execute(AmazonHttpClient.java:699)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.access$500(AmazonHttpClient.java:667)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutionBuilderImpl.execute(AmazonHttpClient.java:649)
-  at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:513)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:4221)
-  ...
+
 ```
 
 Something has been trying to write data to "/".
 
-## File System Semantics
+### "Unable to create OutputStream with the given multipart upload and buffer configuration."
 
-These are the issues where S3 does not appear to behave the way a filesystem
-"should".
+This error is raised when an attemt it made to write to a store with
+`fs.s3a.multipart.uploads.enabled` set to `false` and `fs.s3a.fast.upload.buffer` set to array.
 
-### Visible S3 Inconsistency
+This is pre-emptively disabled before a write of so much data takes place that the process runs out of heap space.
 
-Amazon S3 is *an eventually consistent object store*. That is: not a filesystem.
+If the store doesn't support multipart uploads, _use disk for buffering_.
+Nothing else is safe to use as it leads to a state where small jobs work, but those which generate large amounts of data fail.
 
-To reduce visible inconsistencies, use the [S3Guard](./s3guard.html) consistency
-cache.
-
-
-By default, Amazon S3 offers read-after-create consistency: a newly created file
-is immediately visible.
-There is a small quirk: a negative GET may be cached, such
-that even if an object is immediately created, the fact that there "wasn't"
-an object is still remembered.
-
-That means the following sequence on its own will be consistent
-```
-touch(path) -> getFileStatus(path)
+```xml
+<property>
+  <name>fs.s3a.fast.upload.buffer</name>
+  <value>disk</value>
+</property>
 ```
 
-But this sequence *may* be inconsistent.
-
 ```
-getFileStatus(path) -> touch(path) -> getFileStatus(path)
-```
-
-A common source of visible inconsistencies is that the S3 metadata
-database —the part of S3 which serves list requests— is updated asynchronously.
-Newly added or deleted files may not be visible in the index, even though direct
-operations on the object (`HEAD` and `GET`) succeed.
-
-That means the `getFileStatus()` and `open()` operations are more likely
-to be consistent with the state of the object store, but without S3Guard enabled,
-directory list operations such as `listStatus()`, `listFiles()`, `listLocatedStatus()`,
-and `listStatusIterator()` may not see newly created files, and still list
-old files.
-
-### `FileNotFoundException` even though the file was just written.
-
-This can be a sign of consistency problems. It may also surface if there is some
-asynchronous file write operation still in progress in the client: the operation
-has returned, but the write has not yet completed. While the S3A client code
-does block during the `close()` operation, we suspect that asynchronous writes
-may be taking place somewhere in the stack —this could explain why parallel tests
-fail more often than serialized tests.
-
-### File not found in a directory listing, even though `getFileStatus()` finds it
-
-(Similarly: deleted file found in listing, though `getFileStatus()` reports
-that it is not there)
-
-This is a visible sign of updates to the metadata server lagging
-behind the state of the underlying filesystem.
-
-Fix: Use [S3Guard](s3guard.html).
-
-
-### File not visible/saved
-
-The files in an object store are not visible until the write has been completed.
-In-progress writes are simply saved to a local file/cached in RAM and only uploaded.
-at the end of a write operation. If a process terminated unexpectedly, or failed
-to call the `close()` method on an output stream, the pending data will have
-been lost.
-
-### File `flush()`, `hsync` and `hflush()` calls do not save data to S3
-
-Again, this is due to the fact that the data is cached locally until the
-`close()` operation. The S3A filesystem cannot be used as a store of data
-if it is required that the data is persisted durably after every
-`Syncable.hflush()` or `Syncable.hsync()` call.
-This includes resilient logging, HBase-style journaling
-and the like. The standard strategy here is to save to HDFS and then copy to S3.
-
-## <a name="encryption"></a> S3 Server Side Encryption
-
-### `AWSS3IOException` `KMS.NotFoundException` "Invalid arn" when using SSE-KMS
-
-When performing file operations, the user may run into an issue where the KMS
-key arn is invalid.
-
-```
-org.apache.hadoop.fs.s3a.AWSS3IOException: innerMkdirs on /test:
- com.amazonaws.services.s3.model.AmazonS3Exception:
-  Invalid arn (Service: Amazon S3; Status Code: 400; Error Code: KMS.NotFoundException;
-   Request ID: CA89F276B3394565),
-   S3 Extended Request ID: ncz0LWn8zor1cUO2fQ7gc5eyqOk3YfyQLDn2OQNoe5Zj/GqDLggUYz9QY7JhdZHdBaDTh+TL5ZQ=:
-   Invalid arn (Service: Amazon S3; Status Code: 400; Error Code: KMS.NotFoundException; Request ID: CA89F276B3394565)
-  at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:194)
-  at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:117)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.mkdirs(S3AFileSystem.java:1541)
-  at org.apache.hadoop.fs.FileSystem.mkdirs(FileSystem.java:2230)
-  at org.apache.hadoop.fs.contract.AbstractFSContractTestBase.mkdirs(AbstractFSContractTestBase.java:338)
-  at org.apache.hadoop.fs.contract.AbstractFSContractTestBase.setup(AbstractFSContractTestBase.java:193)
-  at org.apache.hadoop.fs.s3a.scale.S3AScaleTestBase.setup(S3AScaleTestBase.java:90)
-  at org.apache.hadoop.fs.s3a.scale.AbstractSTestS3AHugeFiles.setup(AbstractSTestS3AHugeFiles.java:77)
-  at sun.reflect.GeneratedMethodAccessor12.invoke(Unknown Source)
-  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-  at java.lang.reflect.Method.invoke(Method.java:498)
-  at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:47)
-  at org.junit.internal.runners.model.ReflectiveCallable.run(ReflectiveCallable.java:12)
-  at org.junit.runners.model.FrameworkMethod.invokeExplosively(FrameworkMethod.java:44)
-  at org.junit.internal.runners.statements.RunBefores.evaluate(RunBefores.java:24)
-  at org.junit.internal.runners.statements.RunAfters.evaluate(RunAfters.java:27)
-  at org.junit.rules.TestWatcher$1.evaluate(TestWatcher.java:55)
-  at org.junit.internal.runners.statements.FailOnTimeout$StatementThread.run(FailOnTimeout.java:74)
-Caused by: com.amazonaws.services.s3.model.AmazonS3Exception:
- Invalid arn (Service: Amazon S3; Status Code: 400; Error Code: KMS.NotFoundException; Request ID: CA89F276B3394565)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.handleErrorResponse(AmazonHttpClient.java:1588)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeOneRequest(AmazonHttpClient.java:1258)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1030)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.doExecute(AmazonHttpClient.java:742)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeWithTimer(AmazonHttpClient.java:716)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.execute(AmazonHttpClient.java:699)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutor.access$500(AmazonHttpClient.java:667)
-  at com.amazonaws.http.AmazonHttpClient$RequestExecutionBuilderImpl.execute(AmazonHttpClient.java:649)
-  at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:513)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:4221)
-  at com.amazonaws.services.s3.AmazonS3Client.invoke(AmazonS3Client.java:4168)
-  at com.amazonaws.services.s3.AmazonS3Client.putObject(AmazonS3Client.java:1718)
-  at com.amazonaws.services.s3.transfer.internal.UploadCallable.uploadInOneChunk(UploadCallable.java:133)
-  at com.amazonaws.services.s3.transfer.internal.UploadCallable.call(UploadCallable.java:125)
-  at com.amazonaws.services.s3.transfer.internal.UploadMonitor.call(UploadMonitor.java:143)
-  at com.amazonaws.services.s3.transfer.internal.UploadMonitor.call(UploadMonitor.java:48)
-  at java.util.concurrent.FutureTask.run(FutureTask.java:266)
-  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
-  at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
-  at java.lang.Thread.run(Thread.java:745)
+org.apache.hadoop.fs.PathIOException: `s3a://gcs/a2a8c3e4-5788-40c0-ad66-fe3fe63f4507': Unable to create OutputStream with the given multipart upload and buffer configuration.
+    at org.apache.hadoop.fs.s3a.S3AUtils.validateOutputStreamConfiguration(S3AUtils.java:985)
+    at org.apache.hadoop.fs.s3a.S3AFileSystem.innerCreateFile(S3AFileSystem.java:2201)
+    at org.apache.hadoop.fs.s3a.S3AFileSystem.lambda$create$5(S3AFileSystem.java:2068)
+    at org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.invokeTrackingDuration(IOStatisticsBinding.java:546)
+    at org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.lambda$trackDurationOfOperation$5(IOStatisticsBinding.java:527)
+    at org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.trackDuration(IOStatisticsBinding.java:448)
+    at org.apache.hadoop.fs.s3a.S3AFileSystem.trackDurationAndSpan(S3AFileSystem.java:2881)
+    at org.apache.hadoop.fs.s3a.S3AFileSystem.trackDurationAndSpan(S3AFileSystem.java:2900)
+    at org.apache.hadoop.fs.s3a.S3AFileSystem.create(S3AFileSystem.java:2067)
+    at org.apache.hadoop.fs.FileSystem.create(FileSystem.java:1233)
+    at org.apache.hadoop.fs.FileSystem.create(FileSystem.java:1210)
+    at org.apache.hadoop.fs.FileSystem.create(FileSystem.java:1091)
 ```
 
-Possible causes:
-
-* the KMS key ARN is entered incorrectly, or
-* the KMS key referenced by the ARN is in a different region than the S3 bucket
-being used.
-
-
-### Using SSE-C "Bad Request"
-
-When performing file operations the user may run into an unexpected 400/403
-error such as
-```
-org.apache.hadoop.fs.s3a.AWSS3IOException: getFileStatus on fork-4/:
- com.amazonaws.services.s3.model.AmazonS3Exception:
-Bad Request (Service: Amazon S3; Status Code: 400;
-Error Code: 400 Bad Request; Request ID: 42F9A1987CB49A99),
-S3 Extended Request ID: jU2kcwaXnWj5APB14Cgb1IKkc449gu2+dhIsW/+7x9J4D+VUkKvu78mBo03oh9jnOT2eoTLdECU=:
-Bad Request (Service: Amazon S3; Status Code: 400; Error Code: 400 Bad Request; Request ID: 42F9A1987CB49A99)
-```
-
-This can happen in the cases of not specifying the correct SSE-C encryption key.
-Such cases can be as follows:
-1. An object is encrypted using SSE-C on S3 and either the wrong encryption type
-is used, no encryption is specified, or the SSE-C specified is incorrect.
-2. A directory is encrypted with a SSE-C keyA and the user is trying to move a
-file using configured SSE-C keyB into that structure.
-
-## <a name="not_all_bytes_were_read"></a> Message appears in logs "Not all bytes were read from the S3ObjectInputStream"
-
-
-This is a message which can be generated by the Amazon SDK when the client application
-calls `abort()` on the HTTP input stream, rather than reading to the end of
-the file/stream and causing `close()`. The S3A client does call `abort()` when
-seeking round large files, [so leading to the message](https://github.com/aws/aws-sdk-java/issues/1211).
-
-No ASF Hadoop releases have shipped with an SDK which prints this message
-when used by the S3A client. However third party and private builds of Hadoop
-may cause the message to be logged.
-
-Ignore it. The S3A client does call `abort()`, but that's because our benchmarking
-shows that it is generally more efficient to abort the TCP connection and initiate
-a new one than read to the end of a large file.
-
-Note: the threshold when data is read rather than the stream aborted can be tuned
-by `fs.s3a.readahead.range`; seek policy in `fs.s3a.experimental.fadvise`.
-
-### <a name="no_such_bucket"></a> `FileNotFoundException` Bucket does not exist.
-
-The bucket does not exist.
-
-```
-java.io.FileNotFoundException: Bucket stevel45r56666 does not exist
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.verifyBucketExists(S3AFileSystem.java:361)
-  at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:293)
-  at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3288)
-  at org.apache.hadoop.fs.FileSystem.access$200(FileSystem.java:123)
-  at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3337)
-  at org.apache.hadoop.fs.FileSystem$Cache.getUnique(FileSystem.java:3311)
-  at org.apache.hadoop.fs.FileSystem.newInstance(FileSystem.java:529)
-  at org.apache.hadoop.fs.s3a.s3guard.S3GuardTool$BucketInfo.run(S3GuardTool.java:997)
-  at org.apache.hadoop.fs.s3a.s3guard.S3GuardTool.run(S3GuardTool.java:309)
-  at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:76)
-  at org.apache.hadoop.fs.s3a.s3guard.S3GuardTool.run(S3GuardTool.java:1218)
-  at org.apache.hadoop.fs.s3a.s3guard.S3GuardTool.main(S3GuardTool.java:1227)
-```
-
-
-Check the URI. If using a third-party store, verify that you've configured
-the client to talk to the specific server in `fs.s3a.endpoint`.
-
-## Other Issues
+## <a name="best"></a> Best Practises
 
 ### <a name="logging"></a> Enabling low-level logging
 
@@ -1105,8 +1502,7 @@ more detail, as can S3A itself.
 
 ```properties
 log4j.logger.org.apache.hadoop.fs.s3a=DEBUG
-log4j.logger.com.amazonaws.request=DEBUG
-log4j.logger.com.amazonaws.thirdparty.apache.http=DEBUG
+log4j.logger.software.amazon.awssdk.request=DEBUG
 ```
 
 If using the "unshaded" JAR, then the Apache HttpClient can be directly configured:
@@ -1161,10 +1557,61 @@ http.headers (LoggingManagedHttpClientConnection.java:onResponseReceived(127)) -
 http.headers (LoggingManagedHttpClientConnection.java:onResponseReceived(127)) - http-outgoing-0 << Content-Length: 0
 http.headers (LoggingManagedHttpClientConnection.java:onResponseReceived(127)) - http-outgoing-0 << Server: AmazonS3
 execchain.MainClientExec (MainClientExec.java:execute(284)) - Connection can be kept alive for 60000 MILLISECONDS
+
 ```
 
+To log the output of the AWS SDK metrics, set the log
+`org.apache.hadoop.fs.s3a.DefaultS3ClientFactory` to `TRACE`.
+This will then turn on logging of the internal SDK metrics.
 
-## <a name="retries"></a>  Reducing failures by configuring retry policy
+These will actually be logged at INFO in the log
+```
+software.amazon.awssdk.metrics.LoggingMetricPublisher
+```
+
+```text
+INFO  metrics.LoggingMetricPublisher (LoggerAdapter.java:info(165)) - Metrics published:
+MetricCollection(name=ApiCall, metrics=[
+MetricRecord(metric=MarshallingDuration, value=PT0.000092041S),
+MetricRecord(metric=RetryCount, value=0),
+MetricRecord(metric=ApiCallSuccessful, value=true),
+MetricRecord(metric=OperationName, value=DeleteObject),
+MetricRecord(metric=EndpointResolveDuration, value=PT0.000132792S),
+MetricRecord(metric=ApiCallDuration, value=PT0.064890875S),
+MetricRecord(metric=CredentialsFetchDuration, value=PT0.000017458S),
+MetricRecord(metric=ServiceEndpoint, value=https://buckets3.eu-west-2.amazonaws.com),
+MetricRecord(metric=ServiceId, value=S3)], children=[
+MetricCollection(name=ApiCallAttempt, metrics=[
+    MetricRecord(metric=TimeToFirstByte, value=PT0.06260225S),
+    MetricRecord(metric=SigningDuration, value=PT0.000293083S),
+    MetricRecord(metric=ReadThroughput, value=0.0),
+    MetricRecord(metric=ServiceCallDuration, value=PT0.06260225S),
+    MetricRecord(metric=HttpStatusCode, value=204),
+    MetricRecord(metric=BackoffDelayDuration, value=PT0S),
+    MetricRecord(metric=TimeToLastByte, value=PT0.064313667S),
+    MetricRecord(metric=AwsRequestId, value=RKZD44SE5DW91K1G)], children=[
+        MetricCollection(name=HttpClient, metrics=[
+        MetricRecord(metric=AvailableConcurrency, value=1),
+        MetricRecord(metric=LeasedConcurrency, value=0),
+        MetricRecord(metric=ConcurrencyAcquireDuration, value=PT0S),
+        MetricRecord(metric=PendingConcurrencyAcquires, value=0),
+        MetricRecord(metric=MaxConcurrency, value=512),
+        MetricRecord(metric=HttpClientName, value=Apache)], children=[])
+    ])
+  ])
+```
+
+### <a name="audit-logging"></a> Enable S3 Server-side Logging
+
+The [Auditing](auditing) feature of the S3A connector can be used to generate
+S3 Server Logs with information which can be used to debug problems
+working with S3, such as throttling events.
+
+Consult the [auditing documentation](auditing) documentation.
+As auditing is enabled by default, enabling S3 Logging for a bucket
+should be sufficient to collect these logs.
+
+### <a name="retries"></a>  Reducing failures by configuring retry policy
 
 The S3A client can ba configured to retry those operations which are considered
 retryable. That can be because they are idempotent, or
@@ -1174,23 +1621,27 @@ The number of retries and interval between each retry can be configured:
 
 ```xml
 <property>
-  <name>fs.s3a.attempts.maximum</name>
-  <value>20</value>
-  <description>How many times we should retry commands on transient errors,
-  excluding throttling errors.</description>
+  <name>fs.s3a.retry.limit</name>
+  <value>7</value>
+  <description>
+    Number of times to retry any repeatable S3 client request on failure,
+    excluding throttling requests.
+  </description>
 </property>
 
 <property>
   <name>fs.s3a.retry.interval</name>
   <value>500ms</value>
   <description>
-    Interval between retry attempts.
+    Initial retry interval when retrying operations for any reason other
+    than S3 throttle errors.
   </description>
 </property>
 ```
 
-Not all failures are retried. Specifically excluded are those considered
-unrecoverable:
+Not all failures are retried *in the S3A Code* -though some may be retried within the
+AWS SDK.
+Specifically excluded are those considered unrecoverable:
 
 * Low-level networking: `UnknownHostException`, `NoRouteToHostException`.
 * 302 redirects.
@@ -1213,3 +1664,52 @@ Please don't do that. Given that the emulated directory rename and delete operat
 are not atomic, even without retries, multiple S3 clients working with the same
 paths can interfere with each other
 
+### <a name="aws-timeouts"></a> Tuning AWS request timeouts
+
+It is possible to configure a global timeout for AWS service calls using following property:
+
+```xml
+<property>
+  <name>fs.s3a.connection.request.timeout</name>
+  <value>5m</value>
+  <description>
+    Time out on HTTP requests to the AWS service; 0 means no timeout.
+    Measured in seconds; the usual time suffixes are all supported
+
+    Important: this is the maximum duration of any AWS service call,
+    including upload and copy operations. If non-zero, it must be larger
+    than the time to upload multi-megabyte blocks to S3 from the client,
+    and to rename many-GB files. Use with care.
+
+    Values that are larger than Integer.MAX_VALUE milliseconds are
+    converged to Integer.MAX_VALUE milliseconds
+  </description>
+</property>
+```
+
+If this value is configured too low, user may encounter `SdkClientException`s due to many requests
+timing-out.
+
+```
+software.amazon.awssdk.core.exception.SdkClientException: Unable to execute HTTP request:
+  Request did not complete before the request timeout configuration.:
+  Unable to execute HTTP request: Request did not complete before the request timeout configuration.
+  at org.apache.hadoop.fs.s3a.S3AUtils.translateException(S3AUtils.java:205)
+  at org.apache.hadoop.fs.s3a.Invoker.once(Invoker.java:112)
+  at org.apache.hadoop.fs.s3a.Invoker.lambda$retry$4(Invoker.java:315)
+  at org.apache.hadoop.fs.s3a.Invoker.retryUntranslated(Invoker.java:407)
+  at org.apache.hadoop.fs.s3a.Invoker.retry(Invoker.java:311)
+```
+
+When this happens, try to set `fs.s3a.connection.request.timeout` to a larger value or disable it
+completely by setting it to `0`.
+
+### <a name="debug-switches"></a> Debugging Switches
+
+There are some switches which can be set to enable/disable features and assist
+in isolating problems and at least make them "go away".
+
+
+| Key  | Default | Action   |
+|------|---------|----------|
+| `fs.s3a.optimized.copy.from.local.enabled` | `true`  | [HADOOP-18925](https://issues.apache.org/jira/browse/HADOOP-18925) enable/disable CopyFromLocalOperation. Also a path capability. |

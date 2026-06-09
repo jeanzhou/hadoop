@@ -18,9 +18,13 @@
 package org.apache.hadoop.hdfs.server.federation.resolver;
 
 import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.DFS_ROUTER_DEFAULT_NAMESERVICE;
+import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.DFS_ROUTER_DEFAULT_NAMESERVICE_ENABLE;
+import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.DFS_ROUTER_DEFAULT_NAMESERVICE_ENABLE_DEFAULT;
 import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.FEDERATION_MOUNT_TABLE_MAX_CACHE_SIZE;
 import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.FEDERATION_MOUNT_TABLE_MAX_CACHE_SIZE_DEFAULT;
-import static org.apache.hadoop.hdfs.server.federation.router.FederationUtil.isParentEntry;
+import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.FEDERATION_MOUNT_TABLE_CACHE_ENABLE;
+import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.FEDERATION_MOUNT_TABLE_CACHE_ENABLE_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSUtil.isParentEntry;
 
 import java.io.IOException;
 import java.util.Collection;
@@ -38,17 +42,20 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.regex.Pattern;
+import java.util.ArrayList;
 
-import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSUtil;
-import org.apache.hadoop.hdfs.DFSUtilClient;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.hdfs.server.federation.metrics.StateStoreMetrics;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.DestinationOrder;
 import org.apache.hadoop.hdfs.server.federation.router.Router;
+import org.apache.hadoop.hdfs.server.federation.router.RouterRpcServer;
 import org.apache.hadoop.hdfs.server.federation.store.MountTableStore;
 import org.apache.hadoop.hdfs.server.federation.store.StateStoreCache;
 import org.apache.hadoop.hdfs.server.federation.store.StateStoreService;
@@ -56,12 +63,13 @@ import org.apache.hadoop.hdfs.server.federation.store.StateStoreUnavailableExcep
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetMountTableEntriesRequest;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetMountTableEntriesResponse;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
+import org.apache.hadoop.hdfs.tools.federation.RouterAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
 
 /**
  * Mount table to map between global paths and remote locations. This allows the
@@ -85,19 +93,27 @@ public class MountTableResolver
 
   /** If the tree has been initialized. */
   private boolean init = false;
+  /** If the mount table is manually disabled*/
+  private boolean disabled = false;
   /** Path -> Remote HDFS location. */
   private final TreeMap<String, MountTable> tree = new TreeMap<>();
   /** Path -> Remote location. */
   private final Cache<String, PathLocation> locationCache;
+  private final LongAdder locCacheMiss = new LongAdder();
+  private final LongAdder locCacheAccess = new LongAdder();
 
   /** Default nameservice when no mount matches the math. */
   private String defaultNameService = "";
+  /** If use default nameservice to read and write files. */
+  private boolean defaultNSEnable = true;
 
   /** Synchronization for both the tree and the cache. */
   private final ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
   private final Lock readLock = readWriteLock.readLock();
   private final Lock writeLock = readWriteLock.writeLock();
 
+  /** Trash Current matching pattern. */
+  private static final String TRASH_PATTERN = "/(Current|[0-9]+)";
 
   @VisibleForTesting
   public MountTableResolver(Configuration conf) {
@@ -123,12 +139,19 @@ public class MountTableResolver
       this.stateStore = null;
     }
 
-    int maxCacheSize = conf.getInt(
-        FEDERATION_MOUNT_TABLE_MAX_CACHE_SIZE,
-        FEDERATION_MOUNT_TABLE_MAX_CACHE_SIZE_DEFAULT);
-    this.locationCache = CacheBuilder.newBuilder()
-        .maximumSize(maxCacheSize)
-        .build();
+    boolean mountTableCacheEnable = conf.getBoolean(
+        FEDERATION_MOUNT_TABLE_CACHE_ENABLE,
+        FEDERATION_MOUNT_TABLE_CACHE_ENABLE_DEFAULT);
+    if (mountTableCacheEnable) {
+      int maxCacheSize = conf.getInt(
+          FEDERATION_MOUNT_TABLE_MAX_CACHE_SIZE,
+          FEDERATION_MOUNT_TABLE_MAX_CACHE_SIZE_DEFAULT);
+      this.locationCache = CacheBuilder.newBuilder()
+          .maximumSize(maxCacheSize)
+          .build();
+    } else {
+      this.locationCache = null;
+    }
 
     registerCacheExternal();
     initDefaultNameService(conf);
@@ -149,15 +172,22 @@ public class MountTableResolver
    * @param conf Configuration for this resolver.
    */
   private void initDefaultNameService(Configuration conf) {
-    try {
-      this.defaultNameService = conf.get(
-          DFS_ROUTER_DEFAULT_NAMESERVICE,
-          DFSUtil.getNamenodeNameServiceId(conf));
-    } catch (HadoopIllegalArgumentException e) {
-      LOG.error("Cannot find default name service, setting it to the first");
-      Collection<String> nsIds = DFSUtilClient.getNameServiceIds(conf);
-      this.defaultNameService = nsIds.iterator().next();
-      LOG.info("Default name service: {}", this.defaultNameService);
+    this.defaultNSEnable = conf.getBoolean(
+        DFS_ROUTER_DEFAULT_NAMESERVICE_ENABLE,
+        DFS_ROUTER_DEFAULT_NAMESERVICE_ENABLE_DEFAULT);
+
+    if (!this.defaultNSEnable) {
+      LOG.warn("Default name service is disabled.");
+      return;
+    }
+    this.defaultNameService = conf.get(DFS_ROUTER_DEFAULT_NAMESERVICE, "");
+
+    if (this.defaultNameService.equals("")) {
+      this.defaultNSEnable = false;
+      LOG.warn("Default name service is not set.");
+    } else {
+      LOG.info("Default name service: {}, enabled to read or write",
+          this.defaultNameService);
     }
   }
 
@@ -227,7 +257,7 @@ public class MountTableResolver
    */
   private void invalidateLocationCache(final String path) {
     LOG.debug("Invalidating {} from {}", path, locationCache);
-    if (locationCache.size() == 0) {
+    if (locationCache == null || locationCache.size() == 0) {
       return;
     }
 
@@ -237,10 +267,11 @@ public class MountTableResolver
     Iterator<Entry<String, PathLocation>> it = entries.iterator();
     while (it.hasNext()) {
       Entry<String, PathLocation> entry = it.next();
+      String key = entry.getKey();
       PathLocation loc = entry.getValue();
       String src = loc.getSourcePath();
       if (src != null) {
-        if (isParentEntry(src, path)) {
+        if (isParentEntry(key, path)) {
           LOG.debug("Removing {}", src);
           it.remove();
         }
@@ -317,6 +348,56 @@ public class MountTableResolver
   }
 
   /**
+   * Check if path is the trail associated with the Trash.
+   *
+   * @param path a path.
+   * @return true if the path matches the trash path pattern, false otherwise.
+   * @throws IOException if retrieving current user's trash directory fails.
+   */
+  @VisibleForTesting
+  public static boolean isTrashPath(String path) throws IOException {
+    Pattern pattern = Pattern.compile(
+        "^" + getTrashRoot() + TRASH_PATTERN);
+    return pattern.matcher(path).find();
+  }
+
+  @VisibleForTesting
+  public static String getTrashRoot() throws IOException {
+    // Gets the Trash directory for the current user.
+    return FileSystem.USER_HOME_PREFIX + "/" +
+        RouterRpcServer.getRemoteUser().getShortUserName() + "/" +
+        FileSystem.TRASH_PREFIX;
+  }
+
+  /**
+   * Subtract a TrashCurrent to get a new path.
+   *
+   * @param path a path.
+   * @return new path with subtracted trash current path.
+   * @throws IOException if retrieving current user's trash directory fails.
+   */
+  @VisibleForTesting
+  public static String subtractTrashCurrentPath(String path)
+      throws IOException {
+    return path.replaceAll("^" +
+        getTrashRoot() + TRASH_PATTERN, "");
+  }
+
+  /**
+   * If path is a path related to the trash can,
+   * subtract TrashCurrent to return a new path.
+   *
+   * @param path A path.
+   */
+  private static String processTrashPath(String path) throws IOException {
+    if (isTrashPath(path)) {
+      return subtractTrashCurrentPath(path);
+    } else {
+      return path;
+    }
+  }
+
+  /**
    * Replaces the current in-memory cached of the mount table with a new
    * version fetched from the data store.
    */
@@ -325,7 +406,9 @@ public class MountTableResolver
     try {
       // Our cache depends on the store, update it first
       MountTableStore mountTable = this.getMountTableStore();
-      mountTable.loadCache(force);
+      if (!mountTable.loadCache(force)) {
+        return false;
+      }
 
       GetMountTableEntriesRequest request =
           GetMountTableEntriesRequest.newInstance("/");
@@ -333,6 +416,9 @@ public class MountTableResolver
           mountTable.getMountTableEntries(request);
       List<MountTable> records = response.getEntries();
       refreshEntries(records);
+      StateStoreMetrics metrics = this.getMountTableStore().getDriver().getMetrics();
+      metrics.setLocationCache("locationCacheMissed", this.getLocCacheMiss().sum());
+      metrics.setLocationCache("locationCacheAccessed", this.getLocCacheAccess().sum());
     } catch (IOException e) {
       LOG.error("Cannot fetch mount table entries from State Store", e);
       return false;
@@ -347,7 +433,9 @@ public class MountTableResolver
     LOG.info("Clearing all mount location caches");
     writeLock.lock();
     try {
-      this.locationCache.invalidateAll();
+      if (this.locationCache != null) {
+        this.locationCache.invalidateAll();
+      }
       this.tree.clear();
     } finally {
       writeLock.unlock();
@@ -358,17 +446,38 @@ public class MountTableResolver
   public PathLocation getDestinationForPath(final String path)
       throws IOException {
     verifyMountTable();
+    PathLocation res;
     readLock.lock();
     try {
-      Callable<? extends PathLocation> meh = new Callable<PathLocation>() {
-        @Override
-        public PathLocation call() throws Exception {
-          return lookupLocation(path);
+      if (this.locationCache == null) {
+        res = lookupLocation(processTrashPath(path));
+      } else {
+        Callable<? extends PathLocation> meh = (Callable<PathLocation>) () -> {
+          this.getLocCacheMiss().increment();
+          return lookupLocation(processTrashPath(path));
+        };
+        res = this.locationCache.get(processTrashPath(path), meh);
+        this.getLocCacheAccess().increment();
+      }
+      if (isTrashPath(path)) {
+        List<RemoteLocation> remoteLocations = new ArrayList<>();
+        for (RemoteLocation remoteLocation : res.getDestinations()) {
+          remoteLocations.add(new RemoteLocation(remoteLocation, path));
         }
-      };
-      return this.locationCache.get(path, meh);
+        return new PathLocation(path, remoteLocations,
+            res.getDestinationOrder());
+      } else {
+        return res;
+      }
     } catch (ExecutionException e) {
-      throw new IOException(e);
+      Throwable cause = e.getCause();
+      final IOException ioe;
+      if (cause instanceof IOException) {
+        ioe = (IOException) cause;
+      } else {
+        ioe = new IOException(cause);
+      }
+      throw ioe;
     } finally {
       readLock.unlock();
     }
@@ -377,18 +486,24 @@ public class MountTableResolver
   /**
    * Build the path location to insert into the cache atomically. It must hold
    * the read lock.
-   * @param path Path to check/insert.
+   * @param str Path to check/insert.
    * @return New remote location.
+   * @throws IOException If it cannot find the location.
    */
-  public PathLocation lookupLocation(final String path) {
+  public PathLocation lookupLocation(final String str) throws IOException {
     PathLocation ret = null;
+    final String path = RouterAdmin.normalizeFileSystemPath(str);
     MountTable entry = findDeepest(path);
     if (entry != null) {
       ret = buildLocation(path, entry);
     } else {
       // Not found, use default location
+      if (!defaultNSEnable) {
+        throw new RouterResolveException("Cannot find locations for " + path
+            + ", because the default nameservice is disabled to read or write");
+      }
       RemoteLocation remoteLocation =
-          new RemoteLocation(defaultNameService, path);
+          new RemoteLocation(defaultNameService, path, path);
       List<RemoteLocation> locations =
           Collections.singletonList(remoteLocation);
       ret = new PathLocation(null, locations);
@@ -405,53 +520,22 @@ public class MountTableResolver
    */
   public MountTable getMountPoint(final String path) throws IOException {
     verifyMountTable();
-    return findDeepest(path);
+    return findDeepest(RouterAdmin.normalizeFileSystemPath(path));
   }
 
   @Override
-  public List<String> getMountPoints(final String path) throws IOException {
+  public List<String> getMountPoints(final String str) throws IOException {
     verifyMountTable();
-
-    Set<String> children = new TreeSet<>();
+    String path = RouterAdmin.normalizeFileSystemPath(str);
+    if (isTrashPath(path)) {
+      path = subtractTrashCurrentPath(path);
+    }
     readLock.lock();
     try {
       String from = path;
       String to = path + Character.MAX_VALUE;
       SortedMap<String, MountTable> subMap = this.tree.subMap(from, to);
-
-      boolean exists = false;
-      for (String subPath : subMap.keySet()) {
-        String child = subPath;
-
-        // Special case for /
-        if (!path.equals(Path.SEPARATOR)) {
-          // Get the children
-          int ini = path.length();
-          child = subPath.substring(ini);
-        }
-
-        if (child.isEmpty()) {
-          // This is a mount point but without children
-          exists = true;
-        } else if (child.startsWith(Path.SEPARATOR)) {
-          // This is a mount point with children
-          exists = true;
-          child = child.substring(1);
-
-          // We only return immediate children
-          int fin = child.indexOf(Path.SEPARATOR);
-          if (fin > -1) {
-            child = child.substring(0, fin);
-          }
-          if (!child.isEmpty()) {
-            children.add(child);
-          }
-        }
-      }
-      if (!exists) {
-        return null;
-      }
-      return new LinkedList<>(children);
+      return FileSubclusterResolver.getMountPoints(path, subMap.keySet());
     } finally {
       readLock.unlock();
     }
@@ -466,8 +550,7 @@ public class MountTableResolver
    */
   public List<MountTable> getMounts(final String path) throws IOException {
     verifyMountTable();
-
-    return getTreeValues(path, false);
+    return getTreeValues(RouterAdmin.normalizeFileSystemPath(path), false);
   }
 
   /**
@@ -475,7 +558,7 @@ public class MountTableResolver
    * @throws StateStoreUnavailableException If it cannot connect to the store.
    */
   private void verifyMountTable() throws StateStoreUnavailableException {
-    if (!this.init) {
+    if (!this.init || disabled) {
       throw new StateStoreUnavailableException("Mount Table not initialized");
     }
   }
@@ -497,21 +580,28 @@ public class MountTableResolver
    * @param entry Mount table entry.
    * @return PathLocation containing the namespace, local path.
    */
-  private static PathLocation buildLocation(
-      final String path, final MountTable entry) {
-
+  private PathLocation buildLocation(
+      final String path, final MountTable entry) throws IOException {
     String srcPath = entry.getSourcePath();
     if (!path.startsWith(srcPath)) {
       LOG.error("Cannot build location, {} not a child of {}", path, srcPath);
       return null;
     }
+
+    List<RemoteLocation> dests = entry.getDestinations();
+    if (getClass() == MountTableResolver.class && dests.size() > 1) {
+      throw new IOException("Cannnot build location, "
+          + getClass().getSimpleName()
+          + " should not resolve multiple destinations for " + path);
+    }
+
     String remainingPath = path.substring(srcPath.length());
     if (remainingPath.startsWith(Path.SEPARATOR)) {
       remainingPath = remainingPath.substring(1);
     }
 
     List<RemoteLocation> locations = new LinkedList<>();
-    for (RemoteLocation oneDst : entry.getDestinations()) {
+    for (RemoteLocation oneDst : dests) {
       String nsId = oneDst.getNameserviceId();
       String dest = oneDst.getDest();
       String newPath = dest;
@@ -519,7 +609,7 @@ public class MountTableResolver
         newPath += Path.SEPARATOR;
       }
       newPath += remainingPath;
-      RemoteLocation remoteLocation = new RemoteLocation(nsId, newPath);
+      RemoteLocation remoteLocation = new RemoteLocation(nsId, newPath, path);
       locations.add(remoteLocation);
     }
     DestinationOrder order = entry.getDestOrder();
@@ -539,14 +629,27 @@ public class MountTableResolver
   private MountTable findDeepest(final String path) {
     readLock.lock();
     try {
-      Entry<String, MountTable> entry = this.tree.floorEntry(path);
-      while (entry != null && !isParentEntry(path, entry.getKey())) {
-        entry = this.tree.lowerEntry(entry.getKey());
+      Entry<String, MountTable> floorEntry = this.tree.floorEntry(path);
+      if (floorEntry != null && isParentEntry(path, floorEntry.getKey())) {
+        return floorEntry.getValue();
       }
-      if (entry == null) {
+      if ("".equals(path)) {
         return null;
       }
-      return entry.getValue();
+      MountTable mountTable;
+      Path currentPath = new Path(path);
+      while (true) {
+        mountTable = tree.getOrDefault(currentPath.toUri().getPath(), null);
+        if (mountTable != null) {
+          break;
+        }
+        if (currentPath.isRoot()) {
+          break;
+        } else {
+          currentPath = currentPath.getParent();
+        }
+      }
+      return mountTable;
     } finally {
       readLock.unlock();
     }
@@ -590,8 +693,50 @@ public class MountTableResolver
   /**
    * Get the size of the cache.
    * @return Size of the cache.
+   * @throws IOException If the cache is not initialized.
    */
-  protected long getCacheSize() {
-    return this.locationCache.size();
+  protected long getCacheSize() throws IOException {
+    this.readLock.lock();
+    try {
+      if (this.locationCache != null) {
+        return this.locationCache.size();
+      }
+      throw new IOException("localCache is null");
+    } finally {
+      this.readLock.unlock();
+    }
+  }
+
+  @VisibleForTesting
+  public String getDefaultNameService() {
+    return defaultNameService;
+  }
+
+  @VisibleForTesting
+  public void setDefaultNameService(String defaultNameService) {
+    this.defaultNameService = defaultNameService;
+  }
+
+  @VisibleForTesting
+  public boolean isDefaultNSEnable() {
+    return defaultNSEnable;
+  }
+
+  @VisibleForTesting
+  public void setDefaultNSEnable(boolean defaultNSRWEnable) {
+    this.defaultNSEnable = defaultNSRWEnable;
+  }
+
+  @VisibleForTesting
+  public void setDisabled(boolean disable) {
+    this.disabled = disable;
+  }
+
+  public LongAdder getLocCacheMiss() {
+    return locCacheMiss;
+  }
+
+  public LongAdder getLocCacheAccess() {
+    return locCacheAccess;
   }
 }

@@ -29,8 +29,8 @@ import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Enumeration;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -49,11 +49,13 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.DefaultImpersonationProvider;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.security.token.Token;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestDelegationTokenForProxyUser {
   private static MiniDFSCluster cluster;
@@ -67,7 +69,8 @@ public class TestDelegationTokenForProxyUser {
   private static UserGroupInformation ugi;
   private static UserGroupInformation proxyUgi;
   
-  private static final Log LOG = LogFactory.getLog(TestDoAsEffectiveUser.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDoAsEffectiveUser.class);
   
   private static void configureSuperUserIPAddresses(Configuration conf,
       String superUserShortName) throws IOException {
@@ -95,7 +98,7 @@ public class TestDelegationTokenForProxyUser {
         builder.toString());
   }
   
-  @BeforeClass
+  @BeforeAll
   public static void setUp() throws Exception {
     config = new HdfsConfiguration();
     config.setLong(
@@ -117,14 +120,15 @@ public class TestDelegationTokenForProxyUser {
         GROUP_NAMES);
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() throws Exception {
     if(cluster!=null) {
       cluster.shutdown();
     }
   }
  
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testDelegationTokenWithRealUser() throws IOException {
     try {
       Token<?>[] tokens = proxyUgi
@@ -138,15 +142,16 @@ public class TestDelegationTokenForProxyUser {
       byte[] tokenId = tokens[0].getIdentifier();
       identifier.readFields(new DataInputStream(new ByteArrayInputStream(
           tokenId)));
-      Assert.assertEquals(identifier.getUser().getUserName(), PROXY_USER);
-      Assert.assertEquals(identifier.getUser().getRealUser().getUserName(),
+      assertEquals(identifier.getUser().getUserName(), PROXY_USER);
+      assertEquals(identifier.getUser().getRealUser().getUserName(),
           REAL_USER);
     } catch (InterruptedException e) {
       //Do Nothing
     }
   }
   
-  @Test(timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testWebHdfsDoAs() throws Exception {
     WebHdfsTestUtil.LOG.info("START: testWebHdfsDoAs()");
     WebHdfsTestUtil.LOG.info("ugi.getShortUserName()=" + ugi.getShortUserName());
@@ -160,7 +165,7 @@ public class TestDelegationTokenForProxyUser {
     {
       Path responsePath = webhdfs.getHomeDirectory();
       WebHdfsTestUtil.LOG.info("responsePath=" + responsePath);
-      Assert.assertEquals(webhdfs.getUri() + "/user/" + PROXY_USER, responsePath.toString());
+      assertEquals(webhdfs.getUri() + "/user/" + PROXY_USER, responsePath.toString());
     }
 
     final Path f = new Path("/testWebHdfsDoAs/a.txt");
@@ -171,7 +176,7 @@ public class TestDelegationTokenForProxyUser {
   
       final FileStatus status = webhdfs.getFileStatus(f);
       WebHdfsTestUtil.LOG.info("status.getOwner()=" + status.getOwner());
-      Assert.assertEquals(PROXY_USER, status.getOwner());
+      assertEquals(PROXY_USER, status.getOwner());
     }
 
     {
@@ -182,7 +187,7 @@ public class TestDelegationTokenForProxyUser {
       final FileStatus status = webhdfs.getFileStatus(f);
       WebHdfsTestUtil.LOG.info("status.getOwner()=" + status.getOwner());
       WebHdfsTestUtil.LOG.info("status.getLen()  =" + status.getLen());
-      Assert.assertEquals(PROXY_USER, status.getOwner());
+      assertEquals(PROXY_USER, status.getOwner());
     }
   }
 }

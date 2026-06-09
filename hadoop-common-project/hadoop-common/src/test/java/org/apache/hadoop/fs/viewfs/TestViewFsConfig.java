@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.fs.viewfs;
 
+import java.util.function.Function;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -24,40 +25,45 @@ import java.net.URISyntaxException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class TestViewFsConfig {
 
-  @Test(expected = FileAlreadyExistsException.class)
+  @Test
   public void testInvalidConfig() throws IOException, URISyntaxException {
-    Configuration conf = new Configuration();
-    ConfigUtil.addLink(conf, "/internalDir/linkToDir2",
-        new Path("file:///dir2").toUri());
-    ConfigUtil.addLink(conf, "/internalDir/linkToDir2/linkToDir3",
-        new Path("file:///dir3").toUri());
+    assertThrows(FileAlreadyExistsException.class, ()-> {
+      Configuration conf = new Configuration();
+      ConfigUtil.setIsNestedMountPointSupported(conf, false);
+      ConfigUtil.addLink(conf, "/internalDir/linkToDir2",
+          new Path("file:///dir2").toUri());
+      ConfigUtil.addLink(conf, "/internalDir/linkToDir2/linkToDir3",
+          new Path("file:///dir3").toUri());
 
-    class Foo {
-    }
-
-    new InodeTree<Foo>(conf, null) {
-
-      @Override
-      protected Foo getTargetFileSystem(final URI uri) {
-        return null;
+      class Foo {
       }
 
-      @Override
-      protected Foo getTargetFileSystem(final INodeDir<Foo> dir) {
-        return null;
-      }
+      new InodeTree<Foo>(conf, null, null, false) {
 
-      @Override
-      protected Foo getTargetFileSystem(final String settings,
-          final URI[] mergeFsURIList) {
-        return null;
-      }
+        @Override
+        protected Function<URI, Foo> initAndGetTargetFs() {
+          return null;
+        }
 
-    };
+        @Override
+        protected Foo getTargetFileSystem(final INodeDir<Foo> dir) {
+          return null;
+        }
+
+        @Override
+        protected Foo getTargetFileSystem(final String settings,
+            final URI[] mergeFsURIList) {
+          return null;
+        }
+
+      };
+    });
   }
 
 }

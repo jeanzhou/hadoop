@@ -19,8 +19,8 @@
 package org.apache.hadoop.yarn.server.timelineservice;
 
 
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -31,6 +31,7 @@ import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ExitUtil;
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.CollectorInfo;
@@ -54,9 +55,9 @@ import org.apache.hadoop.yarn.server.timelineservice.collector.NodeTimelineColle
 import org.apache.hadoop.yarn.server.timelineservice.collector.PerNodeTimelineCollectorsAuxService;
 import org.apache.hadoop.yarn.server.timelineservice.storage.FileSystemTimelineWriterImpl;
 import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineWriter;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 public class TestTimelineServiceClientIntegration {
   private static final String ROOT_DIR = new File("target",
@@ -66,7 +67,7 @@ public class TestTimelineServiceClientIntegration {
   private static PerNodeTimelineCollectorsAuxService auxService;
   private static Configuration conf;
 
-  @BeforeClass
+  @BeforeAll
   public static void setupClass() throws Exception {
     try {
       collectorManager = new MockNodeTimelineCollectorManager();
@@ -81,13 +82,14 @@ public class TestTimelineServiceClientIntegration {
       auxService =
           PerNodeTimelineCollectorsAuxService.launchServer(new String[0],
               collectorManager, conf);
-      auxService.addApplication(ApplicationId.newInstance(0, 1), "user");
+      auxService
+          .addApplicationIfAbsent(ApplicationId.newInstance(0, 1), "user");
     } catch (ExitUtil.ExitException e) {
       fail();
     }
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDownClass() throws Exception {
     if (auxService != null) {
       auxService.stop();
@@ -96,7 +98,7 @@ public class TestTimelineServiceClientIntegration {
   }
 
   @Test
-  public void testPutEntities() throws Exception {
+  void testPutEntities() throws Exception {
     TimelineV2Client client =
         TimelineV2Client.createTimelineClient(ApplicationId.newInstance(0, 1));
     try {
@@ -122,7 +124,7 @@ public class TestTimelineServiceClientIntegration {
   }
 
   @Test
-  public void testPutExtendedEntities() throws Exception {
+  void testPutExtendedEntities() throws Exception {
     ApplicationId appId = ApplicationId.newInstance(0, 1);
     TimelineV2Client client =
         TimelineV2Client.createTimelineClient(appId);
@@ -139,8 +141,10 @@ public class TestTimelineServiceClientIntegration {
       flow.setName("test_flow_name");
       flow.setVersion("test_flow_version");
       flow.setRunId(1L);
+      flow.setCreatedTime(Time.now());
       flow.setParent(cluster.getType(), cluster.getId());
       ApplicationEntity app = new ApplicationEntity();
+      app.setQueue("test_queue");
       app.setId(appId.toString());
       flow.addChild(app.getType(), app.getId());
       ApplicationAttemptId attemptId =

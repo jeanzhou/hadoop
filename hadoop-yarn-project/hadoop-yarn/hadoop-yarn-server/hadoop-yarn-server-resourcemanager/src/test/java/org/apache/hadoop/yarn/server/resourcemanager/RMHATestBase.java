@@ -26,6 +26,7 @@ import org.apache.hadoop.ha.ClientBaseWithFixes;
 import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.ha.HAServiceProtocol.StateChangeRequestInfo;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -39,9 +40,10 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptS
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
 public abstract class RMHATestBase extends ClientBaseWithFixes{
@@ -56,14 +58,14 @@ public abstract class RMHATestBase extends ClientBaseWithFixes{
   Configuration confForRM1;
   Configuration confForRM2;
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     configuration.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
     configuration.set(YarnConfiguration.RM_HA_IDS, "rm1,rm2");
     configuration.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
     configuration.set(YarnConfiguration.RM_STORE,
         ZKRMStateStore.class.getName());
-    configuration.set(CommonConfigurationKeys.ZK_ADDRESS, hostPort);
+    configuration.set(YarnConfiguration.RM_ZK_ADDRESS, hostPort);
     configuration.setInt(CommonConfigurationKeys.ZK_TIMEOUT_MS, ZK_TIMEOUT_MS);
     configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
     configuration.set(YarnConfiguration.RM_CLUSTER_ID, "test-yarn-cluster");
@@ -82,7 +84,7 @@ public abstract class RMHATestBase extends ClientBaseWithFixes{
     confForRM2.set(YarnConfiguration.RM_HA_ID, "rm2");
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     if (rm1 != null) {
       rm1.stop();
@@ -169,7 +171,8 @@ public abstract class RMHATestBase extends ClientBaseWithFixes{
     @Override
     protected void submitApplication(
         ApplicationSubmissionContext submissionContext, long submitTime,
-        String user) throws YarnException {
+        UserGroupInformation userUgi) throws YarnException {
+      String user = userUgi.getShortUserName();
       //Do nothing, just add the application to RMContext
       RMAppImpl application =
           new RMAppImpl(submissionContext.getApplicationId(), this.rmContext,
@@ -195,9 +198,9 @@ public abstract class RMHATestBase extends ClientBaseWithFixes{
   protected void explicitFailover() throws IOException {
     rm1.adminService.transitionToStandby(requestInfo);
     rm2.adminService.transitionToActive(requestInfo);
-    Assert.assertTrue(rm1.getRMContext().getHAServiceState()
+    assertTrue(rm1.getRMContext().getHAServiceState()
         == HAServiceState.STANDBY);
-    Assert.assertTrue(rm2.getRMContext().getHAServiceState()
+    assertTrue(rm2.getRMContext().getHAServiceState()
         == HAServiceState.ACTIVE);
   }
 
@@ -205,16 +208,16 @@ public abstract class RMHATestBase extends ClientBaseWithFixes{
       Configuration confForRM2) throws IOException {
     rm1.init(confForRM1);
     rm1.start();
-    Assert.assertTrue(rm1.getRMContext().getHAServiceState()
+    assertTrue(rm1.getRMContext().getHAServiceState()
         == HAServiceState.STANDBY);
 
     rm2.init(confForRM2);
     rm2.start();
-    Assert.assertTrue(rm2.getRMContext().getHAServiceState()
+    assertTrue(rm2.getRMContext().getHAServiceState()
         == HAServiceState.STANDBY);
 
     rm1.adminService.transitionToActive(requestInfo);
-    Assert.assertTrue(rm1.getRMContext().getHAServiceState()
+    assertTrue(rm1.getRMContext().getHAServiceState()
         == HAServiceState.ACTIVE);
   }
 }

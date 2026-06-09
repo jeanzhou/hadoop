@@ -34,7 +34,6 @@ import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.LogAggregationStatus;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.server.api.protocolrecords.LogAggregationReport;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
@@ -110,7 +109,7 @@ public class NMLogAggregationStatusTracker extends CompositeService {
       LogAggregationStatus logAggregationStatus, long updateTime,
       String diagnosis, boolean finalized) {
     if (disabled) {
-      LOG.warn("The log aggregation is diabled. No need to update "
+      LOG.warn("The log aggregation is disabled. No need to update "
           + "the log aggregation status");
     }
     // In NM, each application has exactly one appLogAggregator thread
@@ -164,7 +163,7 @@ public class NMLogAggregationStatusTracker extends CompositeService {
   public List<LogAggregationReport> pullCachedLogAggregationReports() {
     List<LogAggregationReport> reports = new ArrayList<>();
     if (disabled) {
-      LOG.warn("The log aggregation is diabled."
+      LOG.warn("The log aggregation is disabled."
           + "There is no cached log aggregation status.");
       return reports;
     }

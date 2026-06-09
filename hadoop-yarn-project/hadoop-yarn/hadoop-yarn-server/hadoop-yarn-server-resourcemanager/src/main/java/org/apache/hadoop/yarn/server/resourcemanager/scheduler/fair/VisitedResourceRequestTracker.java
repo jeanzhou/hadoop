@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
@@ -39,8 +39,8 @@ import java.util.Set;
  * The implementation is not thread-safe.
  */
 class VisitedResourceRequestTracker {
-  private static final Log LOG =
-      LogFactory.getLog(VisitedResourceRequestTracker.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(VisitedResourceRequestTracker.class);
   private final Map<Priority, Map<Resource, TrackerPerPriorityResource>> map =
       new HashMap<>();
   private final ClusterNodeTracker<FSSchedulerNode> nodeTracker;
@@ -77,11 +77,11 @@ class VisitedResourceRequestTracker {
 
   private class TrackerPerPriorityResource {
     private Set<String> racksWithNodesVisited = new HashSet<>();
-    private Set<String> racksVisted = new HashSet<>();
+    private Set<String> racksVisited = new HashSet<>();
     private boolean anyVisited;
 
     private boolean visitAny() {
-      if (racksVisted.isEmpty() && racksWithNodesVisited.isEmpty()) {
+      if (racksVisited.isEmpty() && racksWithNodesVisited.isEmpty()) {
         anyVisited = true;
       }
       return anyVisited;
@@ -91,13 +91,13 @@ class VisitedResourceRequestTracker {
       if (anyVisited || racksWithNodesVisited.contains(rackName)) {
         return false;
       } else {
-        racksVisted.add(rackName);
+        racksVisited.add(rackName);
         return true;
       }
     }
 
     private boolean visitNode(String rackName) {
-      if (anyVisited || racksVisted.contains(rackName)) {
+      if (anyVisited || racksVisited.contains(rackName)) {
         return false;
       } else {
         racksWithNodesVisited.add(rackName);

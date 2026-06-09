@@ -17,23 +17,30 @@
 */
 package org.apache.hadoop.mapred;
 
-import com.google.common.base.Supplier;
-import org.apache.hadoop.mapred.Counters.Counter;
-import org.apache.hadoop.mapreduce.checkpoint.EnumCounter;
-
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.mapred.Counters.Counter;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.TypeConverter;
 import org.apache.hadoop.mapreduce.checkpoint.CheckpointID;
+import org.apache.hadoop.mapreduce.checkpoint.EnumCounter;
 import org.apache.hadoop.mapreduce.checkpoint.FSCheckpointID;
 import org.apache.hadoop.mapreduce.checkpoint.TaskCheckpointID;
 import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
@@ -48,9 +55,9 @@ import org.apache.hadoop.mapreduce.v2.app.TaskHeartbeatHandler;
 import org.apache.hadoop.mapreduce.v2.app.job.Job;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptStatusUpdateEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptStatusUpdateEvent.TaskAttemptStatus;
+import org.apache.hadoop.mapreduce.v2.app.rm.RMHeartbeatHandler;
 import org.apache.hadoop.mapreduce.v2.app.rm.preemption.AMPreemptionPolicy;
 import org.apache.hadoop.mapreduce.v2.app.rm.preemption.CheckpointAMPreemptionPolicy;
-import org.apache.hadoop.mapreduce.v2.app.rm.RMHeartbeatHandler;
 import org.apache.hadoop.mapreduce.v2.util.MRBuilderUtils;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.event.Dispatcher;
@@ -60,21 +67,27 @@ import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.util.ControlledClock;
 import org.apache.hadoop.yarn.util.SystemClock;
-import org.junit.After;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
-import org.mockito.Mock;
-import org.mockito.runners.MockitoJUnitRunner;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Tests the behavior of TaskAttemptListenerImpl.
  */
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class TestTaskAttemptListenerImpl {
   private static final String ATTEMPT1_ID =
       "attempt_123456789012_0001_m_000001_0";
@@ -159,7 +172,7 @@ public class TestTaskAttemptListenerImpl {
     }
   }
 
-  @After
+  @AfterEach
   public void after() throws IOException {
     if (listener != null) {
       listener.close();
@@ -167,7 +180,8 @@ public class TestTaskAttemptListenerImpl {
     }
   }
 
-  @Test  (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testGetTask() throws IOException {
     configureMocks();
     startListener(false);
@@ -219,13 +233,14 @@ public class TestTaskAttemptListenerImpl {
       JVMId.forName("jvm_001_002_m_004_006");
       fail();
     } catch (IllegalArgumentException e) {
-      assertEquals(e.getMessage(),
+      assertThat(e.getMessage()).isEqualTo(
           "TaskId string : jvm_001_002_m_004_006 is not properly formed");
     }
 
   }
 
-  @Test (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testJVMId() {
 
     JVMId jvmid = new JVMId("test", 1, true, 2);
@@ -234,7 +249,8 @@ public class TestTaskAttemptListenerImpl {
     assertEquals(0, jvmid.compareTo(jvmid1));
   }
 
-  @Test (timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testGetMapCompletionEvents() throws IOException {
     TaskAttemptCompletionEvent[] empty = {};
     TaskAttemptCompletionEvent[] taskEvents = {
@@ -244,12 +260,6 @@ public class TestTaskAttemptListenerImpl {
         createTce(3, false, TaskAttemptCompletionEventStatus.FAILED) };
     TaskAttemptCompletionEvent[] mapEvents = { taskEvents[0], taskEvents[2] };
     Job mockJob = mock(Job.class);
-    when(mockJob.getTaskAttemptCompletionEvents(0, 100))
-      .thenReturn(taskEvents);
-    when(mockJob.getTaskAttemptCompletionEvents(0, 2))
-      .thenReturn(Arrays.copyOfRange(taskEvents, 0, 2));
-    when(mockJob.getTaskAttemptCompletionEvents(2, 100))
-      .thenReturn(Arrays.copyOfRange(taskEvents, 2, 4));
     when(mockJob.getMapAttemptCompletionEvents(0, 100)).thenReturn(
         TypeConverter.fromYarn(mapEvents));
     when(mockJob.getMapAttemptCompletionEvents(0, 2)).thenReturn(
@@ -299,7 +309,8 @@ public class TestTaskAttemptListenerImpl {
     return tce;
   }
 
-  @Test (timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testCommitWindow() throws IOException {
     SystemClock clock = SystemClock.getInstance();
 
@@ -342,18 +353,7 @@ public class TestTaskAttemptListenerImpl {
   @Test
   public void testCheckpointIDTracking()
     throws IOException, InterruptedException{
-    SystemClock clock = SystemClock.getInstance();
-
     configureMocks();
-
-    org.apache.hadoop.mapreduce.v2.app.job.Task mockTask =
-        mock(org.apache.hadoop.mapreduce.v2.app.job.Task.class);
-    when(mockTask.canCommit(any(TaskAttemptId.class))).thenReturn(true);
-    Job mockJob = mock(Job.class);
-    when(mockJob.getTask(any(TaskId.class))).thenReturn(mockTask);
-    when(appCtx.getJob(any(JobId.class))).thenReturn(mockJob);
-    when(appCtx.getClock()).thenReturn(clock);
-
     listener = new MockTaskAttemptListenerImpl(
         appCtx, secret, rmHeartbeatHandler, policy) {
       @Override
@@ -425,6 +425,23 @@ public class TestTaskAttemptListenerImpl {
     feedback = listener.statusUpdate(attemptID, mockStatus);
     assertTrue(feedback.getTaskFound());
     verify(hbHandler).progressing(eq(attemptId));
+  }
+
+  @Test
+  public void testPingUpdateProgress() throws IOException, InterruptedException {
+    configureMocks();
+    Configuration conf = new Configuration();
+    conf.setBoolean(MRJobConfig.MR_TASK_ENABLE_PING_FOR_LIVELINESS_CHECK, true);
+    listener.init(conf);
+    listener.start();
+    listener.registerPendingTask(task, wid);
+    listener.registerLaunchedTask(attemptId, wid);
+    verify(hbHandler).register(attemptId);
+
+    // make sure a ping does report progress
+    AMFeedback feedback = listener.statusUpdate(attemptID, null);
+    assertTrue(feedback.getTaskFound());
+    verify(hbHandler, times(1)).progressing(eq(attemptId));
   }
 
   @Test
@@ -511,6 +528,8 @@ public class TestTaskAttemptListenerImpl {
 
     Configuration conf = new Configuration();
     conf.setLong(MRJobConfig.TASK_TIMEOUT_CHECK_INTERVAL_MS, 1);
+    conf.setDouble(MRJobConfig.TASK_LOG_PROGRESS_DELTA_THRESHOLD, 0.01);
+    conf.setDouble(MRJobConfig.TASK_LOG_PROGRESS_WAIT_INTERVAL_SECONDS, 1);
     tal.init(conf);
     tal.start();
 
@@ -559,7 +578,6 @@ public class TestTaskAttemptListenerImpl {
         TaskStatus.State.RUNNING, "", "RUNNING", "",
         TaskStatus.Phase.REDUCE, new Counters());
 
-    when(dispatcher.getEventHandler()).thenReturn(ea);
     when(appCtx.getEventHandler()).thenReturn(ea);
     policy = new CheckpointAMPreemptionPolicy();
     policy.init(appCtx);

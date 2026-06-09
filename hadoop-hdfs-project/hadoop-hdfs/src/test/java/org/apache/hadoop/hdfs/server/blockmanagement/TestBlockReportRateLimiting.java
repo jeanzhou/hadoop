@@ -20,22 +20,25 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_MAX_FULL_BLOCK_REPORT_LEASES;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_FULL_BLOCK_REPORT_LEASE_LENGTH_MS;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Supplier;
-import com.google.common.util.concurrent.Uninterruptibles;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Uninterruptibles;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.After;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.event.Level;
 
 import java.io.IOException;
 import java.util.HashSet;
@@ -44,7 +47,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class TestBlockReportRateLimiting {
-  static final Log LOG = LogFactory.getLog(TestBlockReportRateLimiting.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestBlockReportRateLimiting.class);
 
   private static void setFailure(AtomicReference<String> failure,
                                  String what) {
@@ -52,18 +56,19 @@ public class TestBlockReportRateLimiting {
     LOG.error("Test error: " + what);
   }
 
-  @After
+  @AfterEach
   public void restoreNormalBlockManagerFaultInjector() {
     BlockManagerFaultInjector.instance = new BlockManagerFaultInjector();
   }
 
-  @BeforeClass
+  @BeforeAll
   public static void raiseBlockManagerLogLevels() {
-    GenericTestUtils.setLogLevel(BlockManager.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(BlockReportLeaseManager.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(BlockManager.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(BlockReportLeaseManager.LOG, Level.TRACE);
   }
 
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testRateLimitingDuringDataNodeStartup() throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(DFS_NAMENODE_MAX_FULL_BLOCK_REPORT_LEASES, 1);
@@ -154,7 +159,7 @@ public class TestBlockReportRateLimiting {
       }, 25, 50000);
     }
     cluster.shutdown();
-    Assert.assertEquals("", failure.get());
+    assertEquals("", failure.get());
   }
 
   /**
@@ -162,7 +167,8 @@ public class TestBlockReportRateLimiting {
    * first datanode gets a lease, kill it.  Then wait for the lease to
    * expire, and the second datanode to send a full block report.
    */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testLeaseExpiration() throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(DFS_NAMENODE_MAX_FULL_BLOCK_REPORT_LEASES, 1);
@@ -206,9 +212,9 @@ public class TestBlockReportRateLimiting {
       BlockManagerFaultInjector.instance = injector;
       cluster.set(new MiniDFSCluster.Builder(conf).numDataNodes(2).build());
       cluster.get().waitActive();
-      Assert.assertNotNull(cluster.get().stopDataNode(datanodeToStop.get()));
+      assertNotNull(cluster.get().stopDataNode(datanodeToStop.get()));
       gotFbrSem.acquire();
-      Assert.assertNull(failure.get());
+      assertNull(failure.get());
     } finally {
       if (cluster.get() != null) {
         cluster.get().shutdown();

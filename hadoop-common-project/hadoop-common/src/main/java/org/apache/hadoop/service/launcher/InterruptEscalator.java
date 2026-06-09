@@ -23,7 +23,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,9 +95,9 @@ public class InterruptEscalator implements IrqHandler.Interrupted {
     if (owner != null) {
       sb.append(", owner= ").append(owner.toString());
     }
-    sb.append(", shutdownTimeMillis=").append(shutdownTimeMillis);
-    sb.append(", forcedShutdownTimedOut=").append(forcedShutdownTimedOut);
-    sb.append('}');
+    sb.append(", shutdownTimeMillis=").append(shutdownTimeMillis)
+        .append(", forcedShutdownTimedOut=").append(forcedShutdownTimedOut)
+        .append('}');
     return sb.toString();
   }
 
@@ -116,7 +117,7 @@ public class InterruptEscalator implements IrqHandler.Interrupted {
       //start an async shutdown thread with a timeout
       ServiceForcedShutdown shutdown =
           new ServiceForcedShutdown(service, shutdownTimeMillis);
-      Thread thread = new Thread(shutdown);
+      Thread thread = new SubjectInheritingThread(shutdown);
       thread.setDaemon(true);
       thread.setName("Service Forced Shutdown");
       thread.start();

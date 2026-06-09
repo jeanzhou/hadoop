@@ -19,6 +19,8 @@
 package org.apache.hadoop.yarn.server.resourcemanager.webapp.dao;
 
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.AllocationConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
@@ -26,37 +28,44 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairSchedule
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.QueueManager;
 import org.apache.hadoop.yarn.util.SystemClock;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 public class TestFairSchedulerQueueInfo {
 
   @Test
-  public void testEmptyChildQueues() throws Exception {
-    FairSchedulerConfiguration conf = new FairSchedulerConfiguration();
+  public void testEmptyChildQueues() {
+    FairSchedulerConfiguration fsConf = new FairSchedulerConfiguration();
+    RMContext rmContext = mock(RMContext.class);
+    PlacementManager placementManager = new PlacementManager();
+    SystemClock clock = SystemClock.getInstance();
     FairScheduler scheduler = mock(FairScheduler.class);
-    AllocationConfiguration allocConf = new AllocationConfiguration(conf);
-    when(scheduler.getAllocationConfiguration()).thenReturn(allocConf);
-    when(scheduler.getConf()).thenReturn(conf);
-    when(scheduler.getClusterResource()).thenReturn(Resource.newInstance(1, 1));
+    when(scheduler.getConf()).thenReturn(fsConf);
+    when(scheduler.getConfig()).thenReturn(fsConf);
+    when(scheduler.getRMContext()).thenReturn(rmContext);
+    when(rmContext.getQueuePlacementManager()).thenReturn(placementManager);
+    when(scheduler.getClusterResource()).thenReturn(
+        Resource.newInstance(1, 1));
     when(scheduler.getResourceCalculator()).thenReturn(
         new DefaultResourceCalculator());
-    SystemClock clock = SystemClock.getInstance();
     when(scheduler.getClock()).thenReturn(clock);
+    AllocationConfiguration allocConf = new AllocationConfiguration(scheduler);
+    when(scheduler.getAllocationConfiguration()).thenReturn(allocConf);
     QueueManager queueManager = new QueueManager(scheduler);
-    queueManager.initialize(conf);
+    queueManager.initialize();
 
     FSQueue testQueue = queueManager.getLeafQueue("test", true);
     FairSchedulerQueueInfo queueInfo =
         new FairSchedulerQueueInfo(testQueue, scheduler);
     Collection<FairSchedulerQueueInfo> childQueues =
         queueInfo.getChildQueues();
-    Assert.assertNotNull(childQueues);
-    Assert.assertEquals("Child QueueInfo was not empty", 0, childQueues.size());
+    assertNotNull(childQueues);
+    assertEquals(0, childQueues.size(), "Child QueueInfo was not empty");
   }
 }

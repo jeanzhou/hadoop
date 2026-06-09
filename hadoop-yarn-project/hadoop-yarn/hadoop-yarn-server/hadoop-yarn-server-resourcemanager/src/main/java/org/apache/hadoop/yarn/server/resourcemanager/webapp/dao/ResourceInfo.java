@@ -45,7 +45,6 @@ public class ResourceInfo {
   }
 
   public ResourceInfo(Resource res) {
-    // Make sure no NPE.
     if (res != null) {
       memory = res.getMemorySize();
       vCores = res.getVirtualCores();
@@ -71,6 +70,10 @@ public class ResourceInfo {
   @Override
   public String toString() {
     return getResource().toString();
+  }
+
+  public String toFormattedString() {
+    return getResource().toFormattedString();
   }
 
   public void setMemory(int memory) {

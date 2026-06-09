@@ -46,7 +46,7 @@ public final class ErasureCodeNative {
         loadLibrary();
       } catch (Throwable t) {
         problem = "Loading ISA-L failed: " + t.getMessage();
-        LOG.error("Loading ISA-L failed", t);
+        LOG.warn(problem);
       }
       LOADING_FAILURE_REASON = problem;
     }
@@ -61,6 +61,7 @@ public final class ErasureCodeNative {
 
   /**
    * Are native libraries loaded?
+   * @return if is native code loaded true,not false.
    */
   public static boolean isNativeCodeLoaded() {
     return LOADING_FAILURE_REASON == null;
@@ -82,6 +83,7 @@ public final class ErasureCodeNative {
 
   /**
    * Get the native library name that's available or supported.
+   * @return library name.
    */
   public static native String getLibraryName();
 

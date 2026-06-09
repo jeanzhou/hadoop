@@ -28,12 +28,12 @@ import java.io.Writer;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.util.NodeHealthScriptRunner;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.Token;
+import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.event.Dispatcher;
@@ -42,23 +42,24 @@ import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
-import org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
 import org.apache.hadoop.yarn.server.nodemanager.ResourceView;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerImpl;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerState;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMNullStateStoreService;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
-import org.apache.hadoop.yarn.util.ConverterUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.yarn.util.resource.Resources;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestNMWebServer {
 
@@ -67,28 +68,29 @@ public class TestNMWebServer {
   private static File testLogDir = new File("target",
       TestNMWebServer.class.getSimpleName() + "LogDir");
 
-  @Before
+  @BeforeEach
   public void setup() {
     testRootDir.mkdirs();
     testLogDir.mkdir(); 
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     FileUtil.fullyDelete(testRootDir);
     FileUtil.fullyDelete(testLogDir);
   }
 
-  private NodeHealthCheckerService createNodeHealthCheckerService(Configuration conf) {
-    NodeHealthScriptRunner scriptRunner = NodeManager.getNodeHealthScriptRunner(conf);
+  private NodeHealthCheckerService createNodeHealthCheckerService() {
     LocalDirsHandlerService dirsHandler = new LocalDirsHandlerService();
-    return new NodeHealthCheckerService(scriptRunner, dirsHandler);
+    return new NodeHealthCheckerService(dirsHandler);
   }
 
   private int startNMWebAppServer(String webAddr) {
     Configuration conf = new Configuration();
-    Context nmContext = new NodeManager.NMContext(null, null, null, null,
+    NodeManager.NMContext nmContext = new NodeManager.NMContext(null, null, null, null,
         null, false, conf);
+    NodeId nodeId = NodeId.newInstance("testhost.foo.com", 8042);
+    nmContext.setNodeId(nodeId);
     ResourceView resourceView = new ResourceView() {
       @Override
       public long getVmemAllocatedForContainers() {
@@ -113,7 +115,7 @@ public class TestNMWebServer {
     };
     conf.set(YarnConfiguration.NM_LOCAL_DIRS, testRootDir.getAbsolutePath());
     conf.set(YarnConfiguration.NM_LOG_DIRS, testLogDir.getAbsolutePath());
-    NodeHealthCheckerService healthChecker = createNodeHealthCheckerService(conf);
+    NodeHealthCheckerService healthChecker = createNodeHealthCheckerService();
     healthChecker.init(conf);
     LocalDirsHandlerService dirsHandler = healthChecker.getDiskHandler();
     conf.set(YarnConfiguration.NM_WEBAPP_ADDRESS, webAddr);
@@ -130,20 +132,20 @@ public class TestNMWebServer {
   }
   
   @Test
-  public void testNMWebAppWithOutPort() throws IOException {
+  public void testNMWebAppWithOutPort() {
     int port = startNMWebAppServer("0.0.0.0");
     validatePortVal(port);
   }
 
   private void validatePortVal(int portVal) {
-    Assert.assertTrue("Port is not updated", portVal > 0);
-    Assert.assertTrue("Port is default "+ YarnConfiguration.DEFAULT_NM_PORT,
-                      portVal !=YarnConfiguration.DEFAULT_NM_PORT);
+    assertTrue(portVal > 0, "Port is not updated");
+    assertTrue(portVal != YarnConfiguration.DEFAULT_NM_PORT,
+        "Port is default "+ YarnConfiguration.DEFAULT_NM_PORT);
   }
 
   @Test
-  public void testNMWebAppWithEphemeralPort() throws IOException {
-    int port = startNMWebAppServer("0.0.0.0:0"); 
+  public void testNMWebAppWithEphemeralPort() {
+    int port = startNMWebAppServer("0.0.0.0:0");
     validatePortVal(port);
   }
 
@@ -176,7 +178,7 @@ public class TestNMWebServer {
     };
     conf.set(YarnConfiguration.NM_LOCAL_DIRS, testRootDir.getAbsolutePath());
     conf.set(YarnConfiguration.NM_LOG_DIRS, testLogDir.getAbsolutePath());
-    NodeHealthCheckerService healthChecker = createNodeHealthCheckerService(conf);
+    NodeHealthCheckerService healthChecker = createNodeHealthCheckerService();
     healthChecker.init(conf);
     LocalDirsHandlerService dirsHandler = healthChecker.getDiskHandler();
 
@@ -213,7 +215,7 @@ public class TestNMWebServer {
       long currentTime = System.currentTimeMillis();
       Token containerToken =
           BuilderUtils.newContainerToken(containerId, 0, "127.0.0.1", 1234,
-              user, BuilderUtils.newResource(1024, 1), currentTime + 10000L,
+              user, Resources.createResource(1024), currentTime + 10000L,
               123, "password".getBytes(), currentTime);
       Context context = mock(Context.class);
       Container container =
@@ -224,7 +226,7 @@ public class TestNMWebServer {
             @Override
             public ContainerState getContainerState() {
               return ContainerState.RUNNING;
-            };
+            }
           };
       nmContext.getContainers().put(containerId, container);
       //TODO: Gross hack. Fix in code.
@@ -232,15 +234,14 @@ public class TestNMWebServer {
           containerId.getApplicationAttemptId().getApplicationId();
       nmContext.getApplications().get(applicationId).getContainers()
           .put(containerId, container);
-      writeContainerLogs(nmContext, containerId, dirsHandler);
+      writeContainerLogs(containerId, dirsHandler);
 
     }
     // TODO: Pull logs and test contents.
 //    Thread.sleep(1000000);
   }
 
-  private void writeContainerLogs(Context nmContext,
-      ContainerId containerId, LocalDirsHandlerService dirsHandler)
+  private void writeContainerLogs(ContainerId containerId, LocalDirsHandlerService dirsHandler)
         throws IOException, YarnException {
     // ContainerLogDir should be created
     File containerLogDir =

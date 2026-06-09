@@ -41,128 +41,133 @@ import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
 import org.apache.hadoop.yarn.client.api.YarnClient;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.util.Records;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+@Timeout(180)
 public class TestApplicationClientProtocolOnHA extends ProtocolHATestBase {
   private YarnClient client = null;
 
-  @Before
+  @BeforeEach
   public void initiate() throws Exception {
     startHACluster(1, true, false, false);
     Configuration conf = new YarnConfiguration(this.conf);
     client = createAndStartYarnClient(conf);
   }
 
-  @After
+  @AfterEach
   public void shutDown() {
     if (client != null) {
       client.stop();
     }
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetApplicationReportOnHA() throws Exception {
     ApplicationReport report =
         client.getApplicationReport(cluster.createFakeAppId());
-    Assert.assertTrue(report != null);
-    Assert.assertEquals(cluster.createFakeAppReport(), report);
+    assertTrue(report != null);
+    assertEquals(cluster.createFakeAppReport(), report);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetNewApplicationOnHA() throws Exception {
     ApplicationId appId =
         client.createApplication().getApplicationSubmissionContext()
             .getApplicationId();
-    Assert.assertTrue(appId != null);
-    Assert.assertEquals(cluster.createFakeAppId(), appId);
+    assertTrue(appId != null);
+    assertEquals(cluster.createFakeAppId(), appId);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetClusterMetricsOnHA() throws Exception {
     YarnClusterMetrics clusterMetrics =
         client.getYarnClusterMetrics();
-    Assert.assertTrue(clusterMetrics != null);
-    Assert.assertEquals(cluster.createFakeYarnClusterMetrics(),
+    assertTrue(clusterMetrics != null);
+    assertEquals(cluster.createFakeYarnClusterMetrics(),
         clusterMetrics);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetApplicationsOnHA() throws Exception {
     List<ApplicationReport> reports =
         client.getApplications();
-    Assert.assertTrue(reports != null);
-    Assert.assertFalse(reports.isEmpty());
-    Assert.assertEquals(cluster.createFakeAppReports(),
+    assertTrue(reports != null);
+    assertFalse(reports.isEmpty());
+    assertEquals(cluster.createFakeAppReports(),
         reports);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetClusterNodesOnHA() throws Exception {
     List<NodeReport> reports = client.getNodeReports(NodeState.RUNNING);
-    Assert.assertTrue(reports != null);
-    Assert.assertFalse(reports.isEmpty());
-    Assert.assertEquals(cluster.createFakeNodeReports(),
+    assertTrue(reports != null);
+    assertFalse(reports.isEmpty());
+    assertEquals(cluster.createFakeNodeReports(),
         reports);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetQueueInfoOnHA() throws Exception {
     QueueInfo queueInfo = client.getQueueInfo("root");
-    Assert.assertTrue(queueInfo != null);
-    Assert.assertEquals(cluster.createFakeQueueInfo(),
+    assertTrue(queueInfo != null);
+    assertEquals(cluster.createFakeQueueInfo(),
         queueInfo);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetQueueUserAclsOnHA() throws Exception {
     List<QueueUserACLInfo> queueUserAclsList = client.getQueueAclsInfo();
-    Assert.assertTrue(queueUserAclsList != null);
-    Assert.assertFalse(queueUserAclsList.isEmpty());
-    Assert.assertEquals(cluster.createFakeQueueUserACLInfoList(),
+    assertTrue(queueUserAclsList != null);
+    assertFalse(queueUserAclsList.isEmpty());
+    assertEquals(cluster.createFakeQueueUserACLInfoList(),
         queueUserAclsList);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetApplicationAttemptReportOnHA() throws Exception {
     ApplicationAttemptReport report =
         client.getApplicationAttemptReport(cluster
             .createFakeApplicationAttemptId());
-    Assert.assertTrue(report != null);
-    Assert.assertEquals(cluster.createFakeApplicationAttemptReport(), report);
+    assertTrue(report != null);
+    assertEquals(cluster.createFakeApplicationAttemptReport(), report);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetApplicationAttemptsOnHA() throws Exception {
     List<ApplicationAttemptReport> reports =
         client.getApplicationAttempts(cluster.createFakeAppId());
-    Assert.assertTrue(reports != null);
-    Assert.assertFalse(reports.isEmpty());
-    Assert.assertEquals(cluster.createFakeApplicationAttemptReports(),
+    assertTrue(reports != null);
+    assertFalse(reports.isEmpty());
+    assertEquals(cluster.createFakeApplicationAttemptReports(),
         reports);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetContainerReportOnHA() throws Exception {
     ContainerReport report =
         client.getContainerReport(cluster.createFakeContainerId());
-    Assert.assertTrue(report != null);
-    Assert.assertEquals(cluster.createFakeContainerReport(), report);
+    assertTrue(report != null);
+    assertEquals(cluster.createFakeContainerReport(), report);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetContainersOnHA() throws Exception {
     List<ContainerReport> reports =
         client.getContainers(cluster.createFakeApplicationAttemptId());
-    Assert.assertTrue(reports != null);
-    Assert.assertFalse(reports.isEmpty());
-    Assert.assertEquals(cluster.createFakeContainerReports(),
+    assertTrue(reports != null);
+    assertFalse(reports.isEmpty());
+    assertEquals(cluster.createFakeContainerReports(),
         reports);
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testSubmitApplicationOnHA() throws Exception {
     ApplicationSubmissionContext appContext =
         Records.newRecord(ApplicationSubmissionContext.class);
@@ -175,37 +180,37 @@ public class TestApplicationClientProtocolOnHA extends ProtocolHATestBase {
     capability.setVirtualCores(1);
     appContext.setResource(capability);
     ApplicationId appId = client.submitApplication(appContext);
-    Assert.assertTrue(getActiveRM().getRMContext().getRMApps()
+    assertTrue(getActiveRM().getRMContext().getRMApps()
         .containsKey(appId));
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testMoveApplicationAcrossQueuesOnHA() throws Exception{
     client.moveApplicationAcrossQueues(cluster.createFakeAppId(), "root");
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testForceKillApplicationOnHA() throws Exception {
     client.killApplication(cluster.createFakeAppId());
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testGetDelegationTokenOnHA() throws Exception {
     Token token = client.getRMDelegationToken(new Text(" "));
-    Assert.assertEquals(token, cluster.createFakeToken());
+    assertEquals(token, cluster.createFakeToken());
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testRenewDelegationTokenOnHA() throws Exception {
     RenewDelegationTokenRequest request =
         RenewDelegationTokenRequest.newInstance(cluster.createFakeToken());
     long newExpirationTime =
         ClientRMProxy.createRMProxy(this.conf, ApplicationClientProtocol.class)
             .renewDelegationToken(request).getNextExpirationTime();
-    Assert.assertEquals(newExpirationTime, cluster.createNextExpirationTime());
+    assertEquals(newExpirationTime, cluster.createNextExpirationTime());
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testCancelDelegationTokenOnHA() throws Exception {
     CancelDelegationTokenRequest request =
         CancelDelegationTokenRequest.newInstance(cluster.createFakeToken());

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -26,8 +26,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.protocol.Block;
@@ -38,8 +38,7 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.util.Time;
-import org.junit.Test;
-
+import org.junit.jupiter.api.Test;
 
 /**
  * This class tests the replication and injection of blocks of a DFS file for simulated storage.
@@ -50,7 +49,7 @@ public class TestInjectionForSimulatedStorage {
   private final int numBlocks = 4;
   private final int filesize = blockSize*numBlocks;
   private final int numDataNodes = 4;
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       "org.apache.hadoop.hdfs.TestInjectionForSimulatedStorage");
 
 

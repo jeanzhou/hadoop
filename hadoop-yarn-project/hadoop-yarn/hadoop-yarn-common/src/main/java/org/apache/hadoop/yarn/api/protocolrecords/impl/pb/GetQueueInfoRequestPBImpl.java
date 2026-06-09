@@ -24,7 +24,7 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoRequest;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetQueueInfoRequestProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetQueueInfoRequestProtoOrBuilder;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
 @Private
 @Unstable
@@ -94,6 +94,22 @@ public class GetQueueInfoRequestPBImpl extends GetQueueInfoRequest {
   public void setRecursive(boolean recursive) {
     maybeInitBuilder();
     builder.setRecursive(recursive);
+  }
+
+  @Override
+  public String getSubClusterId() {
+    GetQueueInfoRequestProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasSubClusterId()) ? p.getSubClusterId() : "";
+  }
+
+  @Override
+  public void setSubClusterId(String subClusterId) {
+    maybeInitBuilder();
+    if (subClusterId == null) {
+      builder.clearSubClusterId();
+      return;
+    }
+    builder.setSubClusterId(subClusterId);
   }
 
   private void maybeInitBuilder() {

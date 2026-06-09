@@ -31,17 +31,21 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.resourcemanager.HATestUtil;
 import org.apache.hadoop.yarn.server.timelineservice.storage.FileSystemTimelineWriterImpl;
 import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineWriter;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Tests Application Master Protocol with timeline service v2 enabled.
  */
+@Timeout(180)
 public class TestApplicationMasterServiceProtocolForTimelineV2
     extends ApplicationMasterServiceProtoTestBase {
 
-  @Before
+  @BeforeEach
   public void initialize() throws Exception {
     HATestUtil.setRpcAddressForRM(RM1_NODE_ID, RM1_PORT_BASE + 200, conf);
     HATestUtil.setRpcAddressForRM(RM2_NODE_ID, RM2_PORT_BASE + 200, conf);
@@ -53,7 +57,7 @@ public class TestApplicationMasterServiceProtocolForTimelineV2
     super.startupHAAndSetupClient();
   }
 
-  @Test(timeout = 15000)
+  @Test
   public void testAllocateForTimelineV2OnHA()
       throws YarnException, IOException {
     AllocateRequest request = AllocateRequest.newInstance(0, 50f,
@@ -62,10 +66,10 @@ public class TestApplicationMasterServiceProtocolForTimelineV2
         ResourceBlacklistRequest.newInstance(new ArrayList<String>(),
             new ArrayList<String>()));
     AllocateResponse response = getAMClient().allocate(request);
-    Assert.assertEquals(response, this.cluster.createFakeAllocateResponse());
-    Assert.assertNotNull(response.getCollectorInfo());
-    Assert.assertEquals("host:port",
+    assertEquals(response, this.cluster.createFakeAllocateResponse());
+    assertNotNull(response.getCollectorInfo());
+    assertEquals("host:port",
         response.getCollectorInfo().getCollectorAddr());
-    Assert.assertNotNull(response.getCollectorInfo().getCollectorToken());
+    assertNotNull(response.getCollectorInfo().getCollectorToken());
   }
 }

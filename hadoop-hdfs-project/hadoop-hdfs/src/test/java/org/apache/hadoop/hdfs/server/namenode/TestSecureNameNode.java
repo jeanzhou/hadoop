@@ -17,13 +17,16 @@
 
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.fail;
-
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.security.PrivilegedExceptionAction;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
@@ -33,16 +36,12 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferTestCase;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
-
+import org.junit.jupiter.api.Test;
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
 
 public class TestSecureNameNode extends SaslDataTransferTestCase {
   final static private int NUM_OF_DATANODES = 0;
-
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
 
 
   @Test
@@ -75,14 +74,15 @@ public class TestSecureNameNode extends SaslDataTransferTestCase {
         }
       });
       Path p = new Path("/mydir");
-      exception.expect(IOException.class);
-      fs.mkdirs(p);
+      assertThrows(IOException.class, () -> {
+        fs.mkdirs(p);
 
-      Path tmp = new Path("/tmp/alpha");
-      fs.mkdirs(tmp);
-      assertNotNull(fs.listStatus(tmp));
-      assertEquals(AuthenticationMethod.KERBEROS,
-          ugi.getAuthenticationMethod());
+        Path tmp = new Path("/tmp/alpha");
+        fs.mkdirs(tmp);
+        assertNotNull(fs.listStatus(tmp));
+        assertEquals(AuthenticationMethod.KERBEROS,
+            ugi.getAuthenticationMethod());
+      });
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -100,21 +100,68 @@ public class TestSecureNameNode extends SaslDataTransferTestCase {
    */
   @Test
   public void testKerberosHdfsBlockTokenInconsistencyNNStartup() throws Exception {
-    MiniDFSCluster dfsCluster = null;
-    HdfsConfiguration conf = createSecureConfig(
-        "authentication,privacy");
-    try {
-      conf.setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, false);
-      exception.expect(IOException.class);
-      exception.expectMessage("Security is enabled but block access tokens");
-      dfsCluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
-      dfsCluster.waitActive();
-    } finally {
-      if (dfsCluster != null) {
-        dfsCluster.shutdown();
+    IOException exception = assertThrows(IOException.class, () -> {
+      MiniDFSCluster dfsCluster = null;
+      HdfsConfiguration conf = createSecureConfig(
+          "authentication,privacy");
+      try {
+        conf.setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, false);
+        dfsCluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+        dfsCluster.waitActive();
+      } finally {
+        if (dfsCluster != null) {
+          dfsCluster.shutdown();
+        }
       }
+      return;
+    });
+    assertTrue(exception.getMessage().contains("Security is enabled but block access tokens"));
+  }
+
+  /**
+   * Test NameNodeStatusMXBean with security enabled and disabled.
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testNameNodeStatusMXBeanSecurityEnabled() throws Exception {
+    Configuration simpleConf = new Configuration();
+    Configuration secureConf = createSecureConfig("authentication");
+
+    // disabling security
+    UserGroupInformation.setConfiguration(simpleConf);
+
+    // get attribute "SecurityEnabled" with simple configuration
+    try (MiniDFSCluster cluster =
+                 new MiniDFSCluster.Builder(simpleConf).build()) {
+      cluster.waitActive();
+      NameNode namenode = cluster.getNameNode();
+
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName = new ObjectName(
+              "Hadoop:service=NameNode,name=NameNodeStatus");
+
+      boolean securityEnabled = (boolean) mbs.getAttribute(mxbeanName,
+              "SecurityEnabled");
+      assertFalse(securityEnabled);
+      assertEquals(namenode.isSecurityEnabled(), securityEnabled);
     }
-    return;
+
+    // get attribute "SecurityEnabled" with secure configuration
+    try (MiniDFSCluster cluster =
+                 new MiniDFSCluster.Builder(secureConf).build()) {
+      cluster.waitActive();
+      NameNode namenode = cluster.getNameNode();
+
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName = new ObjectName(
+              "Hadoop:service=NameNode,name=NameNodeStatus");
+
+      boolean securityEnabled = (boolean) mbs.getAttribute(mxbeanName,
+              "SecurityEnabled");
+      assertTrue(securityEnabled);
+      assertEquals(namenode.isSecurityEnabled(), securityEnabled);
+    }
   }
 
 }

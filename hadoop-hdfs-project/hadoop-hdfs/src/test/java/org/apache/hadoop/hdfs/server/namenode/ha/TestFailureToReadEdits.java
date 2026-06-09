@@ -17,12 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.anyObject;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
@@ -33,8 +33,10 @@ import java.util.Collection;
 import java.util.LinkedList;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -48,26 +50,26 @@ import org.apache.hadoop.hdfs.qjournal.MiniQJMHACluster.Builder;
 import org.apache.hadoop.hdfs.server.namenode.EditLogInputStream;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLog;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp;
-import org.apache.hadoop.hdfs.server.namenode.MetaRecoveryContext;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapterMockitoUtil;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.ExitUtil.ExitException;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 
-@RunWith(Parameterized.class)
+@MethodSource("data")
+@ParameterizedClass
+@Tag("slow")
 public class TestFailureToReadEdits {
-  private static final Log LOG =
-      LogFactory.getLog(TestFailureToReadEdits.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestFailureToReadEdits.class);
 
   private static final String TEST_DIR1 = "/test1";
   private static final String TEST_DIR2 = "/test2";
@@ -95,7 +97,6 @@ public class TestFailureToReadEdits {
    * TODO: Enable the test cases with async edit logging on. See HDFS-12603
    * and HDFS-12660.
    */
-  @Parameters
   public static Iterable<Object[]> data() {
     return Arrays.asList(new Object[][]{
         {TestType.SHARED_DIR_HA, Boolean.FALSE},
@@ -111,7 +112,7 @@ public class TestFailureToReadEdits {
     this.useAsyncEditLogging = useAsyncEditLogging;
   }
 
-  @Before
+  @BeforeEach
   public void setUpCluster() throws Exception {
     conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_KEY, 1);
@@ -162,7 +163,7 @@ public class TestFailureToReadEdits {
     fs = HATestUtil.configureFailoverFs(cluster, conf);
   }
   
-  @After
+  @AfterEach
   public void tearDownCluster() throws Exception {
     if (fs != null) {
       fs.close();
@@ -255,10 +256,10 @@ public class TestFailureToReadEdits {
     
     // Once the standby catches up, it should notice that it needs to
     // do a checkpoint and save one to its local directories.
-    HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(0, 3));
+    HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(0, 5));
     
     // It should also upload it back to the active.
-    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(0, 3));
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(0, 5));
     
     causeFailureOnEditLogRead();
     
@@ -273,15 +274,15 @@ public class TestFailureToReadEdits {
     }
     
     // 5 because we should get OP_START_LOG_SEGMENT and one successful OP_MKDIR
-    HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(0, 3, 5));
+    HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(0, 5, 7));
     
     // It should also upload it back to the active.
-    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(0, 3, 5));
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(0, 5, 7));
 
     // Restart the active NN
     cluster.restartNameNode(0);
     
-    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(0, 3, 5));
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(0, 5, 7));
     
     FileSystem fs0 = null;
     try {
@@ -310,7 +311,7 @@ public class TestFailureToReadEdits {
     HATestUtil.waitForStandbyToCatchUp(nn0, nn1);
     
     // It should also upload it back to the active.
-    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(0, 3));
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(0, 5));
     
     causeFailureOnEditLogRead();
     
@@ -337,11 +338,10 @@ public class TestFailureToReadEdits {
   }
   
   private LimitedEditLogAnswer causeFailureOnEditLogRead() throws IOException {
-    FSEditLog spyEditLog = NameNodeAdapter.spyOnEditLog(nn1);
+    FSEditLog spyEditLog = NameNodeAdapterMockitoUtil.spyOnEditLog(nn1);
     LimitedEditLogAnswer answer = new LimitedEditLogAnswer(); 
     doAnswer(answer).when(spyEditLog).selectInputStreams(
-        anyLong(), anyLong(), (MetaRecoveryContext)anyObject(), anyBoolean(),
-        anyBoolean());
+        anyLong(), anyLong(), any(), anyBoolean(), anyBoolean());
     return answer;
   }
   

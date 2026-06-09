@@ -18,12 +18,13 @@
 package org.apache.hadoop.hdfs.server.federation.resolver;
 
 import static org.apache.hadoop.hdfs.server.federation.resolver.order.HashResolver.extractTempFileName;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
@@ -32,8 +33,8 @@ import java.util.TreeSet;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.DestinationOrder;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test the multiple destination resolver.
@@ -42,7 +43,7 @@ public class TestMultipleDestinationResolver {
 
   private MultipleDestinationMountTableResolver resolver;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     Configuration conf = new Configuration();
     resolver = new MultipleDestinationMountTableResolver(conf, null);
@@ -104,6 +105,15 @@ public class TestMultipleDestinationResolver {
     MountTable readOnlyEntry = MountTable.newInstance("/readonly", mapReadOnly);
     readOnlyEntry.setReadOnly(true);
     resolver.addEntry(readOnlyEntry);
+
+    // leader follower mode
+    Map<String, String> leaderFollowerMap = new LinkedHashMap<>();
+    leaderFollowerMap.put("subcluster1", "/leaderfollower");
+    leaderFollowerMap.put("subcluster0", "/leaderfollower");
+    leaderFollowerMap.put("subcluster2", "/leaderfollower");
+    MountTable leaderFollowerEntry = MountTable.newInstance("/leaderfollower", leaderFollowerMap);
+    leaderFollowerEntry.setDestOrder(DestinationOrder.LEADER_FOLLOWER);
+    resolver.addEntry(leaderFollowerEntry);
   }
 
   @Test
@@ -341,6 +351,13 @@ public class TestMultipleDestinationResolver {
   }
 
   @Test
+  public void testLeaderFollower() throws IOException {
+    PathLocation dest0 =
+        resolver.getDestinationForPath("/leaderfollower/folder0/file0.txt");
+    assertDest("subcluster1", dest0);
+  }
+
+  @Test
   public void testLocalResolver() throws IOException {
     PathLocation dest0 =
         resolver.getDestinationForPath("/local/folder0/file0.txt");
@@ -358,6 +375,15 @@ public class TestMultipleDestinationResolver {
       destinations.add(nsId);
     }
     assertEquals(3, destinations.size());
+  }
+
+  @Test
+  public void testPrioritizeDestination() throws IOException {
+    PathLocation dest0 = resolver.getDestinationForPath("/hashall/file0.txt");
+    assertDest("subcluster0", dest0);
+    PathLocation prioritizedDest = PathLocation.prioritizeDestination(dest0,
+        "subcluster1");
+    assertDest("subcluster1", prioritizedDest);
   }
 
   /**

@@ -29,8 +29,10 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.util.ZKUtil.ZKAuthInfo;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.zookeeper.client.ZKClientConfig;
 import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.Watcher;
@@ -42,11 +44,15 @@ import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.AsyncCallback.*;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.KeeperException.Code;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.naming.ConfigurationException;
+
+import org.apache.hadoop.security.SecurityUtil.TruststoreKeystore;
 
 /**
  * 
@@ -54,10 +60,10 @@ import org.slf4j.LoggerFactory;
  * Apache Zookeeper. Using Zookeeper as a coordination service, leader election
  * can be performed by atomically creating an ephemeral lock file (znode) on
  * Zookeeper. The service instance that successfully creates the znode becomes
- * active and the rest become standbys. <br/>
+ * active and the rest become standbys. <br>
  * This election mechanism is only efficient for small number of election
  * candidates (order of 10's) because contention on single znode by a large
- * number of candidates can result in Zookeeper overload. <br/>
+ * number of candidates can result in Zookeeper overload. <br>
  * The elector does not guarantee fencing (protection of shared resources) among
  * service instances. After it has notified an instance about becoming a leader,
  * then that instance must ensure that it meets the service consistency
@@ -70,10 +76,10 @@ import org.slf4j.LoggerFactory;
 public class ActiveStandbyElector implements StatCallback, StringCallback {
 
   /**
-   * Callback interface to interact with the ActiveStandbyElector object. <br/>
+   * Callback interface to interact with the ActiveStandbyElector object. <br>
    * The application will be notified with a callback only on state changes
    * (i.e. there will never be successive calls to becomeActive without an
-   * intermediate call to enterNeutralMode). <br/>
+   * intermediate call to enterNeutralMode). <br>
    * The callbacks will be running on Zookeeper client library threads. The
    * application should return from these callbacks quickly so as not to impede
    * Zookeeper client library performance and notifications. The app will
@@ -91,6 +97,8 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
      * 
      * Callback implementations are expected to manage their own
      * timeouts (e.g. when making an RPC to a remote node).
+     *
+     * @throws ServiceFailedException Service Failed Exception.
      */
     void becomeActive() throws ServiceFailedException;
 
@@ -105,7 +113,7 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
      * interface. The service may choose to ignore this or stop doing state
      * changing operations. Upon reconnection, the elector verifies the leader
      * status and calls back on the becomeActive and becomeStandby app
-     * interfaces. <br/>
+     * interfaces. <br>
      * Zookeeper disconnects can happen due to network issues or loss of
      * Zookeeper quorum. Thus enterNeutralMode can be used to guard against
      * split-brain issues. In such situations it might be prudent to call
@@ -119,6 +127,8 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
      * If there is any fatal error (e.g. wrong ACL's, unexpected Zookeeper
      * errors or Zookeeper persistent unavailability) then notifyFatalError is
      * called to notify the app about it.
+     *
+     * @param errorMessage error message.
      */
     void notifyFatalError(String errorMessage);
 
@@ -166,6 +176,7 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
   private final int zkSessionTimeout;
   private final List<ACL> zkAcl;
   private final List<ZKAuthInfo> zkAuthInfo;
+  private TruststoreKeystore truststoreKeystore;
   private byte[] appData;
   private final String zkLockFilePath;
   private final String zkBreadCrumbPath;
@@ -178,12 +189,12 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
   private ZooKeeper monitorLockNodeClient;
 
   /**
-   * Create a new ActiveStandbyElector object <br/>
+   * Create a new ActiveStandbyElector object <br>
    * The elector is created by providing to it the Zookeeper configuration, the
    * parent znode under which to create the znode and a reference to the
-   * callback interface. <br/>
+   * callback interface. <br>
    * The parent znode name must be the same for all service instances and
-   * different across services. <br/>
+   * different across services. <br>
    * After the leader has been lost, a new leader will be elected after the
    * session timeout expires. Hence, the app must set this parameter based on
    * its needs for failure response time. The session timeout must be greater
@@ -204,25 +215,30 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
    *                 ZK connection
    * @param app
    *          reference to callback interface object
-   * @throws IOException
+   * @param maxRetryNum maxRetryNum.
+   * @param truststoreKeystore truststore keystore, that we will use for ZK if SSL/TLS is enabled
+   * @throws IOException raised on errors performing I/O.
    * @throws HadoopIllegalArgumentException
+   *         if valid data is not supplied.
+   * @throws KeeperException
+   *         other zookeeper operation errors.
    */
   public ActiveStandbyElector(String zookeeperHostPorts,
       int zookeeperSessionTimeout, String parentZnodeName, List<ACL> acl,
       List<ZKAuthInfo> authInfo, ActiveStandbyElectorCallback app,
-      int maxRetryNum) throws IOException, HadoopIllegalArgumentException,
-      KeeperException {
+      int maxRetryNum, TruststoreKeystore truststoreKeystore)
+          throws IOException, HadoopIllegalArgumentException, KeeperException {
     this(zookeeperHostPorts, zookeeperSessionTimeout, parentZnodeName, acl,
-      authInfo, app, maxRetryNum, true);
+            authInfo, app, maxRetryNum, true, truststoreKeystore);
   }
 
   /**
-   * Create a new ActiveStandbyElector object <br/>
+   * Create a new ActiveStandbyElector object <br>
    * The elector is created by providing to it the Zookeeper configuration, the
    * parent znode under which to create the znode and a reference to the
-   * callback interface. <br/>
+   * callback interface. <br>
    * The parent znode name must be the same for all service instances and
-   * different across services. <br/>
+   * different across services. <br>
    * After the leader has been lost, a new leader will be elected after the
    * session timeout expires. Hence, the app must set this parameter based on
    * its needs for failure response time. The session timeout must be greater
@@ -245,13 +261,19 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
    *          reference to callback interface object
    * @param failFast
    *          whether need to add the retry when establishing ZK connection.
+   * @param maxRetryNum max Retry Num
+   * @param truststoreKeystore truststore keystore, that we will use for ZK if SSL/TLS is enabled
    * @throws IOException
+   *          raised on errors performing I/O.
    * @throws HadoopIllegalArgumentException
+   *          if valid data is not supplied.
+   * @throws KeeperException
+   *          other zookeeper operation errors.
    */
   public ActiveStandbyElector(String zookeeperHostPorts,
       int zookeeperSessionTimeout, String parentZnodeName, List<ACL> acl,
       List<ZKAuthInfo> authInfo, ActiveStandbyElectorCallback app,
-      int maxRetryNum, boolean failFast) throws IOException,
+      int maxRetryNum, boolean failFast, TruststoreKeystore truststoreKeystore) throws IOException,
       HadoopIllegalArgumentException, KeeperException {
     if (app == null || acl == null || parentZnodeName == null
         || zookeeperHostPorts == null || zookeeperSessionTimeout <= 0) {
@@ -266,6 +288,7 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
     zkLockFilePath = znodeWorkingDir + "/" + LOCK_FILENAME;
     zkBreadCrumbPath = znodeWorkingDir + "/" + BREADCRUMB_FILENAME;
     this.maxRetryNum = maxRetryNum;
+    this.truststoreKeystore = truststoreKeystore;
 
     // establish the ZK Connection for future API calls
     if (failFast) {
@@ -278,9 +301,9 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
   /**
    * To participate in election, the app will call joinElection. The result will
    * be notified by a callback on either the becomeActive or becomeStandby app
-   * interfaces. <br/>
+   * interfaces. <br>
    * After this the elector will automatically monitor the leader status and
-   * perform re-election if necessary<br/>
+   * perform re-election if necessary<br>
    * The app could potentially start off in standby mode and ignore the
    * becomeStandby call.
    * 
@@ -312,6 +335,8 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
   
   /**
    * @return true if the configured parent znode exists
+   * @throws IOException raised on errors performing I/O.
+   * @throws InterruptedException interrupted exception.
    */
   public synchronized boolean parentZNodeExists()
       throws IOException, InterruptedException {
@@ -327,11 +352,18 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
   /**
    * Utility function to ensure that the configured base znode exists.
    * This recursively creates the znode as well as all of its parents.
+   *
+   * @throws IOException raised on errors performing I/O.
+   * @throws InterruptedException interrupted exception.
+   * @throws KeeperException other zookeeper operation errors.
    */
   public synchronized void ensureParentZNode()
-      throws IOException, InterruptedException {
+      throws IOException, InterruptedException, KeeperException {
     Preconditions.checkState(!wantToBeInElection,
         "ensureParentZNode() may not be called while in the election");
+    if (zkClient == null) {
+      createConnection();
+    }
 
     String pathParts[] = znodeWorkingDir.split("/");
     Preconditions.checkArgument(pathParts.length >= 1 &&
@@ -368,6 +400,9 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
    * This recursively deletes everything within the znode as well as the
    * parent znode itself. It should only be used when it's certain that
    * no electors are currently participating in the election.
+   *
+   * @throws IOException raised on errors performing I/O.
+   * @throws InterruptedException interrupted exception.
    */
   public synchronized void clearParentZNode()
       throws IOException, InterruptedException {
@@ -394,11 +429,11 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
 
   /**
    * Any service instance can drop out of the election by calling quitElection. 
-   * <br/>
+   * <br>
    * This will lose any leader status, if held, and stop monitoring of the lock
-   * node. <br/>
+   * node. <br>
    * If the instance wants to participate in election again, then it needs to
-   * call joinElection(). <br/>
+   * call joinElection(). <br>
    * This allows service instances to take themselves out of rotation for known
    * impending unavailable states (e.g. long GC pause or software upgrade).
    * 
@@ -432,6 +467,7 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
    * @throws KeeperException
    *           other zookeeper operation errors
    * @throws InterruptedException
+   *           interrupted exception.
    * @throws IOException
    *           when ZooKeeper connection could not be established
    */
@@ -576,6 +612,11 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
     fatalError(errorMessage);
   }
 
+  @VisibleForTesting
+  public boolean getWantToBeInElection() {
+    return wantToBeInElection;
+  }
+
   /**
    * We failed to become active. Re-join the election, but
    * sleep for a few seconds after terminating our existing
@@ -676,7 +717,7 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
    * inherit and mock out the zookeeper instance
    * 
    * @return new zookeeper client instance
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    * @throws KeeperException zookeeper connectionloss exception
    */
   protected synchronized ZooKeeper connectToZooKeeper() throws IOException,
@@ -706,10 +747,22 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
    * inherit and pass in a mock object for zookeeper
    *
    * @return new zookeeper client instance
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   protected ZooKeeper createZooKeeper() throws IOException {
-    return new ZooKeeper(zkHostPort, zkSessionTimeout, watcher);
+    ZKClientConfig zkClientConfig = new ZKClientConfig();
+    if (truststoreKeystore != null) {
+      try {
+        SecurityUtil.setSslConfiguration(zkClientConfig, truststoreKeystore);
+      } catch (ConfigurationException ce) {
+        throw new IOException(ce);
+      }
+    }
+    return initiateZookeeper(zkClientConfig);
+  }
+
+  protected ZooKeeper initiateZookeeper(ZKClientConfig zkClientConfig) throws IOException {
+    return new ZooKeeper(zkHostPort, zkSessionTimeout, watcher, zkClientConfig);
   }
 
   private void fatalError(String errorMessage) {
@@ -773,6 +826,8 @@ public class ActiveStandbyElector implements StatCallback, StringCallback {
    * Sleep for the given number of milliseconds.
    * This is non-static, and separated out, so that unit tests
    * can override the behavior not to sleep.
+   *
+   * @param sleepMs sleep ms.
    */
   @VisibleForTesting
   protected void sleepFor(int sleepMs) {

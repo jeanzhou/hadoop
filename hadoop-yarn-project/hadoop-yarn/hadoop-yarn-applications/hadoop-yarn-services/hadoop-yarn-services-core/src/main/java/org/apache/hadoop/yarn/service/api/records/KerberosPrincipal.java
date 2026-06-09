@@ -34,8 +34,6 @@ import java.util.Objects;
 @InterfaceAudience.Public
 @InterfaceStability.Unstable
 @ApiModel(description = "The kerberos principal of the service.")
-@javax.annotation.Generated(value = "io.swagger.codegen.languages" +
-    ".JavaClientCodegen", date = "2017-11-20T11:29:11.785-08:00")
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class KerberosPrincipal implements Serializable {
   private static final long serialVersionUID = -6431667195287650037L;
@@ -73,8 +71,9 @@ public class KerberosPrincipal implements Serializable {
   }
 
   /**
-   * The URI of the kerberos keytab. It supports two schemes \&quot;
-   * hdfs\&quot; and \&quot;file\&quot;. If the URI starts with \&quot;
+   * The URI of the kerberos keytab. It supports hadoop supported schemes
+   * like \&quot;hdfs\&quot; \&quot;file\&quot; \&quot;s3\&quot;
+   *  \&quot;viewfs\&quot; etc.If the URI starts with \&quot;
    * hdfs://\&quot; scheme, it indicates the path on hdfs where the keytab is
    * stored. The keytab will be localized by YARN and made available to AM in
    * its local directory. If the URI starts with \&quot;file://\&quot;
@@ -83,13 +82,14 @@ public class KerberosPrincipal implements Serializable {
    *
    * @return keytab
    **/
-  @ApiModelProperty(value = "The URI of the kerberos keytab. It supports two " +
-      "schemes \"hdfs\" and \"file\". If the URI starts with \"hdfs://\" " +
-      "scheme, it indicates the path on hdfs where the keytab is stored. The " +
-      "keytab will be localized by YARN and made available to AM in its local" +
-      " directory. If the URI starts with \"file://\" scheme, it indicates a " +
-      "path on the local host where the keytab is presumbaly installed by " +
-      "admins upfront. ")
+  @ApiModelProperty(value = "The URI of the kerberos keytab. It supports"
+      + " Hadoop supported filesystem types like \"hdfs\", \"file\","
+      + " \"viewfs\", \"s3\" etc.If the URI starts with \"hdfs://\" scheme, "
+      + "it indicates the path on hdfs where the keytab is stored. The "
+      + "keytab will be localized by YARN and made available to AM in its local"
+      + " directory. If the URI starts with \"file://\" scheme, it indicates a "
+      + "path on the local host where the keytab is presumbaly installed by "
+      + "admins upfront. ")
   public String getKeytab() {
     return keytab;
   }
@@ -122,12 +122,12 @@ public class KerberosPrincipal implements Serializable {
   @Override
   public String toString() {
     StringBuilder sb = new StringBuilder();
-    sb.append("class KerberosPrincipal {\n");
+    sb.append("class KerberosPrincipal {\n")
 
-    sb.append("    principalName: ").append(toIndentedString(principalName))
-        .append("\n");
-    sb.append("    keytab: ").append(toIndentedString(keytab)).append("\n");
-    sb.append("}");
+        .append("    principalName: ").append(toIndentedString(principalName))
+        .append("\n")
+        .append("    keytab: ").append(toIndentedString(keytab)).append("\n")
+        .append("}");
     return sb.toString();
   }
 

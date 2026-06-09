@@ -17,13 +17,26 @@
  */
 package org.apache.hadoop.io.file.tfile;
 
-import org.junit.Test;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestCompression {
+
+  @BeforeAll
+  public static void resetConfigBeforeAll() {
+    Compression.Algorithm.LZO.conf.setBoolean("test.reload.lzo.codec", true);
+  }
+
+  @AfterAll
+  public static void resetConfigAfterAll() {
+    Compression.Algorithm.LZO.conf.setBoolean("test.reload.lzo.codec", false);
+  }
 
   /**
    * Regression test for HADOOP-11418.
@@ -38,4 +51,22 @@ public class TestCompression {
     assertEquals(defaultCodec,
         Compression.Algorithm.LZO.getCodec().getClass().getName());
   }
+
+
+  @Test
+  public void testMisconfiguredLZOCodec() throws Exception {
+    // Dummy codec
+    String defaultCodec = "org.apache.hadoop.io.compress.InvalidLzoCodec";
+    Compression.Algorithm.conf.set(
+        Compression.Algorithm.CONF_LZO_CLASS, defaultCodec);
+    IOException ioEx = LambdaTestUtils.intercept(
+        IOException.class,
+        defaultCodec,
+        () -> Compression.Algorithm.LZO.getCodec());
+
+    if (!(ioEx.getCause() instanceof ClassNotFoundException)) {
+      throw ioEx;
+    }
+  }
+
 }

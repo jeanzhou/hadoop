@@ -19,7 +19,6 @@
 package org.apache.hadoop.util;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -28,10 +27,20 @@ import java.lang.reflect.Method;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarInputStream;
@@ -46,6 +55,10 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.IOUtils.NullOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static java.nio.file.attribute.AclEntryFlag.DIRECTORY_INHERIT;
+import static java.nio.file.attribute.AclEntryFlag.FILE_INHERIT;
+import static java.nio.file.attribute.AclEntryType.ALLOW;
 
 /** Run a Hadoop job jar. */
 @InterfaceAudience.Private
@@ -76,7 +89,11 @@ public class RunJar {
    */
   public static final String HADOOP_CLIENT_CLASSLOADER_SYSTEM_CLASSES =
       "HADOOP_CLIENT_CLASSLOADER_SYSTEM_CLASSES";
-
+  /**
+   * Environment key for disabling unjar in client code.
+   */
+  public static final String HADOOP_CLIENT_SKIP_UNJAR =
+      "HADOOP_CLIENT_SKIP_UNJAR";
   /**
    * Buffer size for copy the content of compressed file to new file.
    */
@@ -93,7 +110,7 @@ public class RunJar {
    * @throws IOException if an I/O error has occurred or toDir
    * cannot be created and does not already exist
    */
-  public static void unJar(File jarFile, File toDir) throws IOException {
+  public void unJar(File jarFile, File toDir) throws IOException {
     unJar(jarFile, toDir, MATCH_ANY);
   }
 
@@ -113,14 +130,19 @@ public class RunJar {
       throws IOException {
     try (JarInputStream jar = new JarInputStream(inputStream)) {
       int numOfFailedLastModifiedSet = 0;
+      String targetDirPath = toDir.getCanonicalPath() + File.separator;
       for (JarEntry entry = jar.getNextJarEntry();
            entry != null;
            entry = jar.getNextJarEntry()) {
         if (!entry.isDirectory() &&
             unpackRegex.matcher(entry.getName()).matches()) {
           File file = new File(toDir, entry.getName());
+          if (!file.getCanonicalPath().startsWith(targetDirPath)) {
+            throw new IOException("expanding " + entry.getName()
+                + " would create file outside of " + toDir);
+          }
           ensureDirectory(file.getParentFile());
-          try (OutputStream out = new FileOutputStream(file)) {
+          try (OutputStream out = Files.newOutputStream(file.toPath())) {
             IOUtils.copyBytes(jar, out, BUFFER_SIZE);
           }
           if (!file.setLastModified(entry.getTime())) {
@@ -147,6 +169,7 @@ public class RunJar {
    * @param inputStream the jar stream to unpack
    * @param toDir the destination directory into which to unpack the jar
    * @param unpackRegex the pattern to match jar entries against
+   * @param name name.
    *
    * @throws IOException if an I/O error has occurred or toDir
    * cannot be created and does not already exist
@@ -157,7 +180,7 @@ public class RunJar {
       throws IOException{
     File file = new File(toDir, name);
     ensureDirectory(toDir);
-    try (OutputStream jar = new FileOutputStream(file);
+    try (OutputStream jar = Files.newOutputStream(file.toPath());
          TeeInputStream teeInputStream = new TeeInputStream(inputStream, jar)) {
       unJar(teeInputStream, toDir, unpackRegex);
     }
@@ -178,6 +201,7 @@ public class RunJar {
       throws IOException {
     try (JarFile jar = new JarFile(jarFile)) {
       int numOfFailedLastModifiedSet = 0;
+      String targetDirPath = toDir.getCanonicalPath() + File.separator;
       Enumeration<JarEntry> entries = jar.entries();
       while (entries.hasMoreElements()) {
         final JarEntry entry = entries.nextElement();
@@ -185,8 +209,12 @@ public class RunJar {
             unpackRegex.matcher(entry.getName()).matches()) {
           try (InputStream in = jar.getInputStream(entry)) {
             File file = new File(toDir, entry.getName());
+            if (!file.getCanonicalPath().startsWith(targetDirPath)) {
+              throw new IOException("expanding " + entry.getName()
+                  + " would create file outside of " + toDir);
+            }
             ensureDirectory(file.getParentFile());
-            try (OutputStream out = new FileOutputStream(file)) {
+            try (OutputStream out = Files.newOutputStream(file.toPath())) {
               IOUtils.copyBytes(in, out, BUFFER_SIZE);
             }
             if (!file.setLastModified(entry.getTime())) {
@@ -217,7 +245,11 @@ public class RunJar {
   }
 
   /** Run a Hadoop job jar.  If the main class is not in the jar's manifest,
-   * then it must be provided on the command line. */
+   * then it must be provided on the command line.
+   *
+   * @param args args.
+   * @throws Throwable error.
+   */
   public static void main(String[] args) throws Throwable {
     new RunJar().run(args);
   }
@@ -263,26 +295,18 @@ public class RunJar {
     }
     mainClassName = mainClassName.replaceAll("/", ".");
 
-    File tmpDir = new File(System.getProperty("java.io.tmpdir"));
-    ensureDirectory(tmpDir);
-
     final File workDir;
     try {
-      workDir = File.createTempFile("hadoop-unjar", "", tmpDir);
-    } catch (IOException ioe) {
+      workDir = createWorkDirectory();
+    } catch (IOException | SecurityException e) {
       // If user has insufficient perms to write to tmpDir, default
       // "Permission denied" message doesn't specify a filename.
       System.err.println("Error creating temp dir in java.io.tmpdir "
-                         + tmpDir + " due to " + ioe.getMessage());
+                         + System.getProperty("java.io.tmpdir") + " due to "
+                         + e.getMessage());
       System.exit(-1);
       return;
     }
-
-    if (!workDir.delete()) {
-      System.err.println("Delete failed for " + workDir);
-      System.exit(-1);
-    }
-    ensureDirectory(workDir);
 
     ShutdownHookManager.get().addShutdownHook(
         new Runnable() {
@@ -292,8 +316,9 @@ public class RunJar {
           }
         }, SHUTDOWN_HOOK_PRIORITY);
 
-
-    unJar(file, workDir);
+    if (!skipUnjar()) {
+      unJar(file, workDir);
+    }
 
     ClassLoader loader = createClassLoader(file, workDir);
 
@@ -309,6 +334,55 @@ public class RunJar {
     } catch (InvocationTargetException e) {
       throw e.getTargetException();
     }
+  }
+
+  static File createWorkDirectory() throws IOException {
+    File tmpDir = new File(System.getProperty("java.io.tmpdir"));
+    ensureDirectory(tmpDir);
+
+    File workDir = Files.createTempDirectory(tmpDir.toPath(), "hadoop-unjar",
+        directoryPermissions()).toFile();
+    ensureDirectory(workDir);
+    return workDir;
+  }
+
+  private static FileAttribute<?> directoryPermissions() throws IOException {
+    Set<String> views = FileSystems.getDefault().supportedFileAttributeViews();
+    if (views.contains("posix")) {
+      return PosixFilePermissions
+          .asFileAttribute(PosixFilePermissions.fromString("rwx------"));
+    } else if (views.contains("acl")) {
+      return userOnly();
+    } else {
+      throw new IOException("unrecognized FileSystem type " +
+          FileSystems.getDefault());
+    }
+  }
+
+  private static FileAttribute<?> userOnly() throws IOException {
+    UserPrincipal user =
+        FileSystems.getDefault()
+            .getUserPrincipalLookupService()
+            .lookupPrincipalByName(System.getProperty("user.name"));
+    List<AclEntry> acl =
+        Collections.singletonList(AclEntry.newBuilder()
+            .setType(ALLOW)
+            .setPrincipal(user)
+            .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+            .setFlags(DIRECTORY_INHERIT, FILE_INHERIT)
+            .build());
+    return
+        new FileAttribute<List<AclEntry>>() {
+          @Override
+          public String name() {
+            return "acl:acl";
+          }
+
+          @Override
+          public List<AclEntry> value() {
+            return acl;
+          }
+        };
   }
 
   /**
@@ -362,6 +436,10 @@ public class RunJar {
 
   boolean useClientClassLoader() {
     return Boolean.parseBoolean(System.getenv(HADOOP_USE_CLIENT_CLASSLOADER));
+  }
+
+  boolean skipUnjar() {
+    return Boolean.parseBoolean(System.getenv(HADOOP_CLIENT_SKIP_UNJAR));
   }
 
   String getHadoopClasspath() {

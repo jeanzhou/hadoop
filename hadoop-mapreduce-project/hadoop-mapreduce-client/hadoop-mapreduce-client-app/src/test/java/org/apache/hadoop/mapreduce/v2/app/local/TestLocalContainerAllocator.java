@@ -17,7 +17,12 @@
 */
 package org.apache.hadoop.mapreduce.v2.app.local;
 
-import static org.mockito.Matchers.isA;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -43,6 +48,7 @@ import org.apache.hadoop.mapreduce.v2.app.rm.ContainerAllocatorEvent;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
@@ -68,8 +74,7 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.ipc.RPCUtil;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 public class TestLocalContainerAllocator {
@@ -89,7 +94,7 @@ public class TestLocalContainerAllocator {
     lca.start();
     try {
       lca.heartbeat();
-      Assert.fail("heartbeat was supposed to throw");
+      fail("heartbeat was supposed to throw");
     } catch (YarnException e) {
       // YarnException is expected
     } finally {
@@ -103,7 +108,7 @@ public class TestLocalContainerAllocator {
     lca.start();
     try {
       lca.heartbeat();
-      Assert.fail("heartbeat was supposed to throw");
+      fail("heartbeat was supposed to throw");
     } catch (YarnRuntimeException e) {
       // YarnRuntimeException is expected
     } finally {
@@ -171,14 +176,13 @@ public class TestLocalContainerAllocator {
       }
     }
 
-    Assert.assertEquals("too many AMRM tokens", 1, tokenCount);
-    Assert.assertArrayEquals("token identifier not updated",
-        newToken.getIdentifier(), ugiToken.getIdentifier());
-    Assert.assertArrayEquals("token password not updated",
-        newToken.getPassword(), ugiToken.getPassword());
-    Assert.assertEquals("AMRM token service not updated",
-        new Text(ClientRMProxy.getAMRMTokenService(conf)),
-        ugiToken.getService());
+    assertEquals(1, tokenCount, "too many AMRM tokens");
+    assertArrayEquals(newToken.getIdentifier(), ugiToken.getIdentifier(),
+        "token identifier not updated");
+    assertArrayEquals(newToken.getPassword(), ugiToken.getPassword(),
+        "token password not updated");
+    assertEquals(new Text(ClientRMProxy.getAMRMTokenService(conf)),
+        ugiToken.getService(), "AMRM token service not updated");
   }
 
   @Test
@@ -201,9 +205,9 @@ public class TestLocalContainerAllocator {
     verify(eventHandler, times(1)).handle(containerAssignedCaptor.capture());
     Container container = containerAssignedCaptor.getValue().getContainer();
     Resource containerResource = container.getResource();
-    Assert.assertNotNull(containerResource);
-    Assert.assertEquals(containerResource.getMemorySize(), 0);
-    Assert.assertEquals(containerResource.getVirtualCores(), 0);
+    assertNotNull(containerResource);
+    assertThat(containerResource.getMemorySize()).isEqualTo(0);
+    assertThat(containerResource.getVirtualCores()).isEqualTo(0);
   }
 
   private static ContainerAllocatorEvent createContainerRequestEvent() {
@@ -234,7 +238,7 @@ public class TestLocalContainerAllocator {
 
     @Override
     protected void startAllocatorThread() {
-      allocatorThread = new Thread();
+      allocatorThread = new SubjectInheritingThread();
     }
 
     @Override
@@ -281,8 +285,7 @@ public class TestLocalContainerAllocator {
     @Override
     public AllocateResponse allocate(AllocateRequest request)
         throws YarnException, IOException {
-      Assert.assertEquals("response ID mismatch",
-          responseId, request.getResponseId());
+      assertEquals(responseId, request.getResponseId(), "response ID mismatch");
       ++responseId;
       org.apache.hadoop.yarn.api.records.Token yarnToken = null;
       if (amToken != null) {

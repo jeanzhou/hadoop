@@ -24,42 +24,55 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.server.federation.policies.FederationPolicyUtils;
 import org.apache.hadoop.yarn.server.federation.policies.dao.WeightedPolicyInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterId;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterIdInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterInfo;
 import org.apache.hadoop.yarn.server.federation.store.records.SubClusterState;
-import org.apache.hadoop.yarn.server.federation.utils.FederationPoliciesTestUtil;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Simple test class for the {@link WeightedRandomRouterPolicy}. Generate large
- * number of randomized tests to check we are weighiting correctly even if
+ * number of randomized tests to check we are weighting correctly even if
  * clusters go inactive.
  */
 public class TestWeightedRandomRouterPolicy extends BaseRouterPoliciesTest {
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     setPolicy(new WeightedRandomRouterPolicy());
     setPolicyInfo(new WeightedPolicyInfo());
+
+    configureWeights(20);
+
+    setupContext();
+  }
+
+  public void configureWeights(float numSubClusters) {
+    // Set random seed to remove random failures
+    FederationPolicyUtils.setRand(5);
+    setRand(5);
+
     Map<SubClusterIdInfo, Float> routerWeights = new HashMap<>();
     Map<SubClusterIdInfo, Float> amrmWeights = new HashMap<>();
 
-    float numSubClusters = 20;
     // simulate N subclusters each with a 5% chance of being inactive
     for (int i = 0; i < numSubClusters; i++) {
       SubClusterIdInfo sc = new SubClusterIdInfo("sc" + i);
       // with 5% omit a subcluster
       if (getRand().nextFloat() < 0.95f) {
-        SubClusterInfo sci = mock(SubClusterInfo.class);
-        when(sci.getState()).thenReturn(SubClusterState.SC_RUNNING);
-        when(sci.getSubClusterId()).thenReturn(sc.toId());
-        getActiveSubclusters().put(sc.toId(), sci);
+        long now = Time.now();
+        SubClusterInfo federationSubClusterInfo = SubClusterInfo.newInstance(
+            sc.toId(), "dns1:80", "dns1:81", "dns1:82", "dns1:83",
+            now - 1000, SubClusterState.SC_RUNNING, now - 2000, generateClusterMetricsInfo(i));
+        getActiveSubclusters().put(sc.toId(), federationSubClusterInfo);
       }
 
       // 80% of the weight is evenly spread, 20% is randomly generated
@@ -74,10 +87,6 @@ public class TestWeightedRandomRouterPolicy extends BaseRouterPoliciesTest {
     }
     getPolicyInfo().setRouterPolicyWeights(routerWeights);
     getPolicyInfo().setAMRMPolicyWeights(amrmWeights);
-
-    FederationPoliciesTestUtil.initializePolicyContext(getPolicy(),
-        getPolicyInfo(), getActiveSubclusters());
-
   }
 
   @Test
@@ -120,17 +129,13 @@ public class TestWeightedRandomRouterPolicy extends BaseRouterPoliciesTest {
       // make sure that the weights is respected among active subclusters
       // and no jobs are routed to inactive subclusters.
       if (getActiveSubclusters().containsKey(counterEntry.getKey())) {
-        Assert.assertTrue(
+        assertTrue(Math.abs(actualWeight - expectedWeight) < 0.01,
             "Id " + counterEntry.getKey() + " Actual weight: " + actualWeight
-                + " expected weight: " + expectedWeight,
-            Math.abs(actualWeight - expectedWeight) < 0.01);
+            + " expected weight: " + expectedWeight);
       } else {
-        Assert
-            .assertTrue(
-                "Id " + counterEntry.getKey() + " Actual weight: "
-                    + actualWeight + " expected weight: " + expectedWeight,
-                actualWeight == 0);
-
+        assertTrue(actualWeight == 0,
+            "Id " + counterEntry.getKey() + " Actual weight: "
+            + actualWeight + " expected weight: " + expectedWeight);
       }
     }
   }

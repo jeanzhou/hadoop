@@ -35,7 +35,7 @@ import javax.servlet.http.HttpServletRequest;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -142,6 +142,8 @@ public class TestGlobalFilter extends HttpServerFunctionalTest {
     for(int i = 0; i < urls.length; i++) {
       assertTrue(RECORDS.remove(urls[i]));
     }
-    assertTrue(RECORDS.isEmpty());
+    assertTrue(RECORDS.size()==1);
+    // Accesing "/" will redirect to /index.html
+    assertTrue(RECORDS.contains("/index.html"));
   }
 }

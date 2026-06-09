@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.security;
 
-import static org.mockito.Matchers.anyString;
+import static org.mockito.ArgumentMatchers.anyString;
 
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.contains;
@@ -28,7 +28,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
@@ -38,15 +37,16 @@ import javax.naming.directory.Attributes;
 import javax.naming.directory.SearchControls;
 
 import org.apache.hadoop.conf.Configuration;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @SuppressWarnings("unchecked")
 public class TestLdapGroupsMappingWithPosixGroup
   extends TestLdapGroupsMappingBase {
 
-  @Before
+  @BeforeEach
   public void setupMocks() throws NamingException {
     Attribute uidNumberAttr = mock(Attribute.class);
     Attribute gidNumberAttr = mock(Attribute.class);
@@ -62,7 +62,7 @@ public class TestLdapGroupsMappingWithPosixGroup
   }
 
   @Test
-  public void testGetGroups() throws IOException, NamingException {
+  public void testGetGroups() throws NamingException {
     // The search functionality of the mock context is reused, so we will
     // return the user NamingEnumeration first, and then the group
     when(getContext().search(anyString(), contains("posix"),
@@ -73,10 +73,9 @@ public class TestLdapGroupsMappingWithPosixGroup
   }
 
   private void doTestGetGroups(List<String> expectedGroups, int searchTimes)
-      throws IOException, NamingException {
-    Configuration conf = new Configuration();
-    // Set this, so we don't throw an exception
-    conf.set(LdapGroupsMapping.LDAP_URL_KEY, "ldap://test");
+      throws NamingException {
+    String ldapUrl = "ldap://test";
+    Configuration conf = getBaseConf(ldapUrl);
     conf.set(LdapGroupsMapping.GROUP_SEARCH_FILTER_KEY,
         "(objectClass=posixGroup)(cn={0})");
     conf.set(LdapGroupsMapping.USER_SEARCH_FILTER_KEY,
@@ -92,11 +91,11 @@ public class TestLdapGroupsMappingWithPosixGroup
     // regardless of input
     List<String> groups = groupsMapping.getGroups("some_user");
 
-    Assert.assertEquals(expectedGroups, groups);
+    assertEquals(expectedGroups, groups);
 
     groupsMapping.getConf().set(LdapGroupsMapping.POSIX_UID_ATTR_KEY, "uid");
 
-    Assert.assertEquals(expectedGroups, groups);
+    assertEquals(expectedGroups, groups);
 
     // We should have searched for a user, and then two groups
     verify(getContext(), times(searchTimes)).search(anyString(),

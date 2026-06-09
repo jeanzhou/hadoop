@@ -23,8 +23,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.ipc.Server;
@@ -46,12 +46,12 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 @Private
 @Unstable
 public abstract class FSQueue implements Queue, Schedulable {
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       FSQueue.class.getName());
 
   private Resource fairShare = Resources.createResource(0, 0);
@@ -83,6 +83,8 @@ public abstract class FSQueue implements Queue, Schedulable {
   private long minSharePreemptionTimeout = Long.MAX_VALUE;
   private float fairSharePreemptionThreshold = 0.5f;
   private boolean preemptable = true;
+  private boolean isDynamic = true;
+  protected Resource maxContainerAllocation;
 
   public FSQueue(String name, FairScheduler scheduler, FSParentQueue parent) {
     this.name = name;
@@ -162,6 +164,12 @@ public abstract class FSQueue implements Queue, Schedulable {
     this.maxShare = maxShare;
   }
 
+  public void setMaxContainerAllocation(Resource maxContainerAllocation){
+    this.maxContainerAllocation = maxContainerAllocation;
+  }
+
+  public abstract Resource getMaximumContainerAllocation();
+
   @Override
   public Resource getMaxShare() {
     Resource maxResource = maxShare.getResource(scheduler.getClusterResource());
@@ -174,6 +182,10 @@ public abstract class FSQueue implements Queue, Schedulable {
           + "min resources %s", getName(), maxResource, minShare));
     }
     return result;
+  }
+
+  public ConfigurableResource getRawMaxShare() {
+    return maxShare;
   }
 
   public Resource getReservedResource() {
@@ -199,7 +211,7 @@ public abstract class FSQueue implements Queue, Schedulable {
   }
 
   @VisibleForTesting
-  protected float getMaxAMShare() {
+  public float getMaxAMShare() {
     return maxAMShare;
   }
 
@@ -222,6 +234,7 @@ public abstract class FSQueue implements Queue, Schedulable {
   @Override
   public QueueInfo getQueueInfo(boolean includeChildQueues, boolean recursive) {
     QueueInfo queueInfo = recordFactory.newRecordInstance(QueueInfo.class);
+    queueInfo.setSchedulerType("FairScheduler");
     queueInfo.setQueueName(getQueueName());
 
     if (scheduler.getClusterResource().getMemorySize() == 0) {
@@ -238,7 +251,37 @@ public abstract class FSQueue implements Queue, Schedulable {
           getFairShare().getMemorySize());
     }
 
-    ArrayList<QueueInfo> childQueueInfos = new ArrayList<QueueInfo>();
+    // set Weight
+    queueInfo.setWeight(getWeight());
+
+    // set MinShareResource
+    Resource minShareResource = getMinShare();
+    queueInfo.setMinResourceVCore(minShareResource.getVirtualCores());
+    queueInfo.setMinResourceMemory(minShareResource.getMemorySize());
+
+    // set MaxShareResource
+    Resource maxShareResource =
+        Resources.componentwiseMin(getMaxShare(), scheduler.getClusterResource());
+    queueInfo.setMaxResourceVCore(maxShareResource.getVirtualCores());
+    queueInfo.setMaxResourceMemory(maxShareResource.getMemorySize());
+
+    // set ReservedResource
+    Resource newReservedResource = getReservedResource();
+    queueInfo.setReservedResourceVCore(newReservedResource.getVirtualCores());
+    queueInfo.setReservedResourceMemory(newReservedResource.getMemorySize());
+
+    // set SteadyFairShare
+    Resource newSteadyFairShare = getSteadyFairShare();
+    queueInfo.setSteadyFairShareVCore(newSteadyFairShare.getVirtualCores());
+    queueInfo.setSteadyFairShareMemory(newSteadyFairShare.getMemorySize());
+
+    // set MaxRunningApp
+    queueInfo.setMaxRunningApp(getMaxRunningApps());
+
+    // set Preemption
+    queueInfo.setPreemptionDisabled(isPreemptable());
+
+    ArrayList<QueueInfo> childQueueInfos = new ArrayList<>();
     if (includeChildQueues) {
       Collection<FSQueue> childQueues = getChildQueues();
       for (FSQueue child : childQueues) {
@@ -289,12 +332,13 @@ public abstract class FSQueue implements Queue, Schedulable {
   public void setFairShare(Resource fairShare) {
     this.fairShare = fairShare;
     metrics.setFairShare(fairShare);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("The updated fairShare for " + getName() + " is " + fairShare);
-    }
+    LOG.debug("The updated fairShare for {} is {}", getName(), fairShare);
   }
 
-  /** Get the steady fair share assigned to this Schedulable. */
+  /**
+   * Get the steady fair share assigned to this Schedulable.
+   * @return the steady fair share assigned to this Schedulable.
+   */
   public Resource getSteadyFairShare() {
     return steadyFairShare;
   }
@@ -354,7 +398,7 @@ public abstract class FSQueue implements Queue, Schedulable {
    *
    * To be called holding the scheduler writelock.
    *
-   * @param fairShare
+   * @param fairShare queue's fairshare.
    */
   public void update(Resource fairShare) {
     setFairShare(fairShare);
@@ -397,6 +441,8 @@ public abstract class FSQueue implements Queue, Schedulable {
 
   /**
    * Gets the children of this queue, if any.
+   *
+   * @return the children of this queue.
    */
   public abstract List<FSQueue> getChildQueues();
   
@@ -410,6 +456,8 @@ public abstract class FSQueue implements Queue, Schedulable {
   /**
    * Return the number of apps for which containers can be allocated.
    * Includes apps in subqueues.
+   *
+   * @return the number of apps.
    */
   public abstract int getNumRunnableApps();
   
@@ -420,10 +468,8 @@ public abstract class FSQueue implements Queue, Schedulable {
    */
   boolean assignContainerPreCheck(FSSchedulerNode node) {
     if (node.getReservedContainer() != null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Assigning container failed on node '" + node.getNodeName()
-            + " because it has reserved containers.");
-      }
+      LOG.debug("Assigning container failed on node '{}' because it has"
+          + " reserved containers.", node.getNodeName());
       return false;
     } else if (!Resources.fitsIn(getResourceUsage(), getMaxShare())) {
       if (LOG.isDebugEnabled()) {
@@ -439,6 +485,8 @@ public abstract class FSQueue implements Queue, Schedulable {
 
   /**
    * Returns true if queue has at least one app running.
+   *
+   * @return true, if queue has at least one app running; otherwise, false;
    */
   public boolean isActive() {
     return getNumRunnableApps() > 0;
@@ -489,7 +537,7 @@ public abstract class FSQueue implements Queue, Schedulable {
    *
    * @param res the resource to increase
    */
-  protected void incUsedResource(Resource res) {
+  public void incUsedResource(Resource res) {
     synchronized (resourceUsage) {
       Resources.addTo(resourceUsage, res);
       if (parent != null) {
@@ -585,4 +633,14 @@ public abstract class FSQueue implements Queue, Schedulable {
    * @param sb the {code StringBuilder} which holds queue states
    */
   protected abstract void dumpStateInternal(StringBuilder sb);
+
+  public boolean isDynamic() {
+    return isDynamic;
+  }
+
+  public void setDynamic(boolean dynamic) {
+    this.isDynamic = dynamic;
+  }
+
+  public abstract boolean isEmpty();
 }

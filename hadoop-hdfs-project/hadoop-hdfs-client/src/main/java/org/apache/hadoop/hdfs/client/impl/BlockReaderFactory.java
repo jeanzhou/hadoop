@@ -27,11 +27,12 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.net.InetSocketAddress;
+import java.nio.channels.UnresolvedAddressException;
 import java.util.List;
 
-import com.google.common.io.ByteArrayDataOutput;
-import com.google.common.io.ByteStreams;
-import org.apache.commons.lang.mutable.MutableBoolean;
+import org.apache.hadoop.thirdparty.com.google.common.io.ByteArrayDataOutput;
+import org.apache.hadoop.thirdparty.com.google.common.io.ByteStreams;
+import org.apache.commons.lang3.mutable.MutableBoolean;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
@@ -73,9 +74,8 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.PerformanceAdvisory;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import org.apache.htrace.core.Tracer;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,6 +87,7 @@ import org.slf4j.LoggerFactory;
 @InterfaceAudience.Private
 public class BlockReaderFactory implements ShortCircuitReplicaCreator {
   static final Logger LOG = LoggerFactory.getLogger(BlockReaderFactory.class);
+  private static final int SMALL_BUFFER_SIZE = 512;
 
   public static class FailureInjector {
     public void injectRequestFileDescriptorsFailure() throws IOException {
@@ -190,11 +191,6 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
   private Configuration configuration;
 
   /**
-   * The HTrace tracer to use.
-   */
-  private Tracer tracer;
-
-  /**
    * Information about the domain socket path we should use to connect to the
    * local peer-- or null if we haven't examined the local domain socket.
    */
@@ -295,11 +291,6 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
   public BlockReaderFactory setConfiguration(
       Configuration configuration) {
     this.configuration = configuration;
-    return this;
-  }
-
-  public BlockReaderFactory setTracer(Tracer tracer) {
-    this.tracer = tracer;
     return this;
   }
 
@@ -421,7 +412,7 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
           return new ExternalBlockReader(accessor, visibleLength, startOffset);
         }
       } catch (Throwable t) {
-        LOG.warn("Failed to construct new object of type " +
+        LOG.warn("Failed to construct new object of type {}",
             cls.getName(), t);
       }
     }
@@ -451,7 +442,7 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
     try {
       return BlockReaderLocalLegacy.newBlockReader(conf,
           userGroupInformation, configuration, fileName, block, token,
-          datanode, startOffset, length, storageType, tracer);
+          datanode, startOffset, length, storageType);
     } catch (RemoteException remoteException) {
       ioe = remoteException.unwrapRemoteException(
                 InvalidToken.class, AccessControlException.class);
@@ -467,8 +458,8 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
       // which requires us to disable legacy SCR.
       throw ioe;
     }
-    LOG.warn(this + ": error creating legacy BlockReaderLocal.  " +
-        "Disabling legacy local reads.", ioe);
+    LOG.warn("{}: error creating legacy BlockReaderLocal.  " +
+        "Disabling legacy local reads.", this, ioe);
     clientContext.setDisableLegacyBlockReaderLocal();
     return null;
   }
@@ -485,7 +476,8 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
               "giving up on BlockReaderLocal.", this, pathInfo);
       return null;
     }
-    ShortCircuitCache cache = clientContext.getShortCircuitCache();
+    ShortCircuitCache cache =
+        clientContext.getShortCircuitCache(block.getBlockId());
     ExtendedBlockId key = new ExtendedBlockId(block.getBlockId(),
         block.getBlockPoolId());
     ShortCircuitReplicaInfo info = cache.fetchOrCreate(key, this);
@@ -509,7 +501,6 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
         setVerifyChecksum(verifyChecksum).
         setCachingStrategy(cachingStrategy).
         setStorageType(storageType).
-        setTracer(tracer).
         build();
   }
 
@@ -537,7 +528,8 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
       if (curPeer.fromCache) remainingCacheTries--;
       DomainPeer peer = (DomainPeer)curPeer.peer;
       Slot slot = null;
-      ShortCircuitCache cache = clientContext.getShortCircuitCache();
+      ShortCircuitCache cache =
+          clientContext.getShortCircuitCache(block.getBlockId());
       try {
         MutableBoolean usedPeer = new MutableBoolean(false);
         slot = cache.allocShmSlot(datanode, peer, usedPeer,
@@ -561,14 +553,14 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
           // Handle an I/O error we got when using a cached socket.
           // These are considered less serious, because the socket may be stale.
           LOG.debug("{}: closing stale domain peer {}", this, peer, e);
-          IOUtilsClient.cleanup(LOG, peer);
+          IOUtilsClient.cleanupWithLogger(LOG, peer);
         } else {
           // Handle an I/O error we got when using a newly created socket.
           // We temporarily disable the domain socket path for a few minutes in
           // this case, to prevent wasting more time on it.
-          LOG.warn(this + ": I/O error requesting file descriptors.  " +
-              "Disabling domain socket " + peer.getDomainSocket(), e);
-          IOUtilsClient.cleanup(LOG, peer);
+          LOG.warn("{}: I/O error requesting file descriptors.  " +
+              "Disabling domain socket {}", this, peer.getDomainSocket(), e);
+          IOUtilsClient.cleanupWithLogger(LOG, peer);
           clientContext.getDomainSocketFactory()
               .disableDomainSocketPath(pathInfo.getPath());
           return null;
@@ -592,9 +584,10 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
    */
   private ShortCircuitReplicaInfo requestFileDescriptors(DomainPeer peer,
           Slot slot) throws IOException {
-    ShortCircuitCache cache = clientContext.getShortCircuitCache();
+    ShortCircuitCache cache =
+        clientContext.getShortCircuitCache(block.getBlockId());
     final DataOutputStream out =
-        new DataOutputStream(new BufferedOutputStream(peer.getOutputStream()));
+        new DataOutputStream(new BufferedOutputStream(peer.getOutputStream(), SMALL_BUFFER_SIZE));
     SlotId slotId = slot == null ? null : slot.getSlotId();
     new Sender(out).requestShortCircuitFds(block, token, slotId, 1,
         failureInjector.getSupportsReceiptVerification());
@@ -610,6 +603,11 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
       sock.recvFileInputStreams(fis, buf, 0, buf.length);
       ShortCircuitReplica replica = null;
       try {
+        if (fis[0] == null || fis[1] == null) {
+          throw new IOException("the datanode " + datanode + " failed to " +
+              "pass a file descriptor (might have reached open file limit).");
+        }
+
         ExtendedBlockId key =
             new ExtendedBlockId(block.getBlockId(), block.getBlockPoolId());
         if (buf[0] == USE_RECEIPT_VERIFICATION.getNumber()) {
@@ -623,23 +621,23 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
         // This indicates an error reading from disk, or a format error.  Since
         // it's not a socket communication problem, we return null rather than
         // throwing an exception.
-        LOG.warn(this + ": error creating ShortCircuitReplica.", e);
+        LOG.warn("{}: error creating ShortCircuitReplica.", this, e);
         return null;
       } finally {
         if (replica == null) {
-          IOUtilsClient.cleanup(DFSClient.LOG, fis[0], fis[1]);
+          IOUtilsClient.cleanupWithLogger(DFSClient.LOG, fis[0], fis[1]);
         }
       }
     case ERROR_UNSUPPORTED:
       if (!resp.hasShortCircuitAccessVersion()) {
         LOG.warn("short-circuit read access is disabled for " +
-            "DataNode " + datanode + ".  reason: " + resp.getMessage());
+            "DataNode {}.  reason: {}", datanode, resp.getMessage());
         clientContext.getDomainSocketFactory()
             .disableShortCircuitForPath(pathInfo.getPath());
       } else {
         LOG.warn("short-circuit read access for the file " +
-            fileName + " is disabled for DataNode " + datanode +
-            ".  reason: " + resp.getMessage());
+            "{} is disabled for DataNode {}" +
+            ".  reason: {}", fileName, datanode, resp.getMessage());
       }
       return null;
     case ERROR_ACCESS_TOKEN:
@@ -647,6 +645,9 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
           "attempting to set up short-circuit access to " +
           fileName + resp.getMessage();
       LOG.debug("{}:{}", this, msg);
+      if (slot != null) {
+        cache.freeSlot(slot);
+      }
       return new ShortCircuitReplicaInfo(new InvalidToken(msg));
     default:
       final long expiration =
@@ -699,7 +700,7 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
         blockReader = getRemoteBlockReader(peer);
         return blockReader;
       } catch (IOException ioe) {
-        IOUtilsClient.cleanup(LOG, peer);
+        IOUtilsClient.cleanupWithLogger(LOG, peer);
         if (isSecurityException(ioe)) {
           LOG.trace("{}: got security exception while constructing a remote "
                   + " block reader from the unix domain socket at {}",
@@ -715,14 +716,14 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
           // We temporarily disable the domain socket path for a few minutes in
           // this case, to prevent wasting more time on it.
           LOG.warn("I/O error constructing remote block reader.  Disabling " +
-              "domain socket " + peer.getDomainSocket(), ioe);
+              "domain socket {}", peer.getDomainSocket(), ioe);
           clientContext.getDomainSocketFactory()
               .disableDomainSocketPath(pathInfo.getPath());
           return null;
         }
       } finally {
         if (blockReader == null) {
-          IOUtilsClient.cleanup(LOG, peer);
+          IOUtilsClient.cleanupWithLogger(LOG, peer);
         }
       }
     }
@@ -768,12 +769,12 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
           LOG.debug("Closed potentially stale remote peer {}", peer, ioe);
         } else {
           // Handle an I/O error we got when using a newly created peer.
-          LOG.warn("I/O error constructing remote block reader.", ioe);
+          LOG.warn("I/O error constructing remote block reader for block {}", block, ioe);
           throw ioe;
         }
       } finally {
         if (blockReader == null) {
-          IOUtilsClient.cleanup(LOG, peer);
+          IOUtilsClient.cleanupWithLogger(LOG, peer);
         }
       }
     }
@@ -829,7 +830,7 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
           datanode);
       LOG.trace("nextTcpPeer: created newConnectedPeer {}", peer);
       return new BlockReaderPeer(peer, false);
-    } catch (IOException e) {
+    } catch (IOException | UnresolvedAddressException e) {
       LOG.trace("nextTcpPeer: failed to create newConnectedPeer connected to"
           + "{}", datanode);
       throw e;
@@ -860,8 +861,8 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
     return BlockReaderRemote.newBlockReader(
         fileName, block, token, startOffset, length,
         verifyChecksum, clientName, peer, datanode,
-        clientContext.getPeerCache(), cachingStrategy, tracer,
-        networkDistance);
+        clientContext.getPeerCache(), cachingStrategy,
+        networkDistance, configuration);
   }
 
   @Override

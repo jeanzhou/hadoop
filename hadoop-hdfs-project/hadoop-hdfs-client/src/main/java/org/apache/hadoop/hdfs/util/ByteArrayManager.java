@@ -24,9 +24,10 @@ import java.util.Queue;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,10 +55,10 @@ public abstract class ByteArrayManager {
 
   /**
    * @return the least power of two greater than or equal to n, i.e. return
-   *         the least integer x with x >= n and x a power of two.
+   *         the least integer x with x &gt;= n and x a power of two.
    *
    * @throws HadoopIllegalArgumentException
-   *           if n <= 0.
+   *           if n &lt;= 0.
    */
   public static int leastPowerOfTwo(final int n) {
     if (n <= 0) {
@@ -215,6 +216,11 @@ public abstract class ByteArrayManager {
       return freeQueue.size();
     }
 
+    @VisibleForTesting
+    synchronized int getNumAllocated() {
+      return numAllocated;
+    }
+
     @Override
     public synchronized String toString() {
       return "[" + byteArrayLength + ": " + numAllocated + "/"
@@ -240,6 +246,15 @@ public abstract class ByteArrayManager {
         map.put(arrayLength, manager);
       }
       return manager;
+    }
+
+    @VisibleForTesting
+    synchronized int countAllocated() {
+      int total = 0;
+      for (FixedLengthManager m : map.values()) {
+        total += m.getNumAllocated();
+      }
+      return total;
     }
   }
 

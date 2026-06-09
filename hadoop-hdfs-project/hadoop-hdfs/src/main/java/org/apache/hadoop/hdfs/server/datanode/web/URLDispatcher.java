@@ -32,25 +32,27 @@ class URLDispatcher extends SimpleChannelInboundHandler<HttpRequest> {
   private final InetSocketAddress proxyHost;
   private final Configuration conf;
   private final Configuration confForCreate;
+  private final boolean isSecure;
 
   URLDispatcher(InetSocketAddress proxyHost, Configuration conf,
-                Configuration confForCreate) {
+                Configuration confForCreate, boolean isSecure) {
     this.proxyHost = proxyHost;
     this.conf = conf;
     this.confForCreate = confForCreate;
+    this.isSecure = isSecure;
   }
 
   @Override
   protected void channelRead0(ChannelHandlerContext ctx, HttpRequest req)
       throws Exception {
-    String uri = req.getUri();
+    String uri = req.uri();
     ChannelPipeline p = ctx.pipeline();
     if (uri.startsWith(WEBHDFS_PREFIX)) {
       WebHdfsHandler h = new WebHdfsHandler(conf, confForCreate);
       p.replace(this, WebHdfsHandler.class.getSimpleName(), h);
       h.channelRead0(ctx, req);
     } else {
-      SimpleHttpProxyHandler h = new SimpleHttpProxyHandler(proxyHost);
+      SimpleHttpProxyHandler h = new SimpleHttpProxyHandler(proxyHost, isSecure);
       p.replace(this, SimpleHttpProxyHandler.class.getSimpleName(), h);
       h.channelRead0(ctx, req);
     }

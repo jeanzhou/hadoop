@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.mapred;
 
-import static org.apache.commons.lang.StringUtils.isEmpty;
+import static org.apache.commons.lang3.StringUtils.isEmpty;
 import static org.apache.hadoop.mapreduce.MRJobConfig.MR_AM_RESOURCE_PREFIX;
 
 import java.io.IOException;
@@ -94,13 +94,14 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenSelector;
+import org.apache.hadoop.yarn.util.Apps;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.UnitsConversionUtil;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * This class enables the current JobClient (0.22 hadoop) to run on YARN.
@@ -484,6 +485,13 @@ public class YARNRunner implements ClientProtocol {
         MRJobConfig.MR_AM_COMMAND_OPTS, MRJobConfig.MR_AM_ENV);
     vargs.add(mrAppMasterUserOptions);
 
+    // JDK17 support: automatically add --add-opens=java.base/java.lang=ALL-UNNAMED
+    // so the tasks can launch on a JDK17 node.
+    if (conf.getBoolean(MRJobConfig.MAPREDUCE_JVM_ADD_OPENS_JAVA_OPT,
+            MRJobConfig.MAPREDUCE_JVM_ADD_OPENS_JAVA_OPT_DEFAULT)) {
+      vargs.add(ApplicationConstants.JVM_ADD_OPENS_VAR);
+    }
+
     if (jobConf.getBoolean(MRJobConfig.MR_AM_PROFILE,
         MRJobConfig.DEFAULT_MR_AM_PROFILE)) {
       final String profileParams = jobConf.get(MRJobConfig.MR_AM_PROFILE_PARAMS,
@@ -533,12 +541,13 @@ public class YARNRunner implements ClientProtocol {
         MRApps.crossPlatformifyMREnv(conf, Environment.PWD), conf);
 
     // Setup the environment variables for Admin first
-    MRApps.setEnvFromInputString(environment,
-        conf.get(MRJobConfig.MR_AM_ADMIN_USER_ENV,
-            MRJobConfig.DEFAULT_MR_AM_ADMIN_USER_ENV), conf);
+    MRApps.setEnvFromInputProperty(environment,
+        MRJobConfig.MR_AM_ADMIN_USER_ENV,
+        MRJobConfig.DEFAULT_MR_AM_ADMIN_USER_ENV,
+        conf);
     // Setup the environment variables (LD_LIBRARY_PATH, etc)
-    MRApps.setEnvFromInputString(environment,
-        conf.get(MRJobConfig.MR_AM_ENV), conf);
+    MRApps.setEnvFromInputProperty(environment, MRJobConfig.MR_AM_ENV, null,
+        conf);
 
     // Parse distributed cache
     MRApps.setupDistributedCache(jobConf, localResources);
@@ -898,9 +907,7 @@ public class YARNRunner implements ClientProtocol {
     } catch (YarnException e) {
       throw new IOException(e);
     }
-    if (application.getYarnApplicationState() == YarnApplicationState.FINISHED
-        || application.getYarnApplicationState() == YarnApplicationState.FAILED
-        || application.getYarnApplicationState() == YarnApplicationState.KILLED) {
+    if (Apps.isApplicationFinalState(application.getYarnApplicationState())) {
       return;
     }
     killApplication(appId);

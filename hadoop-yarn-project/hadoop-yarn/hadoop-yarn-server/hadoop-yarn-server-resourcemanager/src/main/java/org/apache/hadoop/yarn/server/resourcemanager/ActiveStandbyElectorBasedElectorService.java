@@ -17,10 +17,11 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -52,8 +53,8 @@ import java.util.TimerTask;
 public class ActiveStandbyElectorBasedElectorService extends AbstractService
     implements EmbeddedElector,
     ActiveStandbyElector.ActiveStandbyElectorCallback {
-  private static final Log LOG = LogFactory.getLog(
-      ActiveStandbyElectorBasedElectorService.class.getName());
+  private static final Logger LOG = LoggerFactory.
+      getLogger(ActiveStandbyElectorBasedElectorService.class.getName());
   private static final HAServiceProtocol.StateChangeRequestInfo req =
       new HAServiceProtocol.StateChangeRequestInfo(
           HAServiceProtocol.RequestSource.REQUEST_BY_ZKFC);
@@ -104,8 +105,14 @@ public class ActiveStandbyElectorBasedElectorService extends AbstractService
         conf.getInt(YarnConfiguration.RM_HA_FC_ELECTOR_ZK_RETRIES_KEY, conf
           .getInt(CommonConfigurationKeys.HA_FC_ELECTOR_ZK_OP_RETRIES_KEY,
             CommonConfigurationKeys.HA_FC_ELECTOR_ZK_OP_RETRIES_DEFAULT));
+    boolean isSSLEnabled =
+        conf.getBoolean(CommonConfigurationKeys.ZK_CLIENT_SSL_ENABLED,
+            conf.getBoolean(YarnConfiguration.RM_ZK_CLIENT_SSL_ENABLED,
+                YarnConfiguration.DEFAULT_RM_ZK_CLIENT_SSL_ENABLED));
+    SecurityUtil.TruststoreKeystore truststoreKeystore
+            = isSSLEnabled ? new SecurityUtil.TruststoreKeystore(conf) : null;
     elector = new ActiveStandbyElector(zkQuorum, (int) zkSessionTimeout,
-        electionZNode, zkAcls, zkAuths, this, maxRetryNum, false);
+        electionZNode, zkAcls, zkAuths, this, maxRetryNum, false, truststoreKeystore);
 
     elector.ensureParentZNode();
     if (!isParentZnodeSafe(clusterId)) {
@@ -213,10 +220,8 @@ public class ActiveStandbyElectorBasedElectorService extends AbstractService
 
   @Override
   public void fenceOldActive(byte[] oldActiveData) {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Request to fence old active being ignored, " +
-          "as embedded leader election doesn't support fencing");
-    }
+    LOG.debug("Request to fence old active being ignored, " +
+        "as embedded leader election doesn't support fencing");
   }
 
   private static byte[] createActiveNodeInfo(String clusterId, String rmId)

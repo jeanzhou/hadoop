@@ -17,7 +17,8 @@
  */
 package org.apache.hadoop.http.lib;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 
 import javax.servlet.FilterChain;
@@ -29,7 +30,7 @@ import javax.servlet.http.HttpServletRequestWrapper;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.http.lib.StaticUserWebFilter.StaticUserFilter;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
@@ -55,7 +56,7 @@ public class TestStaticUserWebFilter {
     suf.doFilter(mock(HttpServletRequest.class), mock(ServletResponse.class),
         chain);
         
-    Mockito.verify(chain).doFilter(wrapperArg.capture(), Mockito.<ServletResponse>anyObject());
+    Mockito.verify(chain).doFilter(wrapperArg.capture(), any());
     
     HttpServletRequestWrapper wrapper = wrapperArg.getValue();
     assertEquals("myuser", wrapper.getUserPrincipal().getName());

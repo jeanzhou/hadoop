@@ -34,6 +34,7 @@ public class NamenodeStatusReport {
   private String serviceAddress = "";
   private String lifelineAddress = "";
   private String webAddress = "";
+  private String webScheme = "";
 
   /** Namenode state. */
   private HAServiceState status = HAServiceState.STANDBY;
@@ -42,12 +43,22 @@ public class NamenodeStatusReport {
   /** Datanodes stats. */
   private int liveDatanodes = -1;
   private int deadDatanodes = -1;
+  private int staleDatanodes = -1;
   /** Decommissioning datanodes. */
   private int decomDatanodes = -1;
   /** Live decommissioned datanodes. */
   private int liveDecomDatanodes = -1;
   /** Dead decommissioned datanodes. */
   private int deadDecomDatanodes = -1;
+
+  /** Live in maintenance datanodes. */
+  private int inMaintenanceLiveDataNodes = -1;
+
+  /** Dead in maintenance datanodes. */
+  private int inMaintenanceDeadDataNodes = -1;
+
+  /** Entering maintenance datanodes. */
+  private int enteringMaintenanceDataNodes = -1;
 
   /** Space stats. */
   private long availableSpace = -1;
@@ -59,6 +70,13 @@ public class NamenodeStatusReport {
   private long numOfBlocksPendingDeletion = -1;
   private long totalSpace = -1;
   private long providedSpace = -1;
+  private int corruptFilesCount = -1;
+  private long scheduledReplicationBlocks = -1;
+  private long numberOfMissingBlocksWithReplicationFactorOne = -1;
+  private long numberOfBadlyDistributedBlocks = -1;
+  private long highestPriorityLowRedundancyReplicatedBlocks = -1;
+  private long highestPriorityLowRedundancyECBlocks = -1;
+  private int pendingSPSPaths = -1;
 
   /** If the fields are valid. */
   private boolean registrationValid = false;
@@ -66,12 +84,13 @@ public class NamenodeStatusReport {
   private boolean haStateValid = false;
 
   public NamenodeStatusReport(String ns, String nn, String rpc, String service,
-      String lifeline, String web) {
+      String lifeline, String webScheme, String web) {
     this.nameserviceId = ns;
     this.namenodeId = nn;
     this.rpcAddress = rpc;
     this.serviceAddress = service;
     this.lifelineAddress = lifeline;
+    this.webScheme = webScheme;
     this.webAddress = web;
   }
 
@@ -190,9 +209,18 @@ public class NamenodeStatusReport {
   }
 
   /**
-   * Get the HA service state.
+   * Get the scheme of web address.
    *
-   * @return The HA service state.
+   * @return The scheme of web address.
+   */
+  public String getWebScheme() {
+    return this.webScheme;
+  }
+
+  /**
+   * Set the HA service state.
+   *
+   * @param state The HA service state to set.
    */
   public void setHAServiceState(HAServiceState state) {
     this.status = state;
@@ -223,18 +251,30 @@ public class NamenodeStatusReport {
    *
    * @param numLive Number of live nodes.
    * @param numDead Number of dead nodes.
+   * @param numStale Number of stale nodes.
    * @param numDecom Number of decommissioning nodes.
    * @param numLiveDecom Number of decommissioned live nodes.
    * @param numDeadDecom Number of decommissioned dead nodes.
+   * @param numInMaintenanceLive Number of in maintenance live nodes.
+   * @param numInMaintenanceDead Number of in maintenance dead nodes.
+   * @param numEnteringMaintenance Number of entering maintenance nodes.
+   * @param numScheduledReplicationBlocks Number of scheduled rep. blocks.
    */
-  public void setDatanodeInfo(int numLive, int numDead, int numDecom,
-      int numLiveDecom, int numDeadDecom) {
+  public void setDatanodeInfo(int numLive, int numDead, int numStale,
+      int numDecom, int numLiveDecom, int numDeadDecom,
+      int numInMaintenanceLive, int numInMaintenanceDead,
+      int numEnteringMaintenance, long numScheduledReplicationBlocks) {
     this.liveDatanodes = numLive;
     this.deadDatanodes = numDead;
+    this.staleDatanodes = numStale;
     this.decomDatanodes = numDecom;
     this.liveDecomDatanodes = numLiveDecom;
     this.deadDecomDatanodes = numDeadDecom;
+    this.inMaintenanceLiveDataNodes = numInMaintenanceLive;
+    this.inMaintenanceDeadDataNodes = numInMaintenanceDead;
+    this.enteringMaintenanceDataNodes = numEnteringMaintenance;
     this.statsValid = true;
+    this.scheduledReplicationBlocks = numScheduledReplicationBlocks;
   }
 
   /**
@@ -247,12 +287,21 @@ public class NamenodeStatusReport {
   }
 
   /**
-   * Get the number of dead blocks.
+   * Get the number of dead nodes.
    *
    * @return The number of dead nodes.
    */
   public int getNumDeadDatanodes() {
     return this.deadDatanodes;
+  }
+
+  /**
+   * Get the number of stale nodes.
+   *
+   * @return The number of stale nodes.
+   */
+  public int getNumStaleDatanodes() {
+    return this.staleDatanodes;
   }
 
   /**
@@ -283,6 +332,33 @@ public class NamenodeStatusReport {
   }
 
   /**
+   * Get the number of live in maintenance nodes.
+   *
+   * @return The number of live in maintenance nodes.
+   */
+  public int getNumInMaintenanceLiveDataNodes() {
+    return this.inMaintenanceLiveDataNodes;
+  }
+
+  /**
+   * Get the number of dead in maintenance nodes.
+   *
+   * @return The number of dead in maintenance nodes.
+   */
+  public int getNumInMaintenanceDeadDataNodes() {
+    return this.inMaintenanceDeadDataNodes;
+  }
+
+  /**
+   * Get the number of entering maintenance nodes.
+   *
+   * @return The number of entering maintenance nodes.
+   */
+  public int getNumEnteringMaintenanceDataNodes() {
+    return this.enteringMaintenanceDataNodes;
+  }
+
+  /**
    * Set the filesystem information.
    *
    * @param available Available capacity.
@@ -293,11 +369,13 @@ public class NamenodeStatusReport {
    * @param numBlocksPendingReplication Number of blocks pending replication.
    * @param numBlocksUnderReplicated Number of blocks under replication.
    * @param numBlocksPendingDeletion Number of blocks pending deletion.
+   * @param providedStorageSpace Space in provided storage.
+   * @param numPendingSPSPaths The number of paths to be processed by storage policy satisfier.
    */
   public void setNamesystemInfo(long available, long total,
       long numFiles, long numBlocks, long numBlocksMissing,
       long numBlocksPendingReplication, long numBlocksUnderReplicated,
-      long numBlocksPendingDeletion, long providedSpace) {
+      long numBlocksPendingDeletion, long providedStorageSpace, int numPendingSPSPaths) {
     this.totalSpace = total;
     this.availableSpace = available;
     this.numOfBlocks = numBlocks;
@@ -307,7 +385,106 @@ public class NamenodeStatusReport {
     this.numOfBlocksPendingDeletion = numBlocksPendingDeletion;
     this.numOfFiles = numFiles;
     this.statsValid = true;
-    this.providedSpace = providedSpace;
+    this.providedSpace = providedStorageSpace;
+    this.pendingSPSPaths = numPendingSPSPaths;
+  }
+
+  /**
+   * Set the namenode blocks information.
+   *
+   * @param numCorruptFiles number of corrupt files.
+   * @param numOfMissingBlocksWithReplicationFactorOne number of missing
+   * blocks with rep one.
+   * @param numOfBadlyDistributedBlocks number of badly distributed blocks
+   * @param highestPriorityLowRedundancyRepBlocks number of high priority low
+   * redundancy rep blocks.
+   * @param highPriorityLowRedundancyECBlocks number of high priority low
+   * redundancy EC blocks.
+   */
+  public void setNamenodeInfo(int numCorruptFiles,
+      long numOfMissingBlocksWithReplicationFactorOne,
+      long numOfBadlyDistributedBlocks,
+      long highestPriorityLowRedundancyRepBlocks,
+      long highPriorityLowRedundancyECBlocks) {
+    this.corruptFilesCount = numCorruptFiles;
+    this.numberOfMissingBlocksWithReplicationFactorOne =
+        numOfMissingBlocksWithReplicationFactorOne;
+    this.numberOfBadlyDistributedBlocks =
+        numOfBadlyDistributedBlocks;
+    this.highestPriorityLowRedundancyReplicatedBlocks =
+        highestPriorityLowRedundancyRepBlocks;
+    this.highestPriorityLowRedundancyECBlocks =
+        highPriorityLowRedundancyECBlocks;
+  }
+
+  /**
+   * Get the number of corrupt files.
+   *
+   * @return the total number of corrupt files
+   */
+  public int getCorruptFilesCount() {
+    return this.corruptFilesCount;
+  }
+
+  /**
+   * Blocks scheduled for replication.
+   *
+   * @return -  num of blocks scheduled for replication
+   */
+  public long getScheduledReplicationBlocks() {
+    return this.scheduledReplicationBlocks;
+  }
+
+  /**
+   * Gets the total number of missing blocks on the cluster with
+   * replication factor 1.
+   *
+   * @return the total number of missing blocks on the cluster with
+   * replication factor 1.
+   */
+  public long getNumberOfMissingBlocksWithReplicationFactorOne() {
+    return this.numberOfMissingBlocksWithReplicationFactorOne;
+  }
+
+  /**
+   * Gets the total number of badly distributed blocks.
+   *
+   * @return the total number of badly distrubted blocks.
+   */
+  public long getNumberOfBadlyDistributedBlocks() {
+    return this.numberOfBadlyDistributedBlocks;
+  }
+
+
+  /**
+   * Gets the total number of replicated low redundancy blocks on the cluster
+   * with the highest risk of loss.
+   *
+   * @return the total number of low redundancy blocks on the cluster
+   * with the highest risk of loss.
+   */
+  public long getHighestPriorityLowRedundancyReplicatedBlocks() {
+    return this.highestPriorityLowRedundancyReplicatedBlocks;
+  }
+
+  /**
+   * Gets the total number of erasure coded low redundancy blocks on the cluster
+   * with the highest risk of loss.
+   *
+   * @return the total number of low redundancy blocks on the cluster
+   * with the highest risk of loss.
+   */
+  public long getHighestPriorityLowRedundancyECBlocks() {
+    return this.highestPriorityLowRedundancyECBlocks;
+  }
+
+  /**
+   * Returns the number of paths to be processed by storage policy satisfier.
+   *
+   * @return The number of paths to be processed by sps.
+   */
+  public int getPendingSPSPaths() {
+    return this.pendingSPSPaths;
   }
 
   /**

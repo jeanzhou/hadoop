@@ -35,7 +35,7 @@ public class RemoteParam {
 
   /**
    * Constructs a default remote parameter. Always maps the value to the
-   * destination of the provided RemoveLocationContext.
+   * destination of the provided RemoteLocationContext.
    */
   public RemoteParam() {
     this.paramMap = null;
@@ -67,5 +67,14 @@ public class RemoteParam {
       // Default case
       return context.getDest();
     }
+  }
+
+  @Override
+  public String toString() {
+    return new StringBuilder()
+        .append("RemoteParam(")
+        .append(this.paramMap)
+        .append(")")
+        .toString();
   }
 }

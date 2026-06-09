@@ -39,10 +39,16 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
 
   @Override
   public void initializeMemberVariables() {
-    xmlFilename = new String("hdfs-default.xml");
+    xmlFilename = "hdfs-default.xml";
     configurationClasses = new Class[] { HdfsClientConfigKeys.class,
+        HdfsClientConfigKeys.Failover.class,
         HdfsClientConfigKeys.StripedRead.class, DFSConfigKeys.class,
-        HdfsClientConfigKeys.BlockWrite.ReplaceDatanodeOnFailure.class };
+        HdfsClientConfigKeys.BlockWrite.class, HdfsClientConfigKeys.Write.class,
+        HdfsClientConfigKeys.Read.class, HdfsClientConfigKeys.HedgedRead.class,
+        HdfsClientConfigKeys.ShortCircuit.class,
+        HdfsClientConfigKeys.Retry.class, HdfsClientConfigKeys.Mmap.class,
+        HdfsClientConfigKeys.BlockWrite.ReplaceDatanodeOnFailure.class,
+        HdfsClientConfigKeys.Write.ECRedundancy.class};
 
     // Set error modes
     errorIfMissingConfigProps = true;
@@ -78,8 +84,6 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
         .add("dfs.datanode.non.local.lazy.persist");
     configurationPropsToSkipCompare
         .add("dfs.namenode.tolerate.heartbeat.multiplier");
-    configurationPropsToSkipCompare
-        .add("dfs.namenode.stripe.min");
     configurationPropsToSkipCompare
         .add("dfs.namenode.replqueue.threshold-pct");
 
@@ -118,9 +122,6 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
 
     // Used oddly by DataNode to create new config String
     xmlPropsToSkipCompare.add("hadoop.hdfs.configuration.version");
-
-    // Skip comparing in branch-2.  Removed in trunk with HDFS-7985.
-    xmlPropsToSkipCompare.add("dfs.webhdfs.enabled");
 
     // Some properties have moved to HdfsClientConfigKeys
     xmlPropsToSkipCompare.add("dfs.client.short.circuit.replica.stale.threshold.ms");

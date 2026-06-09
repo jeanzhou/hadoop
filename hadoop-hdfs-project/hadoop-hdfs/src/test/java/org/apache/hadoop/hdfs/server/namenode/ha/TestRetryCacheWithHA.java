@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -34,10 +34,13 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.CryptoProtocolVersion;
 import org.apache.hadoop.fs.CacheFlag;
@@ -87,12 +90,17 @@ import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryPolicy;
 import org.apache.hadoop.ipc.RetryCache.CacheEntry;
 import org.apache.hadoop.util.LightWeightCache;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+@Tag("slow")
 public class TestRetryCacheWithHA {
-  private static final Log LOG = LogFactory.getLog(TestRetryCacheWithHA.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestRetryCacheWithHA.class);
   
   private static final int BlockSize = 1024;
   private static ErasureCodingPolicy defaultEcPolicy =
@@ -103,7 +111,11 @@ public class TestRetryCacheWithHA {
       defaultEcPolicy.getNumParityUnits() + 1);
   private static final int CHECKTIMES = 10;
   private static final int ResponseSize = 3;
-  
+
+  @SuppressWarnings("checkstyle:VisibilityModifier")
+  @TempDir
+  java.nio.file.Path baseDir;
+
   private MiniDFSCluster cluster;
   private DistributedFileSystem dfs;
   private final Configuration conf = new HdfsConfiguration();
@@ -134,14 +146,14 @@ public class TestRetryCacheWithHA {
     }
   }
   
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BlockSize);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_LIST_CACHE_DIRECTIVES_NUM_RESPONSES, ResponseSize);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_LIST_CACHE_POOLS_NUM_RESPONSES, ResponseSize);
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, true);
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_XATTRS_ENABLED_KEY, true);
-    cluster = new MiniDFSCluster.Builder(conf)
+    cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile())
         .nnTopology(MiniDFSNNTopology.simpleHATopology())
         .numDataNodes(DataNodes).build();
     cluster.waitActive();
@@ -151,7 +163,7 @@ public class TestRetryCacheWithHA {
     dfs = (DistributedFileSystem) HATestUtil.configureFailoverFs(cluster, conf);
   }
   
-  @After
+  @AfterEach
   public void cleanup() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -164,7 +176,8 @@ public class TestRetryCacheWithHA {
    * 2. Trigger the NN failover
    * 3. Check the retry cache on the original standby NN
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRetryCacheOnStandbyNN() throws Exception {
     // 1. run operations
     DFSTestUtil.runOperations(cluster, dfs, conf, BlockSize, 0);
@@ -173,7 +186,7 @@ public class TestRetryCacheWithHA {
     FSNamesystem fsn0 = cluster.getNamesystem(0);
     LightWeightCache<CacheEntry, CacheEntry> cacheSet = 
         (LightWeightCache<CacheEntry, CacheEntry>) fsn0.getRetryCache().getCacheSet();
-    assertEquals("Retry cache size is wrong", 39, cacheSet.size());
+    assertEquals(39, cacheSet.size(), "Retry cache size is wrong");
     
     Map<CacheEntry, CacheEntry> oldEntries = 
         new HashMap<CacheEntry, CacheEntry>();
@@ -194,7 +207,7 @@ public class TestRetryCacheWithHA {
     FSNamesystem fsn1 = cluster.getNamesystem(1);
     cacheSet = (LightWeightCache<CacheEntry, CacheEntry>) fsn1
         .getRetryCache().getCacheSet();
-    assertEquals("Retry cache size is wrong", 39, cacheSet.size());
+    assertEquals(39, cacheSet.size(), "Retry cache size is wrong");
     iter = cacheSet.iterator();
     while (iter.hasNext()) {
       CacheEntry entry = iter.next();
@@ -413,7 +426,7 @@ public class TestRetryCacheWithHA {
           new EnumSetWritable<CreateFlag>(createFlag), false, DataNodes,
           BlockSize,
           new CryptoProtocolVersion[] {CryptoProtocolVersion.ENCRYPTION_ZONES},
-          null);
+          null, null);
     }
 
     @Override
@@ -1145,84 +1158,96 @@ public class TestRetryCacheWithHA {
     }
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testCreateSnapshot() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new CreateSnapshotOp(client, "/test", "s1");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testDeleteSnapshot() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new DeleteSnapshotOp(client, "/test", "s1");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRenameSnapshot() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new RenameSnapshotOp(client, "/test", "s1", "s2");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testCreate() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new CreateOp(client, "/testfile");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testAppend() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new AppendOp(client, "/testfile");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRename() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new RenameOp(client, "/file1", "/file2");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRename2() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new Rename2Op(client, "/file1", "/file2");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testConcat() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new ConcatOp(client, new Path("/test/file"), 5);
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testDelete() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new DeleteOp(client, "/testfile");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testCreateSymlink() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new CreateSymlinkOp(client, "/testfile", "/testlink");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testUpdatePipeline() throws Exception {
     final DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new UpdatePipelineOp(client, "/testfile");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testAddCacheDirectiveInfo() throws Exception {
     DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new AddCacheDirectiveInfoOp(client, 
@@ -1233,7 +1258,8 @@ public class TestRetryCacheWithHA {
     testClientRetryWithFailover(op);
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testModifyCacheDirectiveInfo() throws Exception {
     DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new ModifyCacheDirectiveInfoOp(client, 
@@ -1245,7 +1271,8 @@ public class TestRetryCacheWithHA {
     testClientRetryWithFailover(op);
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRemoveCacheDescriptor() throws Exception {
     DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new RemoveCacheDirectiveInfoOp(client, "pool",
@@ -1253,35 +1280,40 @@ public class TestRetryCacheWithHA {
     testClientRetryWithFailover(op);
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testAddCachePool() throws Exception {
     DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new AddCachePoolOp(client, "pool");
     testClientRetryWithFailover(op);
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testModifyCachePool() throws Exception {
     DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new ModifyCachePoolOp(client, "pool");
     testClientRetryWithFailover(op);
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRemoveCachePool() throws Exception {
     DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new RemoveCachePoolOp(client, "pool");
     testClientRetryWithFailover(op);
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSetXAttr() throws Exception {
     DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new SetXAttrOp(client, "/setxattr");
     testClientRetryWithFailover(op);
   }
 
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRemoveXAttr() throws Exception {
     DFSClient client = genClientWithDummyHandler();
     AtMostOnceOp op = new RemoveXAttrOp(client, "/removexattr");
@@ -1295,35 +1327,31 @@ public class TestRetryCacheWithHA {
    */
   public void testClientRetryWithFailover(final AtMostOnceOp op)
       throws Exception {
-    final Map<String, Object> results = new HashMap<String, Object>();
+    final Map<String, Object> results = new ConcurrentHashMap<>();
     
     op.prepare();
     // set DummyRetryInvocationHandler#block to true
     DummyRetryInvocationHandler.block.set(true);
     
-    new Thread() {
+    new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         try {
           op.invoke();
           Object result = op.getResult();
           LOG.info("Operation " + op.name + " finished");
-          synchronized (TestRetryCacheWithHA.this) {
-            results.put(op.name, result == null ? "SUCCESS" : result);
-            TestRetryCacheWithHA.this.notifyAll();
-          }
+          results.put(op.name, result == null ? "SUCCESS" : result);
         } catch (Exception e) {
           LOG.info("Got Exception while calling " + op.name, e);
         } finally {
-          IOUtils.cleanup(null, op.client);
+          IOUtils.cleanupWithLogger(null, op.client);
         }
       }
     }.start();
     
     // make sure the client's call has actually been handled by the active NN
-    assertTrue("After waiting the operation " + op.name
-        + " still has not taken effect on NN yet",
-        op.checkNamenodeBeforeReturn());
+    assertTrue(op.checkNamenodeBeforeReturn(),
+        "After waiting the operation " + op.name + " still has not taken effect on NN yet");
     
     // force the failover
     cluster.transitionToStandby(0);
@@ -1331,40 +1359,45 @@ public class TestRetryCacheWithHA {
     // disable the block in DummyHandler
     LOG.info("Setting block to false");
     DummyRetryInvocationHandler.block.set(false);
-    
-    synchronized (this) {
-      while (!results.containsKey(op.name)) {
-        this.wait();
-      }
-      LOG.info("Got the result of " + op.name + ": "
-          + results.get(op.name));
-    }
+
+    GenericTestUtils.waitFor(() -> results.containsKey(op.name), 5, 10000);
+    LOG.info("Got the result of " + op.name + ": "
+        + results.get(op.name));
 
     // Waiting for failover.
-    while (cluster.getNamesystem(1).isInStandbyState()) {
-      Thread.sleep(10);
-    }
+    GenericTestUtils
+        .waitFor(() -> !cluster.getNamesystem(1).isInStandbyState(), 5, 10000);
 
-    long hitNN0 = cluster.getNamesystem(0).getRetryCache().getMetricsForTests()
-        .getCacheHit();
-    long hitNN1 = cluster.getNamesystem(1).getRetryCache().getMetricsForTests()
-        .getCacheHit();
-    assertTrue("CacheHit: " + hitNN0 + ", " + hitNN1,
-        hitNN0 + hitNN1 > 0);
-    long updatedNN0 = cluster.getNamesystem(0).getRetryCache()
-        .getMetricsForTests().getCacheUpdated();
-    long updatedNN1 = cluster.getNamesystem(1).getRetryCache()
-        .getMetricsForTests().getCacheUpdated();
+    final long[] hitsNN = new long[]{0, 0};
+    GenericTestUtils.waitFor(() -> {
+      hitsNN[0] = cluster.getNamesystem(0).getRetryCache()
+          .getMetricsForTests()
+          .getCacheHit();
+      hitsNN[1] = cluster.getNamesystem(1).getRetryCache()
+          .getMetricsForTests()
+          .getCacheHit();
+      return (hitsNN[0] + hitsNN[1]) > 0;
+    }, 5, 10000);
+
+    assertTrue(+hitsNN[0] + hitsNN[1] > 0, "CacheHit: " + hitsNN[0] + ", " + hitsNN[1]);
+    final long[] updatesNN = new long[]{0, 0};
+    GenericTestUtils.waitFor(() -> {
+      updatesNN[0] = cluster.getNamesystem(0).getRetryCache()
+          .getMetricsForTests()
+          .getCacheUpdated();
+      updatesNN[1] = cluster.getNamesystem(1).getRetryCache()
+          .getMetricsForTests()
+          .getCacheUpdated();
+      return updatesNN[0] > 0 && updatesNN[1] > 0;
+    }, 5, 10000);
     // Cache updated metrics on NN0 should be >0 since the op was process on NN0
-    assertTrue("CacheUpdated on NN0: " + updatedNN0, updatedNN0 > 0);
+    assertTrue(updatesNN[0] > 0, "CacheUpdated on NN0: " + updatesNN[0]);
     // Cache updated metrics on NN0 should be >0 since NN1 applied the editlog
-    assertTrue("CacheUpdated on NN1: " + updatedNN1, updatedNN1 > 0);
+    assertTrue(updatesNN[1] > 0, "CacheUpdated on NN1: " + updatesNN[1]);
     long expectedUpdateCount = op.getExpectedCacheUpdateCount();
     if (expectedUpdateCount > 0) {
-      assertEquals("CacheUpdated on NN0: " + updatedNN0, expectedUpdateCount,
-          updatedNN0);
-      assertEquals("CacheUpdated on NN0: " + updatedNN1, expectedUpdateCount,
-          updatedNN1);
+      assertEquals(expectedUpdateCount, updatesNN[0], "CacheUpdated on NN0: " + updatesNN[0]);
+      assertEquals(expectedUpdateCount, updatesNN[1], "CacheUpdated on NN0: " + updatesNN[1]);
     }
   }
 
@@ -1372,7 +1405,8 @@ public class TestRetryCacheWithHA {
    * Add a list of cache pools, list cache pools,
    * switch active NN, and list cache pools again.
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testListCachePools() throws Exception {
     final int poolCount = 7;
     HashSet<String> poolNames = new HashSet<String>(poolCount);
@@ -1393,7 +1427,8 @@ public class TestRetryCacheWithHA {
    * Add a list of cache directives, list cache directives,
    * switch active NN, and list cache directives again.
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testListCacheDirectives() throws Exception {
     final int poolCount = 7;
     HashSet<String> poolNames = new HashSet<String>(poolCount);
@@ -1423,7 +1458,7 @@ public class TestRetryCacheWithHA {
     for (int i=0; i<poolCount; i++) {
       CachePoolEntry pool = pools.next();
       String pollName = pool.getInfo().getPoolName();
-      assertTrue("The pool name should be expected", tmpNames.remove(pollName));
+      assertTrue(tmpNames.remove(pollName), "The pool name should be expected");
       if (i % 2 == 0) {
         int standby = active;
         active = (standby == 0) ? 1 : 0;
@@ -1432,7 +1467,7 @@ public class TestRetryCacheWithHA {
         cluster.waitActive(active);
       }
     }
-    assertTrue("All pools must be found", tmpNames.isEmpty());
+    assertTrue(tmpNames.isEmpty(), "All pools must be found");
   }
 
   @SuppressWarnings("unchecked")
@@ -1444,7 +1479,7 @@ public class TestRetryCacheWithHA {
     for (int i=0; i<poolCount; i++) {
       CacheDirectiveEntry directive = directives.next();
       String pollName = directive.getInfo().getPool();
-      assertTrue("The pool name should be expected", tmpNames.remove(pollName));
+      assertTrue(tmpNames.remove(pollName), "The pool name should be expected");
       if (i % 2 == 0) {
         int standby = active;
         active = (standby == 0) ? 1 : 0;
@@ -1453,6 +1488,6 @@ public class TestRetryCacheWithHA {
         cluster.waitActive(active);
       }
     }
-    assertTrue("All pools must be found", tmpNames.isEmpty());
+    assertTrue(tmpNames.isEmpty(), "All pools must be found");
   }
 }

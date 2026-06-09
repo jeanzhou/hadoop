@@ -21,9 +21,10 @@ package org.apache.hadoop.tools;
 import java.io.IOException;
 import java.util.Random;
 
-import com.google.common.base.Preconditions;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.util.ExitUtil;
+import org.apache.hadoop.util.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -44,7 +45,7 @@ import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * DistCp is the main driver-class for DistCpV2.
@@ -64,7 +65,7 @@ public class DistCp extends Configured implements Tool {
    */
   static final int SHUTDOWN_HOOK_PRIORITY = 30;
 
-  static final Log LOG = LogFactory.getLog(DistCp.class);
+  static final Logger LOG = LoggerFactory.getLogger(DistCp.class);
 
   @VisibleForTesting
   DistCpContext context;
@@ -84,7 +85,7 @@ public class DistCp extends Configured implements Tool {
     if (context.shouldUseSnapshotDiff()) {
       // When "-diff" or "-rdiff" is passed, do sync() first, then
       // create copyListing based on snapshot diff.
-      DistCpSync distCpSync = new DistCpSync(context, getConf());
+      DistCpSync distCpSync = new DistCpSync(context, job.getConfiguration());
       if (distCpSync.sync()) {
         createInputFileListingWithDiff(job, distCpSync);
       } else {
@@ -127,6 +128,7 @@ public class DistCp extends Configured implements Tool {
    * to target location, by:
    *  1. Creating a list of files to be copied to target.
    *  2. Launching a Map-only job to copy the files. (Delegates to execute().)
+   *  The MR job is not closed as part of run if its a blocking call to run
    * @param argv List of arguments passed to DistCp, from the ToolRunner.
    * @return On success, it returns 0. Else, -1.
    */
@@ -139,18 +141,17 @@ public class DistCp extends Configured implements Tool {
     
     try {
       context = new DistCpContext(OptionsParser.parse(argv));
-      checkSplitLargeFile();
-      setTargetPathExists();
-      LOG.info("Input Options: " + context);
+      LOG.info("Input Options: {}", context);
     } catch (Throwable e) {
       LOG.error("Invalid arguments: ", e);
       System.err.println("Invalid arguments: " + e.getMessage());
       OptionsParser.usage();      
       return DistCpConstants.INVALID_ARGUMENT;
     }
-    
+
+    Job job = null;
     try {
-      execute();
+      job = execute(true);
     } catch (InvalidInputException e) {
       LOG.error("Invalid input: ", e);
       return DistCpConstants.INVALID_ARGUMENT;
@@ -166,19 +167,44 @@ public class DistCp extends Configured implements Tool {
     } catch (Exception e) {
       LOG.error("Exception encountered ", e);
       return DistCpConstants.UNKNOWN_ERROR;
+    } finally {
+      // Blocking distcp so close the job after it's done
+      if (job != null && context.shouldBlock()) {
+        try {
+          job.close();
+        } catch (IOException e) {
+          LOG.error("Exception encountered while closing distcp job", e);
+        }
+      }
     }
     return DistCpConstants.SUCCESS;
   }
 
   /**
-   * Implements the core-execution. Creates the file-list for copy,
-   * and launches the Hadoop-job, to do the copy.
+   * Original entrypoint of a distcp job. Calls {@link DistCp#execute(boolean)}
+   * without doing extra context checks and setting some configs.
    * @return Job handle
-   * @throws Exception
+   * @throws Exception when fails to submit distcp job or distcp job fails
    */
   public Job execute() throws Exception {
+    return execute(false);
+  }
+
+  /**
+   * Implements the core-execution. Creates the file-list for copy,
+   * and launches the Hadoop-job, to do the copy.
+   * @param extraContextChecks if true, does extra context checks and sets some configs.
+   * @return Job handle
+   * @throws Exception when fails to submit distcp job or distcp job fails, or context checks fail
+   */
+  public Job execute(boolean extraContextChecks) throws Exception {
     Preconditions.checkState(context != null,
         "The DistCpContext should have been created before running DistCp!");
+    if (extraContextChecks) {
+      checkSplitLargeFile();
+      setTargetPathExists();
+    }
+
     Job job = createAndSubmitJob();
 
     if (context.shouldBlock()) {
@@ -214,6 +240,8 @@ public class DistCp extends Configured implements Tool {
     String jobID = job.getJobID().toString();
     job.getConfiguration().set(DistCpConstants.CONF_LABEL_DISTCP_JOB_ID,
         jobID);
+    // Set the jobId for the applications running through run method.
+    getConf().set(DistCpConstants.CONF_LABEL_DISTCP_JOB_ID, jobID);
     LOG.info("DistCp job-id: " + jobID);
 
     return job;
@@ -417,6 +445,15 @@ public class DistCp extends Configured implements Tool {
   }
 
   /**
+   * Returns the context.
+   *
+   * @return the context
+   */
+  protected DistCpContext getContext() {
+    return context;
+  }
+
+  /**
    * Main function of the DistCp program. Parses the input arguments (via OptionsParser),
    * and invokes the DistCp::run() method, via the ToolRunner.
    * @param argv Command-line arguments sent to DistCp.
@@ -425,9 +462,9 @@ public class DistCp extends Configured implements Tool {
     int exitCode;
     try {
       DistCp distCp = new DistCp();
-      Cleanup CLEANUP = new Cleanup(distCp);
+      Cleanup cleanup = new Cleanup(distCp);
 
-      ShutdownHookManager.get().addShutdownHook(CLEANUP,
+      ShutdownHookManager.get().addShutdownHook(cleanup,
         SHUTDOWN_HOOK_PRIORITY);
       exitCode = ToolRunner.run(getDefaultConf(), distCp, argv);
     }
@@ -435,7 +472,7 @@ public class DistCp extends Configured implements Tool {
       LOG.error("Couldn't complete DistCp operation: ", e);
       exitCode = DistCpConstants.UNKNOWN_ERROR;
     }
-    System.exit(exitCode);
+    ExitUtil.terminate(exitCode);
   }
 
   /**
@@ -451,13 +488,18 @@ public class DistCp extends Configured implements Tool {
     return config;
   }
 
-  private synchronized void cleanup() {
+  /**
+   * Clean the staging folder created by distcp.
+   */
+  protected synchronized void cleanup() {
     try {
       if (metaFolder != null) {
-        if (jobFS != null) {
-          jobFS.delete(metaFolder, true);
+        synchronized (this) {
+          if (jobFS != null) {
+            jobFS.delete(metaFolder, true);
+          }
+          metaFolder = null;
         }
-        metaFolder = null;
       }
     } catch (IOException e) {
       LOG.error("Unable to cleanup meta folder: " + metaFolder, e);

@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -31,6 +31,7 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileg
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -73,7 +74,7 @@ public class CGroupsBlkioResourceHandlerImpl implements DiskResourceHandler {
     // are using the CFQ scheduler. If they aren't print a warning
     try {
       byte[] contents = Files.readAllBytes(Paths.get(PARTITIONS_FILE));
-      data = new String(contents, "UTF-8").trim();
+      data = new String(contents, StandardCharsets.UTF_8).trim();
     } catch (IOException e) {
       String msg = "Couldn't read " + PARTITIONS_FILE +
           "; can't determine disk scheduler type";
@@ -96,7 +97,7 @@ public class CGroupsBlkioResourceHandlerImpl implements DiskResourceHandler {
             if (schedulerFile.exists()) {
               try {
                 byte[] contents = Files.readAllBytes(Paths.get(schedulerPath));
-                String schedulerString = new String(contents, "UTF-8").trim();
+                String schedulerString = new String(contents, StandardCharsets.UTF_8).trim();
                 if (!schedulerString.contains("[cfq]")) {
                   LOG.warn("Device " + partition + " does not use the CFQ"
                       + " scheduler; disk isolation using "
@@ -133,7 +134,7 @@ public class CGroupsBlkioResourceHandlerImpl implements DiskResourceHandler {
       .createCGroup(CGroupsHandler.CGroupController.BLKIO, cgroupId);
     try {
       cGroupsHandler.updateCGroupParam(CGroupsHandler.CGroupController.BLKIO,
-          cgroupId, CGroupsHandler.CGROUP_PARAM_BLKIO_WEIGHT, DEFAULT_WEIGHT);
+          cgroupId, CGroupsHandler.CGROUP_PARAM_WEIGHT, DEFAULT_WEIGHT);
     } catch (ResourceHandlerException re) {
       cGroupsHandler.deleteCGroup(CGroupsHandler.CGroupController.BLKIO,
           cgroupId);
@@ -156,6 +157,12 @@ public class CGroupsBlkioResourceHandlerImpl implements DiskResourceHandler {
   }
 
   @Override
+  public List<PrivilegedOperation> updateContainer(Container container)
+      throws ResourceHandlerException {
+    return null;
+  }
+
+  @Override
   public List<PrivilegedOperation> postComplete(ContainerId containerId)
       throws ResourceHandlerException {
     cGroupsHandler.deleteCGroup(CGroupsHandler.CGroupController.BLKIO,
@@ -166,5 +173,10 @@ public class CGroupsBlkioResourceHandlerImpl implements DiskResourceHandler {
   @Override
   public List<PrivilegedOperation> teardown() throws ResourceHandlerException {
     return null;
+  }
+
+  @Override
+  public String toString() {
+    return CGroupsBlkioResourceHandlerImpl.class.getName();
   }
 }

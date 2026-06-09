@@ -36,7 +36,7 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
   @SuppressWarnings({"deprecation", "methodlength"})
   @Override
   public void initializeMemberVariables() {
-    xmlFilename = new String("yarn-default.xml");
+    xmlFilename = "yarn-default.xml";
     configurationClasses = new Class[] { YarnConfiguration.class };
 
     // Allocate for usage
@@ -68,6 +68,10 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
             .YARN_SECURITY_SERVICE_AUTHORIZATION_RESOURCETRACKER_PROTOCOL);
     configurationPropsToSkipCompare.add(YarnConfiguration
         .YARN_SECURITY_SERVICE_AUTHORIZATION_COLLECTOR_NODEMANAGER_PROTOCOL);
+    configurationPropsToSkipCompare.add(YarnConfiguration
+        .YARN_SECURITY_SERVICE_AUTHORIZATION_DISTRIBUTEDSCHEDULING_PROTOCOL);
+    configurationPropsToSkipCompare.add(YarnConfiguration
+        .YARN_SECURITY_SERVICE_AUTHORIZATION_APPLICATIONMASTER_NODEMANAGER_PROTOCOL);
     configurationPropsToSkipCompare.add(YarnConfiguration.CURATOR_LEADER_ELECTOR);
     configurationPropsToSkipCompare
         .add(YarnConfiguration.RM_RESERVATION_SYSTEM_MAX_PERIODICITY);
@@ -79,6 +83,8 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
         .add(YarnConfiguration.FEDERATION_FAILOVER_ENABLED);
     configurationPropsToSkipCompare
         .add(YarnConfiguration.FEDERATION_STATESTORE_HEARTBEAT_INTERVAL_SECS);
+    configurationPrefixToSkipCompare
+        .add(YarnConfiguration.FEDERATION_FLUSH_CACHE_FOR_RM_ADDR);
     configurationPropsToSkipCompare
         .add(YarnConfiguration.RM_EPOCH);
     configurationPropsToSkipCompare
@@ -99,6 +105,10 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
         .add(YarnConfiguration.DEFAULT_FEDERATION_POLICY_MANAGER);
     configurationPropsToSkipCompare
         .add(YarnConfiguration.DEFAULT_FEDERATION_POLICY_MANAGER_PARAMS);
+    configurationPropsToSkipCompare
+        .add(YarnConfiguration.FEDERATION_AMRMPROXY_HB_MAX_WAIT_MS);
+    configurationPropsToSkipCompare
+        .add(YarnConfiguration.FEDERATION_AMRMPROXY_SUBCLUSTER_TIMEOUT);
 
     // Federation StateStore ZK implementation configs to be ignored
     configurationPropsToSkipCompare.add(
@@ -132,7 +142,6 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
         .add(YarnConfiguration.RM_SYSTEM_METRICS_PUBLISHER_ENABLED);
 
     // skip deprecated ZooKeeper settings
-    configurationPropsToSkipCompare.add(YarnConfiguration.RM_ZK_ADDRESS);
     configurationPropsToSkipCompare.add(YarnConfiguration.RM_ZK_NUM_RETRIES);
     configurationPropsToSkipCompare.add(YarnConfiguration.RM_ZK_TIMEOUT_MS);
     configurationPropsToSkipCompare.add(
@@ -146,6 +155,9 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
     // Ignore default file name for resource profiles
     configurationPropsToSkipCompare
         .add(YarnConfiguration.DEFAULT_RM_RESOURCE_PROFILES_SOURCE_FILE);
+
+    configurationPropsToSkipCompare
+        .add(YarnConfiguration.HADOOP_HTTP_WEBAPP_SCHEDULER_PAGE);
 
     // Ignore NodeManager "work in progress" variables
     configurationPrefixToSkipCompare
@@ -172,7 +184,13 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
     configurationPrefixToSkipCompare
         .add(YarnConfiguration.ROUTER_CLIENTRM_SUBMIT_RETRY);
     configurationPrefixToSkipCompare
+        .add(YarnConfiguration.ROUTER_CLIENTRM_PARTIAL_RESULTS_ENABLED);
+    configurationPrefixToSkipCompare
         .add(YarnConfiguration.ROUTER_WEBAPP_PARTIAL_RESULTS_ENABLED);
+    configurationPrefixToSkipCompare
+        .add(YarnConfiguration.ROUTER_WEBAPP_CONNECT_TIMEOUT);
+    configurationPrefixToSkipCompare
+        .add(YarnConfiguration.ROUTER_WEBAPP_READ_TIMEOUT);
 
     // Set by container-executor.cfg
     configurationPrefixToSkipCompare.add(YarnConfiguration.NM_USER_HOME_DIR);
@@ -180,6 +198,8 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
     // Ignore deprecated properties
     configurationPrefixToSkipCompare
         .add(YarnConfiguration.YARN_CLIENT_APP_SUBMISSION_POLL_INTERVAL_MS);
+    configurationPrefixToSkipCompare
+        .add(YarnConfiguration.DISPLAY_APPS_FOR_LOGGED_IN_USER);
 
     // Allocate for usage
     xmlPropsToSkipCompare = new HashSet<String>();
@@ -202,6 +222,20 @@ public class TestYarnConfigurationFields extends TestConfigurationFieldsBase {
         "yarn.log-aggregation.file-controller.TFile.class");
     // Add the filters used for checking for collision of default values.
     initDefaultValueCollisionCheck();
+
+    configurationPropsToSkipCompare.add(YarnConfiguration.LOG_AGGREGATION_REMOTE_APP_LOG_DIR_FMT);
+    configurationPropsToSkipCompare.add(
+        YarnConfiguration.LOG_AGGREGATION_REMOTE_APP_LOG_DIR_SUFFIX_FMT);
+    configurationPropsToSkipCompare.add(YarnConfiguration.LOG_AGGREGATION_FILE_CONTROLLER_FMT);
+    configurationPropsToSkipCompare.add(YarnConfiguration.NM_AUX_SERVICE_FMT);
+    configurationPropsToSkipCompare.add(
+        YarnConfiguration.NM_HEALTH_CHECK_SCRIPT_TIMEOUT_MS_TEMPLATE);
+    configurationPropsToSkipCompare.add(YarnConfiguration.NM_HEALTH_CHECK_SCRIPT_OPTS_TEMPLATE);
+    configurationPropsToSkipCompare.add(YarnConfiguration.NM_HEALTH_CHECK_SCRIPT_PATH_TEMPLATE);
+    configurationPropsToSkipCompare.add(
+        YarnConfiguration.NM_HEALTH_CHECK_SCRIPT_INTERVAL_MS_TEMPLATE);
+    configurationPropsToSkipCompare.add(YarnConfiguration.NM_AUX_SERVICE_REMOTE_CLASSPATH);
+    configurationPropsToSkipCompare.add(YarnConfiguration.LINUX_CONTAINER_RUNTIME_CLASS_FMT);
   }
 
   /**

@@ -18,11 +18,21 @@
 
 package org.apache.hadoop.mapreduce.v2.app.rm;
 
-import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyFloat;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.isA;
+import static org.apache.hadoop.mapreduce.v2.app.rm.ContainerRequestCreator.createRequest;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyFloat;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.inOrder;
@@ -96,7 +106,6 @@ import org.apache.hadoop.yarn.api.protocolrecords.FinishApplicationMasterRequest
 import org.apache.hadoop.yarn.api.protocolrecords.FinishApplicationMasterResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
-import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.CollectorInfo;
@@ -129,6 +138,7 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatResponse;
 import org.apache.hadoop.yarn.server.api.records.NodeAction;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
@@ -145,13 +155,14 @@ import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.ControlledClock;
 import org.apache.hadoop.yarn.util.Records;
+import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.util.SystemClock;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.mockito.InOrder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -164,7 +175,7 @@ public class TestRMContainerAllocator {
   static final RecordFactory recordFactory = RecordFactoryProvider
       .getRecordFactory(null);
 
-  @Before
+  @BeforeEach
   public void setup() {
     MyContainerAllocator.getJobUpdatedNodeEvents().clear();
     MyContainerAllocator.getTaskAttemptKillEvents().clear();
@@ -173,7 +184,7 @@ public class TestRMContainerAllocator {
     UserGroupInformation.setLoginUser(null);
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     DefaultMetricsSystem.shutdown();
   }
@@ -188,173 +199,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
-    rm.drainEvents();
-
-    MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
-    amNodeManager.nodeHeartbeat(true);
-    rm.drainEvents();
-
-    ApplicationAttemptId appAttemptId = app.getCurrentAppAttempt()
-        .getAppAttemptId();
-    rm.sendAMLaunched(appAttemptId);
-    rm.drainEvents();
-
-    JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
-    Job mockJob = mock(Job.class);
-    when(mockJob.getReport()).thenReturn(
-        MRBuilderUtils.newJobReport(jobId, "job", "user", JobState.RUNNING, 0, 
-            0, 0, 0, 0, 0, 0, "jobfile", null, false, ""));
-    MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
-        appAttemptId, mockJob);
-
-    // add resources to scheduler
-    MockNM nodeManager1 = rm.registerNode("h1:1234", 10240);
-    MockNM nodeManager2 = rm.registerNode("h2:1234", 10240);
-    MockNM nodeManager3 = rm.registerNode("h3:1234", 10240);
-    rm.drainEvents();
-
-    // create the container request
-    ContainerRequestEvent event1 = createReq(jobId, 1, 1024,
-        new String[] { "h1" });
-    allocator.sendRequest(event1);
-
-    // send 1 more request with different resource req
-    ContainerRequestEvent event2 = createReq(jobId, 2, 1024,
-        new String[] { "h2" });
-    allocator.sendRequest(event2);
-
-    // this tells the scheduler about the requests
-    // as nodes are not added, no allocations
-    List<TaskAttemptContainerAssignedEvent> assigned = allocator.schedule();
-    rm.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
-    Assert.assertEquals(4, rm.getMyFifoScheduler().lastAsk.size());
-
-    // send another request with different resource and priority
-    ContainerRequestEvent event3 = createReq(jobId, 3, 1024,
-        new String[] { "h3" });
-    allocator.sendRequest(event3);
-
-    // this tells the scheduler about the requests
-    // as nodes are not added, no allocations
-    assigned = allocator.schedule();
-    rm.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
-    Assert.assertEquals(3, rm.getMyFifoScheduler().lastAsk.size());
-    
-    // update resources in scheduler
-    nodeManager1.nodeHeartbeat(true); // Node heartbeat
-    nodeManager2.nodeHeartbeat(true); // Node heartbeat
-    nodeManager3.nodeHeartbeat(true); // Node heartbeat
-    rm.drainEvents();
-
-    assigned = allocator.schedule();
-    rm.drainEvents();
-    Assert.assertEquals(0, rm.getMyFifoScheduler().lastAsk.size());
-    checkAssignments(new ContainerRequestEvent[] { event1, event2, event3 },
-        assigned, false);
-    
-    // check that the assigned container requests are cancelled
-    allocator.schedule();
-    rm.drainEvents();
-    Assert.assertEquals(5, rm.getMyFifoScheduler().lastAsk.size());
-  }
-  
-  @Test 
-  public void testMapNodeLocality() throws Exception {
-    // test checks that ordering of allocated containers list from the RM does 
-    // not affect the map->container assignment done by the AM. If there is a 
-    // node local container available for a map then it should be assigned to 
-    // that container and not a rack-local container that happened to be seen 
-    // earlier in the allocated containers list from the RM.
-    // Regression test for MAPREDUCE-4893
-    LOG.info("Running testMapNodeLocality");
-
-    Configuration conf = new Configuration();
-    MyResourceManager rm = new MyResourceManager(conf);
-    rm.start();
-
-    // Submit the application
-    RMApp app = rm.submitApp(1024);
-    rm.drainEvents();
-
-    MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
-    amNodeManager.nodeHeartbeat(true);
-    rm.drainEvents();
-
-    ApplicationAttemptId appAttemptId = app.getCurrentAppAttempt()
-        .getAppAttemptId();
-    rm.sendAMLaunched(appAttemptId);
-    rm.drainEvents();
-
-    JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
-    Job mockJob = mock(Job.class);
-    when(mockJob.getReport()).thenReturn(
-        MRBuilderUtils.newJobReport(jobId, "job", "user", JobState.RUNNING, 0, 
-            0, 0, 0, 0, 0, 0, "jobfile", null, false, ""));
-    MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
-        appAttemptId, mockJob);
-
-    // add resources to scheduler
-    MockNM nodeManager1 = rm.registerNode("h1:1234", 3072); // can assign 2 maps 
-    rm.registerNode("h2:1234", 10240); // wont heartbeat on node local node
-    MockNM nodeManager3 = rm.registerNode("h3:1234", 1536); // assign 1 map
-    rm.drainEvents();
-
-    // create the container requests for maps
-    ContainerRequestEvent event1 = createReq(jobId, 1, 1024,
-        new String[] { "h1" });
-    allocator.sendRequest(event1);
-    ContainerRequestEvent event2 = createReq(jobId, 2, 1024,
-        new String[] { "h1" });
-    allocator.sendRequest(event2);
-    ContainerRequestEvent event3 = createReq(jobId, 3, 1024,
-        new String[] { "h2" });
-    allocator.sendRequest(event3);
-
-    // this tells the scheduler about the requests
-    // as nodes are not added, no allocations
-    List<TaskAttemptContainerAssignedEvent> assigned = allocator.schedule();
-    rm.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
-
-    // update resources in scheduler
-    // Node heartbeat from rack-local first. This makes node h3 the first in the
-    // list of allocated containers but it should not be assigned to task1.
-    nodeManager3.nodeHeartbeat(true);
-    // Node heartbeat from node-local next. This allocates 2 node local 
-    // containers for task1 and task2. These should be matched with those tasks.
-    nodeManager1.nodeHeartbeat(true);
-    rm.drainEvents();
-
-    assigned = allocator.schedule();
-    rm.drainEvents();
-    checkAssignments(new ContainerRequestEvent[] { event1, event2, event3 },
-        assigned, false);
-    // remove the rack-local assignment that should have happened for task3
-    for(TaskAttemptContainerAssignedEvent event : assigned) {
-      if(event.getTaskAttemptID().equals(event3.getAttemptID())) {
-        assigned.remove(event);
-        Assert.assertEquals("h3", event.getContainer().getNodeId().getHost());
-        break;
-      }
-    }
-    checkAssignments(new ContainerRequestEvent[] { event1, event2},
-        assigned, true);
-  }
-
-  @Test
-  public void testResource() throws Exception {
-
-    LOG.info("Running testResource");
-
-    Configuration conf = new Configuration();
-    MyResourceManager rm = new MyResourceManager(conf);
-    rm.start();
-
-    // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
@@ -381,20 +226,33 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
 
     // create the container request
-    ContainerRequestEvent event1 = createReq(jobId, 1, 1024,
-        new String[] { "h1" });
+    ContainerRequestEvent event1 = ContainerRequestCreator.createRequest(jobId,
+        1, Resource.newInstance(1024, 1), new String[] {"h1"});
     allocator.sendRequest(event1);
 
     // send 1 more request with different resource req
-    ContainerRequestEvent event2 = createReq(jobId, 2, 2048,
-        new String[] { "h2" });
+    ContainerRequestEvent event2 = ContainerRequestCreator.createRequest(jobId,
+        2, Resource.newInstance(1024, 1), new String[] {"h2"});
     allocator.sendRequest(event2);
 
     // this tells the scheduler about the requests
     // as nodes are not added, no allocations
     List<TaskAttemptContainerAssignedEvent> assigned = allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
+    assertEquals(4, rm.getMyFifoScheduler().lastAsk.size());
+
+    // send another request with different resource and priority
+    ContainerRequestEvent event3 = ContainerRequestCreator.createRequest(jobId,
+        3, Resource.newInstance(1024, 1), new String[] {"h3"});
+    allocator.sendRequest(event3);
+
+    // this tells the scheduler about the requests
+    // as nodes are not added, no allocations
+    assigned = allocator.schedule();
+    rm.drainEvents();
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
+    assertEquals(3, rm.getMyFifoScheduler().lastAsk.size());
 
     // update resources in scheduler
     nodeManager1.nodeHeartbeat(true); // Node heartbeat
@@ -404,11 +262,170 @@ public class TestRMContainerAllocator {
 
     assigned = allocator.schedule();
     rm.drainEvents();
-    checkAssignments(new ContainerRequestEvent[] { event1, event2 },
+    assertEquals(0, rm.getMyFifoScheduler().lastAsk.size());
+    checkAssignments(new ContainerRequestEvent[] {event1, event2, event3},
+        assigned, false);
+
+    // check that the assigned container requests are cancelled
+    allocator.schedule();
+    rm.drainEvents();
+    assertEquals(5, rm.getMyFifoScheduler().lastAsk.size());
+  }
+
+  @Test
+  public void testMapNodeLocality() throws Exception {
+    // test checks that ordering of allocated containers list from the RM does
+    // not affect the map->container assignment done by the AM. If there is a
+    // node local container available for a map then it should be assigned to
+    // that container and not a rack-local container that happened to be seen
+    // earlier in the allocated containers list from the RM.
+    // Regression test for MAPREDUCE-4893
+    LOG.info("Running testMapNodeLocality");
+
+    Configuration conf = new Configuration();
+    MyResourceManager rm = new MyResourceManager(conf);
+    rm.start();
+
+    // Submit the application
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
+    rm.drainEvents();
+
+    MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
+    amNodeManager.nodeHeartbeat(true);
+    rm.drainEvents();
+
+    ApplicationAttemptId appAttemptId = app.getCurrentAppAttempt()
+        .getAppAttemptId();
+    rm.sendAMLaunched(appAttemptId);
+    rm.drainEvents();
+
+    JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
+    Job mockJob = mock(Job.class);
+    when(mockJob.getReport()).thenReturn(
+        MRBuilderUtils.newJobReport(jobId, "job", "user", JobState.RUNNING, 0,
+            0, 0, 0, 0, 0, 0, "jobfile", null, false, ""));
+    MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
+        appAttemptId, mockJob);
+
+    // add resources to scheduler
+    MockNM nodeManager1 = rm.registerNode("h1:1234", 3072); // can assign 2 maps
+    rm.registerNode("h2:1234", 10240); // wont heartbeat on node local node
+    MockNM nodeManager3 = rm.registerNode("h3:1234", 1536); // assign 1 map
+    rm.drainEvents();
+
+    // create the container requests for maps
+    ContainerRequestEvent event1 = ContainerRequestCreator.createRequest(
+            jobId, 1, Resource.newInstance(1024, 1),
+            new String[]{"h1"});
+    allocator.sendRequest(event1);
+    ContainerRequestEvent event2 = ContainerRequestCreator.createRequest(
+            jobId, 2, Resource.newInstance(1024, 1),
+            new String[]{"h1"});
+    allocator.sendRequest(event2);
+    ContainerRequestEvent event3 = ContainerRequestCreator.createRequest(
+            jobId, 3, Resource.newInstance(1024, 1),
+            new String[]{"h2"});
+    allocator.sendRequest(event3);
+
+    // this tells the scheduler about the requests
+    // as nodes are not added, no allocations
+    List<TaskAttemptContainerAssignedEvent> assigned = allocator.schedule();
+    rm.drainEvents();
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
+
+    // update resources in scheduler
+    // Node heartbeat from rack-local first. This makes node h3 the first in the
+    // list of allocated containers but it should not be assigned to task1.
+    nodeManager3.nodeHeartbeat(true);
+    // Node heartbeat from node-local next. This allocates 2 node local
+    // containers for task1 and task2. These should be matched with those tasks.
+    nodeManager1.nodeHeartbeat(true);
+    rm.drainEvents();
+
+    assigned = allocator.schedule();
+    rm.drainEvents();
+    checkAssignments(new ContainerRequestEvent[] {event1, event2, event3},
+        assigned, false);
+    // remove the rack-local assignment that should have happened for task3
+    for(TaskAttemptContainerAssignedEvent event : assigned) {
+      if(event.getTaskAttemptID().equals(event3.getAttemptID())) {
+        assigned.remove(event);
+        assertEquals("h3", event.getContainer().getNodeId().getHost());
+        break;
+      }
+    }
+    checkAssignments(new ContainerRequestEvent[] {event1, event2},
+        assigned, true);
+  }
+
+  @Test
+  public void testResource() throws Exception {
+
+    LOG.info("Running testResource");
+
+    Configuration conf = new Configuration();
+    MyResourceManager rm = new MyResourceManager(conf);
+    rm.start();
+
+    // Submit the application
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
+    rm.drainEvents();
+
+    MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
+    amNodeManager.nodeHeartbeat(true);
+    rm.drainEvents();
+
+    ApplicationAttemptId appAttemptId = app.getCurrentAppAttempt()
+        .getAppAttemptId();
+    rm.sendAMLaunched(appAttemptId);
+    rm.drainEvents();
+
+    JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
+    Job mockJob = mock(Job.class);
+    when(mockJob.getReport()).thenReturn(
+        MRBuilderUtils.newJobReport(jobId, "job", "user", JobState.RUNNING, 0,
+            0, 0, 0, 0, 0, 0, "jobfile", null, false, ""));
+    MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
+        appAttemptId, mockJob);
+
+    // add resources to scheduler
+    MockNM nodeManager1 = rm.registerNode("h1:1234", 10240);
+    MockNM nodeManager2 = rm.registerNode("h2:1234", 10240);
+    MockNM nodeManager3 = rm.registerNode("h3:1234", 10240);
+    rm.drainEvents();
+
+    // create the container request
+    ContainerRequestEvent event1 = ContainerRequestCreator.createRequest(
+            jobId, 1, Resource.newInstance(1024, 1),
+        new String[] {"h1"});
+    allocator.sendRequest(event1);
+
+    // send 1 more request with different resource req
+    ContainerRequestEvent event2 = ContainerRequestCreator.createRequest(
+            jobId, 2, Resource.newInstance(1024, 1),
+        new String[] {"h2"});
+    allocator.sendRequest(event2);
+
+    // this tells the scheduler about the requests
+    // as nodes are not added, no allocations
+    List<TaskAttemptContainerAssignedEvent> assigned = allocator.schedule();
+    rm.drainEvents();
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
+
+    // update resources in scheduler
+    nodeManager1.nodeHeartbeat(true); // Node heartbeat
+    nodeManager2.nodeHeartbeat(true); // Node heartbeat
+    nodeManager3.nodeHeartbeat(true); // Node heartbeat
+    rm.drainEvents();
+
+    assigned = allocator.schedule();
+    rm.drainEvents();
+    checkAssignments(new ContainerRequestEvent[] {event1, event2},
         assigned, false);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testReducerRampdownDiagnostics() throws Exception {
     LOG.info("Running tesReducerRampdownDiagnostics");
 
@@ -416,7 +433,7 @@ public class TestRMContainerAllocator {
     conf.setFloat(MRJobConfig.COMPLETED_MAPS_FOR_REDUCE_SLOWSTART, 0.0f);
     final MyResourceManager rm = new MyResourceManager(conf);
     rm.start();
-    final RMApp app = rm.submitApp(1024);
+    final RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     final String host = "host1";
@@ -439,15 +456,19 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
 
     // create the container request
-    final String[] locations = new String[] { host };
-    allocator.sendRequest(createReq(jobId, 0, 1024, locations, false, true));
+    final String[] locations = new String[] {host};
+    allocator.sendRequest(createRequest(jobId, 0,
+            Resource.newInstance(1024, 1),
+            locations, false, true));
     for (int i = 0; i < 1;) {
       rm.drainEvents();
       i += allocator.schedule().size();
       nm.nodeHeartbeat(true);
     }
 
-    allocator.sendRequest(createReq(jobId, 0, 1024, locations, true, false));
+    allocator.sendRequest(createRequest(jobId, 0,
+            Resource.newInstance(1024, 1),
+            locations, true, false));
     while (allocator.getTaskAttemptKillEvents().size() == 0) {
       rm.drainEvents();
       allocator.schedule().size();
@@ -455,11 +476,12 @@ public class TestRMContainerAllocator {
     }
     final String killEventMessage = allocator.getTaskAttemptKillEvents().get(0)
         .getMessage();
-    Assert.assertTrue("No reducer rampDown preemption message",
-        killEventMessage.contains(RMContainerAllocator.RAMPDOWN_DIAGNOSTIC));
+    assertTrue(killEventMessage.contains(RMContainerAllocator.RAMPDOWN_DIAGNOSTIC),
+        "No reducer rampDown preemption message");
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testPreemptReducers() throws Exception {
     LOG.info("Running testPreemptReducers");
 
@@ -468,7 +490,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
@@ -487,25 +509,27 @@ public class TestRMContainerAllocator {
             0, 0, 0, 0, 0, 0, "jobfile", null, false, ""));
     MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
         appAttemptId, mockJob, SystemClock.getInstance());
-    allocator.setMapResourceRequest(BuilderUtils.newResource(1024, 1));
-    allocator.setReduceResourceRequest(BuilderUtils.newResource(1024, 1));
+    allocator.setMapResourceRequest(Resources.createResource(1024));
+    allocator.setReduceResourceRequest(Resources.createResource(1024));
     RMContainerAllocator.AssignedRequests assignedRequests =
         allocator.getAssignedRequests();
     RMContainerAllocator.ScheduledRequests scheduledRequests =
         allocator.getScheduledRequests();
     ContainerRequestEvent event1 =
-        createReq(jobId, 1, 2048, new String[] { "h1" }, false, false);
+        createRequest(jobId, 1, Resource.newInstance(2048, 1),
+            new String[] {"h1"}, false, false);
     scheduledRequests.maps.put(mock(TaskAttemptId.class),
-        new RMContainerRequestor.ContainerRequest(event1, null,null));
+        new RMContainerRequestor.ContainerRequest(event1, null, null));
     assignedRequests.reduces.put(mock(TaskAttemptId.class),
         mock(Container.class));
 
     allocator.preemptReducesIfNeeded();
-    Assert.assertEquals("The reducer is not preempted",
-        1, assignedRequests.preemptionWaitingReduces.size());
+    assertEquals(1, assignedRequests.preemptionWaitingReduces.size(),
+        "The reducer is not preempted");
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testNonAggressivelyPreemptReducers() throws Exception {
     LOG.info("Running testNonAggressivelyPreemptReducers");
 
@@ -519,7 +543,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
@@ -540,31 +564,35 @@ public class TestRMContainerAllocator {
     clock.setTime(1);
     MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
         appAttemptId, mockJob, clock);
-    allocator.setMapResourceRequest(BuilderUtils.newResource(1024, 1));
-    allocator.setReduceResourceRequest(BuilderUtils.newResource(1024, 1));
+    allocator.setMapResourceRequest(Resources.createResource(1024));
+    allocator.setReduceResourceRequest(Resources.createResource(1024));
     RMContainerAllocator.AssignedRequests assignedRequests =
         allocator.getAssignedRequests();
     RMContainerAllocator.ScheduledRequests scheduledRequests =
         allocator.getScheduledRequests();
     ContainerRequestEvent event1 =
-        createReq(jobId, 1, 2048, new String[] { "h1" }, false, false);
+        createRequest(jobId, 1,
+                Resource.newInstance(2048, 1),
+                new String[] {"h1"}, false, false);
     scheduledRequests.maps.put(mock(TaskAttemptId.class),
-        new RMContainerRequestor.ContainerRequest(event1, null, clock.getTime()));
+        new RMContainerRequestor.ContainerRequest(event1, null,
+                clock.getTime()));
     assignedRequests.reduces.put(mock(TaskAttemptId.class),
         mock(Container.class));
 
     clock.setTime(clock.getTime() + 1);
     allocator.preemptReducesIfNeeded();
-    Assert.assertEquals("The reducer is aggressively preeempted", 0,
-        assignedRequests.preemptionWaitingReduces.size());
+    assertEquals(0, assignedRequests.preemptionWaitingReduces.size(),
+        "The reducer is aggressively preempted");
 
     clock.setTime(clock.getTime() + (preemptThreshold) * 1000);
     allocator.preemptReducesIfNeeded();
-    Assert.assertEquals("The reducer is not preeempted", 1,
-        assignedRequests.preemptionWaitingReduces.size());
+    assertEquals(1, assignedRequests.preemptionWaitingReduces.size(),
+        "The reducer is not preempted");
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testUnconditionalPreemptReducers() throws Exception {
     LOG.info("Running testForcePreemptReducers");
 
@@ -580,7 +608,7 @@ public class TestRMContainerAllocator {
     rm.getMyFifoScheduler().forceResourceLimit(Resource.newInstance(8192, 8));
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
@@ -601,37 +629,41 @@ public class TestRMContainerAllocator {
     clock.setTime(1);
     MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
         appAttemptId, mockJob, clock);
-    allocator.setMapResourceRequest(BuilderUtils.newResource(1024, 1));
-    allocator.setReduceResourceRequest(BuilderUtils.newResource(1024, 1));
+    allocator.setMapResourceRequest(Resources.createResource(1024));
+    allocator.setReduceResourceRequest(Resources.createResource(1024));
     RMContainerAllocator.AssignedRequests assignedRequests =
         allocator.getAssignedRequests();
     RMContainerAllocator.ScheduledRequests scheduledRequests =
         allocator.getScheduledRequests();
     ContainerRequestEvent event1 =
-        createReq(jobId, 1, 2048, new String[] { "h1" }, false, false);
+        createRequest(jobId, 1,
+                Resource.newInstance(2048, 1),
+                new String[] {"h1"}, false, false);
     scheduledRequests.maps.put(mock(TaskAttemptId.class),
-        new RMContainerRequestor.ContainerRequest(event1, null, clock.getTime()));
+        new RMContainerRequestor.ContainerRequest(event1, null,
+                clock.getTime()));
     assignedRequests.reduces.put(mock(TaskAttemptId.class),
         mock(Container.class));
 
     clock.setTime(clock.getTime() + 1);
     allocator.preemptReducesIfNeeded();
-    Assert.assertEquals("The reducer is preeempted too soon", 0,
-        assignedRequests.preemptionWaitingReduces.size());
+    assertEquals(0, assignedRequests.preemptionWaitingReduces.size(),
+        "The reducer is preempted too soon");
 
     clock.setTime(clock.getTime() + 1000 * forcePreemptThresholdSecs);
     allocator.preemptReducesIfNeeded();
-    Assert.assertEquals("The reducer is not preeempted", 1,
-        assignedRequests.preemptionWaitingReduces.size());
+    assertEquals(1, assignedRequests.preemptionWaitingReduces.size(),
+        "The reducer is not preempted");
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testExcessReduceContainerAssign() throws Exception {
   final Configuration conf = new Configuration();
     conf.setFloat(MRJobConfig.COMPLETED_MAPS_FOR_REDUCE_SLOWSTART, 0.0f);
     final MyResourceManager2 rm = new MyResourceManager2(conf);
     rm.start();
-    final RMApp app = rm.submitApp(2048);
+    final RMApp app = MockRMAppSubmitter.submitWithMemory(2048, rm);
     rm.drainEvents();
     final String host = "host1";
     final MockNM nm = rm.registerNode(String.format("%s:1234", host), 4096);
@@ -651,13 +683,17 @@ public class TestRMContainerAllocator {
         appAttemptId, mockJob, SystemClock.getInstance());
 
     // request to allocate two reduce priority containers
-    final String[] locations = new String[] { host };
-    allocator.sendRequest(createReq(jobId, 0, 1024, locations, false, true));
+    final String[] locations = new String[] {host};
+    allocator.sendRequest(createRequest(jobId, 0,
+            Resource.newInstance(1024, 1),
+            locations, false, true));
     allocator.scheduleAllReduces();
     allocator.makeRemoteRequest();
     nm.nodeHeartbeat(true);
     rm.drainEvents();
-    allocator.sendRequest(createReq(jobId, 1, 1024, locations, false, false));
+    allocator.sendRequest(createRequest(jobId, 1,
+            Resource.newInstance(1024, 1),
+            locations, false, false));
 
     int assignedContainer;
     for (assignedContainer = 0; assignedContainer < 1;) {
@@ -666,7 +702,7 @@ public class TestRMContainerAllocator {
       rm.drainEvents();
     }
     // only 1 allocated container should be assigned
-    Assert.assertEquals(assignedContainer, 1);
+    assertThat(assignedContainer).isEqualTo(1);
   }
 
   @Test
@@ -684,7 +720,7 @@ public class TestRMContainerAllocator {
     conf.set(MRJobConfig.REDUCE_NODE_LABEL_EXP, "ReduceNodes");
     ApplicationId appId = ApplicationId.newInstance(1, 1);
     ApplicationAttemptId appAttemptId =
-        ApplicationAttemptId.newInstance(appId, 1);
+            ApplicationAttemptId.newInstance(appId, 1);
     JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
     Job mockJob = mock(Job.class);
     when(mockJob.getReport()).thenReturn(
@@ -706,18 +742,21 @@ public class TestRMContainerAllocator {
 
     // create some map requests
     ContainerRequestEvent reqMapEvents;
-    reqMapEvents = createReq(jobId, 0, 1024, new String[] { "map" });
+    reqMapEvents = ContainerRequestCreator.createRequest(jobId, 0,
+            Resource.newInstance(1024, 1), new String[]{"map"});
     allocator.sendRequests(Arrays.asList(reqMapEvents));
 
     // create some reduce requests
     ContainerRequestEvent reqReduceEvents;
     reqReduceEvents =
-        createReq(jobId, 0, 2048, new String[] { "reduce" }, false, true);
+        createRequest(jobId, 0,
+                Resource.newInstance(2048, 1),
+                new String[] {"reduce"}, false, true);
     allocator.sendRequests(Arrays.asList(reqReduceEvents));
     allocator.schedule();
     // verify all of the host-specific asks were sent plus one for the
     // default rack and one for the ANY request
-    Assert.assertEquals(3, mockScheduler.lastAsk.size());
+    assertEquals(3, mockScheduler.lastAsk.size());
     // verify ResourceRequest sent for MAP have appropriate node
     // label expression as per the configuration
     validateLabelsRequests(mockScheduler.lastAsk.get(0), false);
@@ -728,7 +767,7 @@ public class TestRMContainerAllocator {
     ContainerId cid0 = mockScheduler.assignContainer("map", false);
     allocator.schedule();
     // default rack and one for the ANY request
-    Assert.assertEquals(3, mockScheduler.lastAsk.size());
+    assertEquals(3, mockScheduler.lastAsk.size());
     validateLabelsRequests(mockScheduler.lastAsk.get(0), true);
     validateLabelsRequests(mockScheduler.lastAsk.get(1), true);
     validateLabelsRequests(mockScheduler.lastAsk.get(2), true);
@@ -743,14 +782,14 @@ public class TestRMContainerAllocator {
     case "map":
     case "reduce":
     case NetworkTopology.DEFAULT_RACK:
-      Assert.assertNull(resourceRequest.getNodeLabelExpression());
+      assertNull(resourceRequest.getNodeLabelExpression());
       break;
     case "*":
-      Assert.assertEquals(isReduce ? "ReduceNodes" : "MapNodes",
+      assertEquals(isReduce ? "ReduceNodes" : "MapNodes",
           resourceRequest.getNodeLabelExpression());
       break;
     default:
-      Assert.fail("Invalid resource location "
+      fail("Invalid resource location "
           + resourceRequest.getResourceName());
     }
   }
@@ -855,7 +894,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
@@ -883,25 +922,28 @@ public class TestRMContainerAllocator {
 
     // create the container request
     // send MAP request
-    ContainerRequestEvent event1 = createReq(jobId, 1, 2048, new String[] {
-        "h1", "h2" }, true, false);
+    ContainerRequestEvent event1 = createRequest(jobId, 1,
+            Resource.newInstance(2048, 1),
+            new String[] {"h1", "h2"}, true, false);
     allocator.sendRequest(event1);
 
     // send REDUCE request
-    ContainerRequestEvent event2 = createReq(jobId, 2, 3000,
-        new String[] { "h1" }, false, true);
+    ContainerRequestEvent event2 = createRequest(jobId, 2,
+            Resource.newInstance(3000, 1),
+            new String[] {"h1"}, false, true);
     allocator.sendRequest(event2);
 
     // send MAP request
-    ContainerRequestEvent event3 = createReq(jobId, 3, 2048,
-        new String[] { "h3" }, false, false);
+    ContainerRequestEvent event3 = createRequest(jobId, 3,
+            Resource.newInstance(2048, 1),
+            new String[] {"h3"}, false, false);
     allocator.sendRequest(event3);
 
     // this tells the scheduler about the requests
     // as nodes are not added, no allocations
     List<TaskAttemptContainerAssignedEvent> assigned = allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
 
     // update resources in scheduler
     nodeManager1.nodeHeartbeat(true); // Node heartbeat
@@ -911,20 +953,20 @@ public class TestRMContainerAllocator {
 
     assigned = allocator.schedule();
     rm.drainEvents();
-    checkAssignments(new ContainerRequestEvent[] { event1, event3 },
+    checkAssignments(new ContainerRequestEvent[] {event1, event3},
         assigned, false);
 
     // validate that no container is assigned to h1 as it doesn't have 2048
     for (TaskAttemptContainerAssignedEvent assig : assigned) {
-      Assert.assertFalse("Assigned count not correct", "h1".equals(assig
-          .getContainer().getNodeId().getHost()));
+      assertNotEquals("h1", assig.getContainer().getNodeId().getHost(),
+          "Assigned count not correct");
     }
   }
 
-  private static class MyResourceManager extends MockRM {
+  static class MyResourceManager extends MockRM {
 
     private static long fakeClusterTimeStamp = System.currentTimeMillis();
-    
+
     public MyResourceManager(Configuration conf) {
       super(conf);
     }
@@ -955,7 +997,7 @@ public class TestRMContainerAllocator {
     protected ResourceScheduler createScheduler() {
       return new MyFifoScheduler(this.getRMContext());
     }
-    
+
     MyFifoScheduler getMyFifoScheduler() {
       return (MyFifoScheduler) scheduler;
     }
@@ -984,7 +1026,7 @@ public class TestRMContainerAllocator {
         .getDispatcher();
 
     // Submit the application
-    RMApp rmApp = rm.submitApp(1024);
+    RMApp rmApp = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 21504);
@@ -1008,7 +1050,7 @@ public class TestRMContainerAllocator {
       };
     };
 
-    Assert.assertEquals(0.0, rmApp.getProgress(), 0.0);
+    assertEquals(0.0, rmApp.getProgress(), 0.0);
 
     mrApp.submit(conf);
     Job job = mrApp.getContext().getAllJobs().entrySet().iterator().next()
@@ -1047,23 +1089,23 @@ public class TestRMContainerAllocator {
 
     allocator.schedule(); // Send heartbeat
     rm.drainEvents();
-    Assert.assertEquals(0.05f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.05f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.05f, job.getProgress(), 0.001f);
+    assertEquals(0.05f, rmApp.getProgress(), 0.001f);
 
     // Finish off 1 map.
     Iterator<Task> it = job.getTasks().values().iterator();
     finishNextNTasks(rmDispatcher, amNodeManager, mrApp, it, 1);
     allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(0.095f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.095f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.095f, job.getProgress(), 0.001f);
+    assertEquals(0.095f, rmApp.getProgress(), 0.001f);
 
     // Finish off 7 more so that map-progress is 80%
     finishNextNTasks(rmDispatcher, amNodeManager, mrApp, it, 7);
     allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(0.41f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.41f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.41f, job.getProgress(), 0.001f);
+    assertEquals(0.41f, rmApp.getProgress(), 0.001f);
 
     // Finish off the 2 remaining maps
     finishNextNTasks(rmDispatcher, amNodeManager, mrApp, it, 2);
@@ -1087,16 +1129,16 @@ public class TestRMContainerAllocator {
 
     allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(0.59f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.59f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.59f, job.getProgress(), 0.001f);
+    assertEquals(0.59f, rmApp.getProgress(), 0.001f);
 
     // Finish off the remaining 8 reduces.
     finishNextNTasks(rmDispatcher, amNodeManager, mrApp, it, 8);
     allocator.schedule();
     rm.drainEvents();
     // Remaining is JobCleanup
-    Assert.assertEquals(0.95f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.95f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.95f, job.getProgress(), 0.001f);
+    assertEquals(0.95f, rmApp.getProgress(), 0.001f);
   }
 
   private void finishNextNTasks(DrainDispatcher rmDispatcher, MockNM node,
@@ -1136,7 +1178,7 @@ public class TestRMContainerAllocator {
         .getDispatcher();
 
     // Submit the application
-    RMApp rmApp = rm.submitApp(1024);
+    RMApp rmApp = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 11264);
@@ -1160,7 +1202,7 @@ public class TestRMContainerAllocator {
       };
     };
 
-    Assert.assertEquals(0.0, rmApp.getProgress(), 0.0);
+    assertEquals(0.0, rmApp.getProgress(), 0.0);
 
     mrApp.submit(conf);
     Job job = mrApp.getContext().getAllJobs().entrySet().iterator().next()
@@ -1195,8 +1237,8 @@ public class TestRMContainerAllocator {
 
     allocator.schedule(); // Send heartbeat
     rm.drainEvents();
-    Assert.assertEquals(0.05f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.05f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.05f, job.getProgress(), 0.001f);
+    assertEquals(0.05f, rmApp.getProgress(), 0.001f);
 
     Iterator<Task> it = job.getTasks().values().iterator();
 
@@ -1204,24 +1246,24 @@ public class TestRMContainerAllocator {
     finishNextNTasks(rmDispatcher, amNodeManager, mrApp, it, 1);
     allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(0.14f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.14f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.14f, job.getProgress(), 0.001f);
+    assertEquals(0.14f, rmApp.getProgress(), 0.001f);
 
     // Finish off 5 more map so that map-progress is 60%
     finishNextNTasks(rmDispatcher, amNodeManager, mrApp, it, 5);
     allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(0.59f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.59f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.59f, job.getProgress(), 0.001f);
+    assertEquals(0.59f, rmApp.getProgress(), 0.001f);
 
     // Finish off remaining map so that map-progress is 100%
     finishNextNTasks(rmDispatcher, amNodeManager, mrApp, it, 4);
     allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(0.95f, job.getProgress(), 0.001f);
-    Assert.assertEquals(0.95f, rmApp.getProgress(), 0.001f);
+    assertEquals(0.95f, job.getProgress(), 0.001f);
+    assertEquals(0.95f, rmApp.getProgress(), 0.001f);
   }
-  
+
   @Test
   public void testUpdatedNodes() throws Exception {
     Configuration conf = new Configuration();
@@ -1229,7 +1271,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
     amNodeManager.nodeHeartbeat(true);
@@ -1251,11 +1293,13 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
 
     // create the map container request
-    ContainerRequestEvent event = createReq(jobId, 1, 1024,
-        new String[] { "h1" });
+    ContainerRequestEvent event =
+            ContainerRequestCreator.createRequest(jobId, 1,
+                    Resource.newInstance(1024, 1),
+                    new String[] {"h1"});
     allocator.sendRequest(event);
     TaskAttemptId attemptId = event.getAttemptID();
-    
+
     TaskAttempt mockTaskAttempt = mock(TaskAttempt.class);
     when(mockTaskAttempt.getNodeId()).thenReturn(nm1.getNodeId());
     Task mockTask = mock(Task.class);
@@ -1268,18 +1312,18 @@ public class TestRMContainerAllocator {
 
     nm1.nodeHeartbeat(true);
     rm.drainEvents();
-    Assert.assertEquals(1, allocator.getJobUpdatedNodeEvents().size());
-    Assert.assertEquals(3, allocator.getJobUpdatedNodeEvents().get(0).getUpdatedNodes().size());
+    assertEquals(1, allocator.getJobUpdatedNodeEvents().size());
+    assertEquals(3, allocator.getJobUpdatedNodeEvents().get(0).getUpdatedNodes().size());
     allocator.getJobUpdatedNodeEvents().clear();
     // get the assignment
     assigned = allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(1, assigned.size());
-    Assert.assertEquals(nm1.getNodeId(), assigned.get(0).getContainer().getNodeId());
+    assertEquals(1, assigned.size());
+    assertEquals(nm1.getNodeId(), assigned.get(0).getContainer().getNodeId());
     // no updated nodes reported
-    Assert.assertTrue(allocator.getJobUpdatedNodeEvents().isEmpty());
-    Assert.assertTrue(allocator.getTaskAttemptKillEvents().isEmpty());
-    
+    assertTrue(allocator.getJobUpdatedNodeEvents().isEmpty());
+    assertTrue(allocator.getTaskAttemptKillEvents().isEmpty());
+
     // mark nodes bad
     nm1.nodeHeartbeat(false);
     nm2.nodeHeartbeat(false);
@@ -1288,26 +1332,28 @@ public class TestRMContainerAllocator {
     // schedule response returns updated nodes
     assigned = allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(0, assigned.size());
+    assertEquals(0, assigned.size());
     // updated nodes are reported
-    Assert.assertEquals(1, allocator.getJobUpdatedNodeEvents().size());
-    Assert.assertEquals(1, allocator.getTaskAttemptKillEvents().size());
-    Assert.assertEquals(2, allocator.getJobUpdatedNodeEvents().get(0).getUpdatedNodes().size());
-    Assert.assertEquals(attemptId, allocator.getTaskAttemptKillEvents().get(0).getTaskAttemptID());
+    assertEquals(1, allocator.getJobUpdatedNodeEvents().size());
+    assertEquals(1, allocator.getTaskAttemptKillEvents().size());
+    assertEquals(2,
+        allocator.getJobUpdatedNodeEvents().get(0).getUpdatedNodes().size());
+    assertEquals(attemptId,
+        allocator.getTaskAttemptKillEvents().get(0).getTaskAttemptID());
     allocator.getJobUpdatedNodeEvents().clear();
     allocator.getTaskAttemptKillEvents().clear();
-    
+
     assigned = allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals(0, assigned.size());
+    assertEquals(0, assigned.size());
     // no updated nodes reported
-    Assert.assertTrue(allocator.getJobUpdatedNodeEvents().isEmpty());
-    Assert.assertTrue(allocator.getTaskAttemptKillEvents().isEmpty());
+    assertTrue(allocator.getJobUpdatedNodeEvents().isEmpty());
+    assertTrue(allocator.getTaskAttemptKillEvents().isEmpty());
   }
 
   @Test
   public void testBlackListedNodes() throws Exception {
-    
+
     LOG.info("Running testBlackListedNodes");
 
     Configuration conf = new Configuration();
@@ -1315,12 +1361,12 @@ public class TestRMContainerAllocator {
     conf.setInt(MRJobConfig.MAX_TASK_FAILURES_PER_TRACKER, 1);
     conf.setInt(
         MRJobConfig.MR_AM_IGNORE_BLACKLISTING_BLACKLISTED_NODE_PERECENT, -1);
-    
+
     MyResourceManager rm = new MyResourceManager(conf);
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
@@ -1331,7 +1377,7 @@ public class TestRMContainerAllocator {
         .getAppAttemptId();
     rm.sendAMLaunched(appAttemptId);
     rm.drainEvents();
-    
+
     JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
     Job mockJob = mock(Job.class);
     when(mockJob.getReport()).thenReturn(
@@ -1347,30 +1393,36 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
 
     // create the container request
-    ContainerRequestEvent event1 = createReq(jobId, 1, 1024,
-        new String[] { "h1" });
+    ContainerRequestEvent event1 =
+            ContainerRequestCreator.createRequest(jobId, 1,
+                    Resource.newInstance(1024, 1),
+                    new String[] {"h1"});
     allocator.sendRequest(event1);
 
     // send 1 more request with different resource req
-    ContainerRequestEvent event2 = createReq(jobId, 2, 1024,
-        new String[] { "h2" });
+    ContainerRequestEvent event2 =
+            ContainerRequestCreator.createRequest(jobId, 2,
+                    Resource.newInstance(1024, 1),
+                    new String[] {"h2"});
     allocator.sendRequest(event2);
 
     // send another request with different resource and priority
-    ContainerRequestEvent event3 = createReq(jobId, 3, 1024,
-        new String[] { "h3" });
+    ContainerRequestEvent event3 =
+            ContainerRequestCreator.createRequest(jobId, 3,
+                    Resource.newInstance(1024, 1),
+                    new String[] {"h3"});
     allocator.sendRequest(event3);
 
     // this tells the scheduler about the requests
     // as nodes are not added, no allocations
     List<TaskAttemptContainerAssignedEvent> assigned = allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
 
     // Send events to blacklist nodes h1 and h2
-    ContainerFailedEvent f1 = createFailEvent(jobId, 1, "h1", false);            
+    ContainerFailedEvent f1 = createFailEvent(jobId, 1, "h1", false);
     allocator.sendFailure(f1);
-    ContainerFailedEvent f2 = createFailEvent(jobId, 1, "h2", false);            
+    ContainerFailedEvent f2 = createFailEvent(jobId, 1, "h2", false);
     allocator.sendFailure(f2);
 
     // update resources in scheduler
@@ -1379,9 +1431,9 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
 
     assigned = allocator.schedule();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
     rm.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
     assertBlacklistAdditionsAndRemovals(2, 0, rm);
 
     // mark h1/h2 as bad nodes
@@ -1392,23 +1444,23 @@ public class TestRMContainerAllocator {
     assigned = allocator.schedule();
     rm.drainEvents();
     assertBlacklistAdditionsAndRemovals(0, 0, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());    
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
 
     nodeManager3.nodeHeartbeat(true); // Node heartbeat
     rm.drainEvents();
     assigned = allocator.schedule();
     rm.drainEvents();
     assertBlacklistAdditionsAndRemovals(0, 0, rm);
-        
-    Assert.assertTrue("No of assignments must be 3", assigned.size() == 3);
-    
+
+    assertEquals(3, assigned.size(), "No of assignments must be 3");
+
     // validate that all containers are assigned to h3
     for (TaskAttemptContainerAssignedEvent assig : assigned) {
-      Assert.assertTrue("Assigned container host not correct", "h3".equals(assig
-          .getContainer().getNodeId().getHost()));
+      assertEquals("h3", assig.getContainer().getNodeId().getHost(),
+          "Assigned container host not correct");
     }
   }
-  
+
   @Test
   public void testIgnoreBlacklisting() throws Exception {
     LOG.info("Running testIgnoreBlacklisting");
@@ -1423,7 +1475,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM[] nodeManagers = new MockNM[10];
@@ -1448,9 +1500,9 @@ public class TestRMContainerAllocator {
 
     // Known=1, blacklisted=0, ignore should be false - assign first container
     assigned =
-        getContainerOnHost(jobId, 1, 1024, new String[] { "h1" },
+        getContainerOnHost(jobId, 1, 1024, new String[] {"h1"},
             nodeManagers[0], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
 
     LOG.info("Failing container _1 on H1 (Node should be blacklisted and"
         + " ignore blacklisting enabled");
@@ -1463,49 +1515,49 @@ public class TestRMContainerAllocator {
     // Because makeRemoteRequest will not be aware of it until next call
     // The current call will send blacklisted node "h1" to RM
     assigned =
-        getContainerOnHost(jobId, 2, 1024, new String[] { "h1" },
+        getContainerOnHost(jobId, 2, 1024, new String[] {"h1"},
             nodeManagers[0], allocator, 1, 0, 0, 1, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
 
     // Known=1, blacklisted=1, ignore should be true - assign 1
     assigned =
-        getContainerOnHost(jobId, 2, 1024, new String[] { "h1" },
+        getContainerOnHost(jobId, 2, 1024, new String[] {"h1"},
             nodeManagers[0], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
 
     nodeManagers[nmNum] = registerNodeManager(nmNum++, rm);
     // Known=2, blacklisted=1, ignore should be true - assign 1 anyway.
     assigned =
-        getContainerOnHost(jobId, 3, 1024, new String[] { "h2" },
+        getContainerOnHost(jobId, 3, 1024, new String[] {"h2"},
             nodeManagers[1], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
 
     nodeManagers[nmNum] = registerNodeManager(nmNum++, rm);
     // Known=3, blacklisted=1, ignore should be true - assign 1 anyway.
     assigned =
-        getContainerOnHost(jobId, 4, 1024, new String[] { "h3" },
+        getContainerOnHost(jobId, 4, 1024, new String[] {"h3"},
             nodeManagers[2], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
 
     // Known=3, blacklisted=1, ignore should be true - assign 1
     assigned =
-        getContainerOnHost(jobId, 5, 1024, new String[] { "h1" },
+        getContainerOnHost(jobId, 5, 1024, new String[] {"h1"},
             nodeManagers[0], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
 
     nodeManagers[nmNum] = registerNodeManager(nmNum++, rm);
     // Known=4, blacklisted=1, ignore should be false - assign 1 anyway
     assigned =
-        getContainerOnHost(jobId, 6, 1024, new String[] { "h4" },
+        getContainerOnHost(jobId, 6, 1024, new String[] {"h4"},
             nodeManagers[3], allocator, 0, 0, 1, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
 
     // Test blacklisting re-enabled.
     // Known=4, blacklisted=1, ignore should be false - no assignment on h1
     assigned =
-        getContainerOnHost(jobId, 7, 1024, new String[] { "h1" },
+        getContainerOnHost(jobId, 7, 1024, new String[] {"h1"},
             nodeManagers[0], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
     // RMContainerRequestor would have created a replacement request.
 
     // Blacklist h2
@@ -1516,22 +1568,22 @@ public class TestRMContainerAllocator {
     // Known=4, blacklisted=2, ignore should be true. Should assign 0
     // container for the same reason above.
     assigned =
-        getContainerOnHost(jobId, 8, 1024, new String[] { "h1" },
+        getContainerOnHost(jobId, 8, 1024, new String[] {"h1"},
             nodeManagers[0], allocator, 1, 0, 0, 2, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
 
     // Known=4, blacklisted=2, ignore should be true. Should assign 2
     // containers.
     assigned =
-        getContainerOnHost(jobId, 8, 1024, new String[] { "h1" },
+        getContainerOnHost(jobId, 8, 1024, new String[] {"h1"},
             nodeManagers[0], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 2", 2, assigned.size());
+    assertEquals(2, assigned.size(), "No of assignments must be 2");
 
     // Known=4, blacklisted=2, ignore should be true.
     assigned =
-        getContainerOnHost(jobId, 9, 1024, new String[] { "h2" },
+        getContainerOnHost(jobId, 9, 1024, new String[] {"h2"},
             nodeManagers[1], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
 
     // Test blacklist while ignore blacklisting enabled
     ContainerFailedEvent f3 = createFailEvent(jobId, 4, "h3", false);
@@ -1540,25 +1592,25 @@ public class TestRMContainerAllocator {
     nodeManagers[nmNum] = registerNodeManager(nmNum++, rm);
     // Known=5, blacklisted=3, ignore should be true.
     assigned =
-        getContainerOnHost(jobId, 10, 1024, new String[] { "h3" },
+        getContainerOnHost(jobId, 10, 1024, new String[] {"h3"},
             nodeManagers[2], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
-    
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
+
     // Assign on 5 more nodes - to re-enable blacklisting
     for (int i = 0; i < 5; i++) {
       nodeManagers[nmNum] = registerNodeManager(nmNum++, rm);
       assigned =
           getContainerOnHost(jobId, 11 + i, 1024,
-              new String[] { String.valueOf(5 + i) }, nodeManagers[4 + i],
+              new String[] {String.valueOf(5 + i)}, nodeManagers[4 + i],
               allocator, 0, 0, (i == 4 ? 3 : 0), 0, rm);
-      Assert.assertEquals("No of assignments must be 1", 1, assigned.size());
+      assertEquals(1, assigned.size(), "No of assignments must be 1");
     }
 
     // Test h3 (blacklisted while ignoring blacklisting) is blacklisted.
     assigned =
-        getContainerOnHost(jobId, 20, 1024, new String[] { "h3" },
+        getContainerOnHost(jobId, 20, 1024, new String[] {"h3"},
             nodeManagers[2], allocator, 0, 0, 0, 0, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
   }
 
   private MockNM registerNodeManager(int i, MyResourceManager rm)
@@ -1576,7 +1628,8 @@ public class TestRMContainerAllocator {
           int expectedAdditions2, int expectedRemovals2, MyResourceManager rm)
           throws Exception {
     ContainerRequestEvent reqEvent =
-        createReq(jobId, taskAttemptId, memory, hosts);
+            ContainerRequestCreator.createRequest(jobId, taskAttemptId,
+                    Resource.newInstance(memory, 1), hosts);
     allocator.sendRequest(reqEvent);
 
     // Send the request to the RM
@@ -1584,7 +1637,7 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
     assertBlacklistAdditionsAndRemovals(
         expectedAdditions1, expectedRemovals1, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
 
     // Heartbeat from the required nodeManager
     mockNM.nodeHeartbeat(true);
@@ -1596,7 +1649,7 @@ public class TestRMContainerAllocator {
         expectedAdditions2, expectedRemovals2, rm);
     return assigned;
   }
- 
+
   @Test
   public void testBlackListedNodesWithSchedulingToThatNode() throws Exception {
     LOG.info("Running testBlackListedNodesWithSchedulingToThatNode");
@@ -1606,12 +1659,12 @@ public class TestRMContainerAllocator {
     conf.setInt(MRJobConfig.MAX_TASK_FAILURES_PER_TRACKER, 1);
     conf.setInt(
         MRJobConfig.MR_AM_IGNORE_BLACKLISTING_BLACKLISTED_NODE_PERECENT, -1);
-    
+
     MyResourceManager rm = new MyResourceManager(conf);
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
@@ -1622,7 +1675,7 @@ public class TestRMContainerAllocator {
         .getAppAttemptId();
     rm.sendAMLaunched(appAttemptId);
     rm.drainEvents();
-    
+
     JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
     Job mockJob = mock(Job.class);
     when(mockJob.getReport()).thenReturn(
@@ -1638,8 +1691,10 @@ public class TestRMContainerAllocator {
 
     LOG.info("Requesting 1 Containers _1 on H1");
     // create the container request
-    ContainerRequestEvent event1 = createReq(jobId, 1, 1024,
-        new String[] { "h1" });
+    ContainerRequestEvent event1 =
+            ContainerRequestCreator.createRequest(jobId, 1,
+                    Resource.newInstance(1024, 1),
+                    new String[] {"h1"});
     allocator.sendRequest(event1);
 
     LOG.info("RM Heartbeat (to send the container requests)");
@@ -1647,19 +1702,19 @@ public class TestRMContainerAllocator {
     // as nodes are not added, no allocations
     List<TaskAttemptContainerAssignedEvent> assigned = allocator.schedule();
     rm.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
 
     LOG.info("h1 Heartbeat (To actually schedule the containers)");
     // update resources in scheduler
     nodeManager1.nodeHeartbeat(true); // Node heartbeat
     rm.drainEvents();
-    
+
     LOG.info("RM Heartbeat (To process the scheduled containers)");
     assigned = allocator.schedule();
     rm.drainEvents();
     assertBlacklistAdditionsAndRemovals(0, 0, rm);
-    Assert.assertEquals("No of assignments must be 1", 1, assigned.size());    
-    
+    assertEquals(1, assigned.size(), "No of assignments must be 1");
+
     LOG.info("Failing container _1 on H1 (should blacklist the node)");
     // Send events to blacklist nodes h1 and h2
     ContainerFailedEvent f1 = createFailEvent(jobId, 1, "h1", false);
@@ -1667,35 +1722,38 @@ public class TestRMContainerAllocator {
 
     //At this stage, a request should be created for a fast fail map
     //Create a FAST_FAIL request for a previously failed map.
-    ContainerRequestEvent event1f = createReq(jobId, 1, 1024,
-        new String[] { "h1" }, true, false);
+    ContainerRequestEvent event1f = createRequest(jobId, 1,
+            Resource.newInstance(1024, 1),
+            new String[] {"h1"}, true, false);
     allocator.sendRequest(event1f);
 
     //Update the Scheduler with the new requests.
     assigned = allocator.schedule();
     rm.drainEvents();
     assertBlacklistAdditionsAndRemovals(1, 0, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
 
     // send another request with different resource and priority
-    ContainerRequestEvent event3 = createReq(jobId, 3, 1024,
-        new String[] { "h1", "h3" });
+    ContainerRequestEvent event3 =
+            ContainerRequestCreator.createRequest(jobId, 3,
+                    Resource.newInstance(1024, 1),
+                    new String[] {"h1", "h3"});
     allocator.sendRequest(event3);
-    
+
     //Allocator is aware of prio:5 container, and prio:20 (h1+h3) container.
     //RM is only aware of the prio:5 container
-    
+
     LOG.info("h1 Heartbeat (To actually schedule the containers)");
     // update resources in scheduler
     nodeManager1.nodeHeartbeat(true); // Node heartbeat
     rm.drainEvents();
-    
+
     LOG.info("RM Heartbeat (To process the scheduled containers)");
     assigned = allocator.schedule();
     rm.drainEvents();
     assertBlacklistAdditionsAndRemovals(0, 0, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());    
-    
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
+
     //RMContainerAllocator gets assigned a p:5 on a blacklisted node.
 
     //Send a release for the p:5 container + another request.
@@ -1703,46 +1761,46 @@ public class TestRMContainerAllocator {
     assigned = allocator.schedule();
     rm.drainEvents();
     assertBlacklistAdditionsAndRemovals(0, 0, rm);
-    Assert.assertEquals("No of assignments must be 0", 0, assigned.size());
-    
+    assertEquals(0, assigned.size(), "No of assignments must be 0");
+
     //Hearbeat from H3 to schedule on this host.
     LOG.info("h3 Heartbeat (To re-schedule the containers)");
     nodeManager3.nodeHeartbeat(true); // Node heartbeat
     rm.drainEvents();
-    
+
     LOG.info("RM Heartbeat (To process the re-scheduled containers for H3)");
     assigned = allocator.schedule();
     assertBlacklistAdditionsAndRemovals(0, 0, rm);
     rm.drainEvents();
-     
+
     // For debugging
     for (TaskAttemptContainerAssignedEvent assig : assigned) {
       LOG.info(assig.getTaskAttemptID() +
           " assgined to " + assig.getContainer().getId() +
           " with priority " + assig.getContainer().getPriority());
     }
-    
-    Assert.assertEquals("No of assignments must be 2", 2, assigned.size());
-    
+
+    assertEquals(2, assigned.size(), "No of assignments must be 2");
+
     // validate that all containers are assigned to h3
     for (TaskAttemptContainerAssignedEvent assig : assigned) {
-      Assert.assertEquals("Assigned container " + assig.getContainer().getId()
-          + " host not correct", "h3", assig.getContainer().getNodeId().getHost());
+      assertEquals("h3", assig.getContainer().getNodeId().getHost(),
+          "Assigned container " + assig.getContainer().getId() + " host not correct");
     }
   }
 
   private static void assertBlacklistAdditionsAndRemovals(
       int expectedAdditions, int expectedRemovals, MyResourceManager rm) {
-    Assert.assertEquals(expectedAdditions,
+    assertEquals(expectedAdditions,
         rm.getMyFifoScheduler().lastBlacklistAdditions.size());
-    Assert.assertEquals(expectedRemovals,
+    assertEquals(expectedRemovals,
         rm.getMyFifoScheduler().lastBlacklistRemovals.size());
   }
 
   private static void assertAsksAndReleases(int expectedAsk,
       int expectedRelease, MyResourceManager rm) {
-    Assert.assertEquals(expectedAsk, rm.getMyFifoScheduler().lastAsk.size());
-    Assert.assertEquals(expectedRelease,
+    assertEquals(expectedAsk, rm.getMyFifoScheduler().lastAsk.size());
+    assertEquals(expectedRelease,
         rm.getMyFifoScheduler().lastRelease.size());
   }
 
@@ -1759,13 +1817,13 @@ public class TestRMContainerAllocator {
         assert (false);
       }
     }
-    
+
     List<ResourceRequest> lastAsk = null;
     List<ContainerId> lastRelease = null;
     List<String> lastBlacklistAdditions;
     List<String> lastBlacklistRemovals;
     Resource forceResourceLimit = null;
-    
+
     // override this to copy the objects otherwise FifoScheduler updates the
     // numContainers in same objects as kept by RMContainerAllocator
     @Override
@@ -1855,38 +1913,6 @@ public class TestRMContainerAllocator {
     }
   }
 
-  private ContainerRequestEvent createReq(JobId jobId, int taskAttemptId,
-      int memory, String[] hosts) {
-    return createReq(jobId, taskAttemptId, memory, 1, hosts, false, false);
-  }
-
-  private ContainerRequestEvent createReq(JobId jobId, int taskAttemptId,
-      int mem, String[] hosts, boolean earlierFailedAttempt, boolean reduce) {
-    return createReq(jobId, taskAttemptId, mem,
-        1, hosts, earlierFailedAttempt, reduce);
-  }
-
-  private ContainerRequestEvent createReq(JobId jobId, int taskAttemptId,
-      int memory, int vcore, String[] hosts, boolean earlierFailedAttempt,
-      boolean reduce) {
-    TaskId taskId;
-    if (reduce) {
-      taskId = MRBuilderUtils.newTaskId(jobId, 0, TaskType.REDUCE);
-    } else {
-      taskId = MRBuilderUtils.newTaskId(jobId, 0, TaskType.MAP);
-    }
-    TaskAttemptId attemptId = MRBuilderUtils.newTaskAttemptId(taskId,
-        taskAttemptId);
-    Resource containerNeed = Resource.newInstance(memory, vcore);
-    if (earlierFailedAttempt) {
-      return ContainerRequestEvent
-          .createContainerRequestEventForFailedContainer(attemptId,
-              containerNeed);
-    }
-    return new ContainerRequestEvent(attemptId, containerNeed, hosts,
-        new String[] { NetworkTopology.DEFAULT_RACK });
-  }
-
   private ContainerFailedEvent createFailEvent(JobId jobId, int taskAttemptId,
       String host, boolean reduce) {
     TaskId taskId;
@@ -1897,9 +1923,9 @@ public class TestRMContainerAllocator {
     }
     TaskAttemptId attemptId = MRBuilderUtils.newTaskAttemptId(taskId,
         taskAttemptId);
-    return new ContainerFailedEvent(attemptId, host);    
+    return new ContainerFailedEvent(attemptId, host);
   }
-  
+
   private ContainerAllocatorEvent createDeallocateEvent(JobId jobId,
       int taskAttemptId, boolean reduce) {
     TaskId taskId;
@@ -1917,17 +1943,16 @@ public class TestRMContainerAllocator {
   private void checkAssignments(ContainerRequestEvent[] requests,
       List<TaskAttemptContainerAssignedEvent> assignments,
       boolean checkHostMatch) {
-    Assert.assertNotNull("Container not assigned", assignments);
-    Assert.assertEquals("Assigned count not correct", requests.length,
-        assignments.size());
+    assertNotNull(assignments, "Container not assigned");
+    assertEquals(requests.length, assignments.size(), "Assigned count not correct");
 
     // check for uniqueness of containerIDs
-    Set<ContainerId> containerIds = new HashSet<ContainerId>();
+    Set<ContainerId> containerIds = new HashSet<>();
     for (TaskAttemptContainerAssignedEvent assigned : assignments) {
       containerIds.add(assigned.getContainer().getId());
     }
-    Assert.assertEquals("Assigned containers must be different", assignments
-        .size(), containerIds.size());
+    assertEquals(assignments.size(), containerIds.size(),
+        "Assigned containers must be different");
 
     // check for all assignment
     for (ContainerRequestEvent req : requests) {
@@ -1944,27 +1969,27 @@ public class TestRMContainerAllocator {
 
   private void checkAssignment(ContainerRequestEvent request,
       TaskAttemptContainerAssignedEvent assigned, boolean checkHostMatch) {
-    Assert.assertNotNull("Nothing assigned to attempt "
-        + request.getAttemptID(), assigned);
-    Assert.assertEquals("assigned to wrong attempt", request.getAttemptID(),
-        assigned.getTaskAttemptID());
+    assertNotNull(assigned, "Nothing assigned to attempt "
+        + request.getAttemptID());
+    assertEquals(request.getAttemptID(), assigned.getTaskAttemptID(),
+        "assigned to wrong attempt");
     if (checkHostMatch) {
-      Assert.assertTrue("Not assigned to requested host", Arrays.asList(
+      assertTrue(Arrays.asList(
           request.getHosts()).contains(
-          assigned.getContainer().getNodeId().getHost()));
+          assigned.getContainer().getNodeId().getHost()), "Not assigned to requested host");
     }
   }
 
   // Mock RMContainerAllocator
   // Instead of talking to remote Scheduler,uses the local Scheduler
-  private static class MyContainerAllocator extends RMContainerAllocator {
-    static final List<TaskAttemptContainerAssignedEvent> events
-      = new ArrayList<TaskAttemptContainerAssignedEvent>();
-    static final List<TaskAttemptKillEvent> taskAttemptKillEvents 
-      = new ArrayList<TaskAttemptKillEvent>();
-    static final List<JobUpdatedNodesEvent> jobUpdatedNodeEvents 
-    = new ArrayList<JobUpdatedNodesEvent>();
-    static final List<JobEvent> jobEvents = new ArrayList<JobEvent>();
+  static class MyContainerAllocator extends RMContainerAllocator {
+    static final List<TaskAttemptContainerAssignedEvent> events =
+        new ArrayList<>();
+    static final List<TaskAttemptKillEvent> taskAttemptKillEvents =
+        new ArrayList<>();
+    static final List<JobUpdatedNodesEvent> jobUpdatedNodeEvents =
+        new ArrayList<>();
+    static final List<JobEvent> jobEvents = new ArrayList<>();
     private MyResourceManager rm;
     private boolean isUnregistered = false;
     private AllocateResponse allocateResponse;
@@ -2069,7 +2094,7 @@ public class TestRMContainerAllocator {
     }
 
     public void sendRequest(ContainerRequestEvent req) {
-      sendRequests(Arrays.asList(new ContainerRequestEvent[] { req }));
+      sendRequests(Arrays.asList(new ContainerRequestEvent[] {req}));
     }
 
     public void sendRequests(List<ContainerRequestEvent> reqs) {
@@ -2081,7 +2106,7 @@ public class TestRMContainerAllocator {
     public void sendFailure(ContainerFailedEvent f) {
       super.handleEvent(f);
     }
-    
+
     public void sendDeallocate(ContainerAllocatorEvent f) {
       super.handleEvent(f);
     }
@@ -2099,16 +2124,15 @@ public class TestRMContainerAllocator {
       // run the scheduler
       super.heartbeat();
 
-      List<TaskAttemptContainerAssignedEvent> result
-        = new ArrayList<TaskAttemptContainerAssignedEvent>(events);
+      List<TaskAttemptContainerAssignedEvent> result = new ArrayList<>(events);
       events.clear();
       return result;
     }
-    
+
     static List<TaskAttemptKillEvent> getTaskAttemptKillEvents() {
       return taskAttemptKillEvents;
     }
-    
+
     static List<JobUpdatedNodesEvent> getJobUpdatedNodeEvents() {
       return jobUpdatedNodeEvents;
     }
@@ -2117,12 +2141,12 @@ public class TestRMContainerAllocator {
     protected void startAllocatorThread() {
       // override to NOT start thread
     }
-    
+
     @Override
     protected boolean isApplicationMasterRegistered() {
       return super.isApplicationMasterRegistered();
     }
-    
+
     public boolean isUnregistered() {
       return isUnregistered;
     }
@@ -2152,6 +2176,20 @@ public class TestRMContainerAllocator {
   }
 
   @Test
+  public void testIfApplicationPriorityIsNotSet() {
+    Job mockJob = mock(Job.class);
+    RMCommunicator communicator = mock(RMCommunicator.class);
+    ClientService service = mock(ClientService.class);
+    AppContext context = mock(AppContext.class);
+    AMPreemptionPolicy policy = mock(AMPreemptionPolicy.class);
+    when(communicator.getJob()).thenReturn(mockJob);
+    RMContainerAllocator allocator = new RMContainerAllocator(service, context,
+        policy);
+    AllocateResponse response = Records.newRecord(AllocateResponse.class);
+    allocator.handleJobPriorityChange(response);
+  }
+
+  @Test
   public void testReduceScheduling() throws Exception {
     int totalMaps = 10;
     int succeededMaps = 1;
@@ -2159,12 +2197,12 @@ public class TestRMContainerAllocator {
     int scheduledReduces = 0;
     int assignedMaps = 2;
     int assignedReduces = 0;
-    Resource mapResourceReqt = BuilderUtils.newResource(1024, 1);
-    Resource reduceResourceReqt = BuilderUtils.newResource(2 * 1024, 1);
+    Resource mapResourceReqt = Resources.createResource(1024);
+    Resource reduceResourceReqt = Resources.createResource(2 * 1024);
     int numPendingReduces = 4;
     float maxReduceRampupLimit = 0.5f;
     float reduceSlowStart = 0.2f;
-    
+
     RMContainerAllocator allocator = mock(RMContainerAllocator.class);
     doCallRealMethod().when(allocator).scheduleReduces(anyInt(), anyInt(),
         anyInt(), anyInt(), anyInt(), anyInt(), any(Resource.class),
@@ -2174,14 +2212,14 @@ public class TestRMContainerAllocator {
 
     // Test slow-start
     allocator.scheduleReduces(
-        totalMaps, succeededMaps, 
-        scheduledMaps, scheduledReduces, 
-        assignedMaps, assignedReduces, 
-        mapResourceReqt, reduceResourceReqt, 
-        numPendingReduces, 
+        totalMaps, succeededMaps,
+        scheduledMaps, scheduledReduces,
+        assignedMaps, assignedReduces,
+        mapResourceReqt, reduceResourceReqt,
+        numPendingReduces,
         maxReduceRampupLimit, reduceSlowStart);
     verify(allocator, never()).setIsReduceStarted(true);
-    
+
     // verify slow-start still in effect when no more maps need to
     // be scheduled but some have yet to complete
     allocator.scheduleReduces(
@@ -2195,32 +2233,32 @@ public class TestRMContainerAllocator {
     verify(allocator, never()).scheduleAllReduces();
 
     succeededMaps = 3;
-    doReturn(BuilderUtils.newResource(0, 0)).when(allocator).getResourceLimit();
+    doReturn(Resources.createResource(0)).when(allocator).getResourceLimit();
     allocator.scheduleReduces(
-        totalMaps, succeededMaps, 
-        scheduledMaps, scheduledReduces, 
-        assignedMaps, assignedReduces, 
-        mapResourceReqt, reduceResourceReqt, 
-        numPendingReduces, 
+        totalMaps, succeededMaps,
+        scheduledMaps, scheduledReduces,
+        assignedMaps, assignedReduces,
+        mapResourceReqt, reduceResourceReqt,
+        numPendingReduces,
         maxReduceRampupLimit, reduceSlowStart);
     verify(allocator, times(1)).setIsReduceStarted(true);
-    
+
     // Test reduce ramp-up
-    doReturn(BuilderUtils.newResource(100 * 1024, 100 * 1)).when(allocator)
+    doReturn(Resources.createResource(100 * 1024, 100 * 1)).when(allocator)
       .getResourceLimit();
     allocator.scheduleReduces(
-        totalMaps, succeededMaps, 
-        scheduledMaps, scheduledReduces, 
-        assignedMaps, assignedReduces, 
-        mapResourceReqt, reduceResourceReqt, 
-        numPendingReduces, 
+        totalMaps, succeededMaps,
+        scheduledMaps, scheduledReduces,
+        assignedMaps, assignedReduces,
+        mapResourceReqt, reduceResourceReqt,
+        numPendingReduces,
         maxReduceRampupLimit, reduceSlowStart);
     verify(allocator).rampUpReduces(anyInt());
     verify(allocator, never()).rampDownReduces(anyInt());
 
     // Test reduce ramp-down
     scheduledReduces = 3;
-    doReturn(BuilderUtils.newResource(10 * 1024, 10 * 1)).when(allocator)
+    doReturn(Resources.createResource(10 * 1024, 10 * 1)).when(allocator)
       .getResourceLimit();
     allocator.scheduleReduces(
         totalMaps, succeededMaps,
@@ -2232,18 +2270,18 @@ public class TestRMContainerAllocator {
     verify(allocator).rampDownReduces(anyInt());
 
     // Test reduce ramp-down for when there are scheduled maps
-    // Since we have two scheduled Maps, rampDownReducers 
+    // Since we have two scheduled Maps, rampDownReducers
     // should be invoked twice.
     scheduledMaps = 2;
     assignedReduces = 2;
-    doReturn(BuilderUtils.newResource(10 * 1024, 10 * 1)).when(allocator)
+    doReturn(Resources.createResource(10 * 1024, 10 * 1)).when(allocator)
       .getResourceLimit();
     allocator.scheduleReduces(
-        totalMaps, succeededMaps, 
-        scheduledMaps, scheduledReduces, 
-        assignedMaps, assignedReduces, 
-        mapResourceReqt, reduceResourceReqt, 
-        numPendingReduces, 
+        totalMaps, succeededMaps,
+        scheduledMaps, scheduledReduces,
+        assignedMaps, assignedReduces,
+        mapResourceReqt, reduceResourceReqt,
+        numPendingReduces,
         maxReduceRampupLimit, reduceSlowStart);
     verify(allocator, times(2)).rampDownReduces(anyInt());
 
@@ -2254,7 +2292,7 @@ public class TestRMContainerAllocator {
     // Test ramp-down when enough memory but not enough cpu resource
     scheduledMaps = 10;
     assignedReduces = 0;
-    doReturn(BuilderUtils.newResource(100 * 1024, 5 * 1)).when(allocator)
+    doReturn(Resources.createResource(100 * 1024, 5 * 1)).when(allocator)
         .getResourceLimit();
     allocator.scheduleReduces(totalMaps, succeededMaps, scheduledMaps,
         scheduledReduces, assignedMaps, assignedReduces, mapResourceReqt,
@@ -2263,7 +2301,7 @@ public class TestRMContainerAllocator {
     verify(allocator, times(3)).rampDownReduces(anyInt());
 
     // Test ramp-down when enough cpu but not enough memory resource
-    doReturn(BuilderUtils.newResource(10 * 1024, 100 * 1)).when(allocator)
+    doReturn(Resources.createResource(10 * 1024, 100 * 1)).when(allocator)
         .getResourceLimit();
     allocator.scheduleReduces(totalMaps, succeededMaps, scheduledMaps,
         scheduledReduces, assignedMaps, assignedReduces, mapResourceReqt,
@@ -2288,7 +2326,7 @@ public class TestRMContainerAllocator {
       recalculatedReduceSchedule = true;
     }
   }
-  
+
   @Test
   public void testCompletedTasksRecalculateSchedule() throws Exception {
     LOG.info("Running testCompletedTasksRecalculateSchedule");
@@ -2298,7 +2336,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     // Make a node to register so as to launch the AM.
@@ -2325,13 +2363,13 @@ public class TestRMContainerAllocator {
 
     allocator.recalculatedReduceSchedule = false;
     allocator.schedule();
-    Assert.assertFalse("Unexpected recalculate of reduce schedule",
-        allocator.recalculatedReduceSchedule);
+    assertFalse(allocator.recalculatedReduceSchedule,
+        "Unexpected recalculate of reduce schedule");
 
     doReturn(1).when(job).getCompletedMaps();
     allocator.schedule();
-    Assert.assertTrue("Expected recalculate of reduce schedule",
-        allocator.recalculatedReduceSchedule);
+    assertTrue(allocator.recalculatedReduceSchedule,
+        "Expected recalculate of reduce schedule");
   }
 
   @Test
@@ -2369,14 +2407,14 @@ public class TestRMContainerAllocator {
       Thread.sleep(10);
       timeToWaitMs -= 10;
     }
-    Assert.assertEquals(5, allocator.getLastHeartbeatTime());
+    assertEquals(5, allocator.getLastHeartbeatTime());
     clock.setTime(7);
     timeToWaitMs = 5000;
     while (allocator.getLastHeartbeatTime() != 7 && timeToWaitMs > 0) {
       Thread.sleep(10);
       timeToWaitMs -= 10;
     }
-    Assert.assertEquals(7, allocator.getLastHeartbeatTime());
+    assertEquals(7, allocator.getLastHeartbeatTime());
 
     final AtomicBoolean callbackCalled = new AtomicBoolean(false);
     allocator.runOnNextHeartbeat(new Runnable() {
@@ -2391,8 +2429,8 @@ public class TestRMContainerAllocator {
       Thread.sleep(10);
       timeToWaitMs -= 10;
     }
-    Assert.assertEquals(8, allocator.getLastHeartbeatTime());
-    Assert.assertTrue(callbackCalled.get());
+    assertEquals(8, allocator.getLastHeartbeatTime());
+    assertTrue(callbackCalled.get());
   }
 
   @Test
@@ -2400,31 +2438,36 @@ public class TestRMContainerAllocator {
     RMContainerAllocator allocator = new RMContainerAllocator(
         mock(ClientService.class), mock(AppContext.class),
         new NoopAMPreemptionPolicy());
-    
+
     TaskAttemptId attemptId = MRBuilderUtils.newTaskAttemptId(
         MRBuilderUtils.newTaskId(
             MRBuilderUtils.newJobId(1, 1, 1), 1, TaskType.MAP), 1);
     ApplicationId applicationId = ApplicationId.newInstance(1, 1);
-    ApplicationAttemptId applicationAttemptId = ApplicationAttemptId.newInstance(
-        applicationId, 1);
-    ContainerId containerId = ContainerId.newContainerId(applicationAttemptId, 1);
+    ApplicationAttemptId applicationAttemptId =
+        ApplicationAttemptId.newInstance(applicationId, 1);
+
+    // ABORTED
+    ContainerId containerId =
+        ContainerId.newContainerId(applicationAttemptId, 1);
     ContainerStatus status = ContainerStatus.newInstance(
         containerId, ContainerState.RUNNING, "", 0);
 
     ContainerStatus abortedStatus = ContainerStatus.newInstance(
         containerId, ContainerState.RUNNING, "",
         ContainerExitStatus.ABORTED);
-    
+
     TaskAttemptEvent event = allocator.createContainerFinishedEvent(status,
         attemptId);
-    Assert.assertEquals(TaskAttemptEventType.TA_CONTAINER_COMPLETED,
+    assertEquals(TaskAttemptEventType.TA_CONTAINER_COMPLETED,
         event.getType());
-    
+
     TaskAttemptEvent abortedEvent = allocator.createContainerFinishedEvent(
         abortedStatus, attemptId);
-    Assert.assertEquals(TaskAttemptEventType.TA_KILL, abortedEvent.getType());
-    
-    ContainerId containerId2 = ContainerId.newContainerId(applicationAttemptId, 2);
+    assertEquals(TaskAttemptEventType.TA_KILL, abortedEvent.getType());
+
+    // PREEMPTED
+    ContainerId containerId2 =
+        ContainerId.newContainerId(applicationAttemptId, 2);
     ContainerStatus status2 = ContainerStatus.newInstance(containerId2,
         ContainerState.RUNNING, "", 0);
 
@@ -2433,14 +2476,33 @@ public class TestRMContainerAllocator {
 
     TaskAttemptEvent event2 = allocator.createContainerFinishedEvent(status2,
         attemptId);
-    Assert.assertEquals(TaskAttemptEventType.TA_CONTAINER_COMPLETED,
+    assertEquals(TaskAttemptEventType.TA_CONTAINER_COMPLETED,
         event2.getType());
 
     TaskAttemptEvent abortedEvent2 = allocator.createContainerFinishedEvent(
         preemptedStatus, attemptId);
-    Assert.assertEquals(TaskAttemptEventType.TA_KILL, abortedEvent2.getType());
+    assertEquals(TaskAttemptEventType.TA_KILL, abortedEvent2.getType());
+
+    // KILLED_BY_CONTAINER_SCHEDULER
+    ContainerId containerId3 =
+        ContainerId.newContainerId(applicationAttemptId, 3);
+    ContainerStatus status3 = ContainerStatus.newInstance(containerId3,
+        ContainerState.RUNNING, "", 0);
+
+    ContainerStatus killedByContainerSchedulerStatus =
+        ContainerStatus.newInstance(containerId3, ContainerState.RUNNING, "",
+            ContainerExitStatus.KILLED_BY_CONTAINER_SCHEDULER);
+
+    TaskAttemptEvent event3 = allocator.createContainerFinishedEvent(status3,
+        attemptId);
+    assertEquals(TaskAttemptEventType.TA_CONTAINER_COMPLETED,
+        event3.getType());
+
+    TaskAttemptEvent abortedEvent3 = allocator.createContainerFinishedEvent(
+        killedByContainerSchedulerStatus, attemptId);
+    assertEquals(TaskAttemptEventType.TA_KILL, abortedEvent3.getType());
   }
-  
+
   @Test
   public void testUnregistrationOnlyIfRegistered() throws Exception {
     Configuration conf = new Configuration();
@@ -2448,7 +2510,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp rmApp = rm.submitApp(1024);
+    RMApp rmApp = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("127.0.0.1:1234", 11264);
@@ -2479,11 +2541,11 @@ public class TestRMContainerAllocator {
     MyContainerAllocator allocator =
         (MyContainerAllocator) mrApp.getContainerAllocator();
     amDispatcher.await();
-    Assert.assertTrue(allocator.isApplicationMasterRegistered());
+    assertTrue(allocator.isApplicationMasterRegistered());
     mrApp.stop();
-    Assert.assertTrue(allocator.isUnregistered());
+    assertTrue(allocator.isUnregistered());
   }
-  
+
   // Step-1 : AM send allocate request for 2 ContainerRequests and 1
   // blackListeNode
   // Step-2 : 2 containers are allocated by RM.
@@ -2516,7 +2578,7 @@ public class TestRMContainerAllocator {
     rm1.start();
 
     // Submit the application
-    RMApp app = rm1.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm1);
     rm1.drainEvents();
 
     MockNM nm1 = new MockNM("h1:1234", 15120, rm1.getResourceTrackerService());
@@ -2542,11 +2604,15 @@ public class TestRMContainerAllocator {
     // create the container request
     // send MAP request
     ContainerRequestEvent event1 =
-        createReq(jobId, 1, 1024, new String[] { "h1" });
+            ContainerRequestCreator.createRequest(jobId, 1,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h1"});
     allocator.sendRequest(event1);
 
     ContainerRequestEvent event2 =
-        createReq(jobId, 2, 2048, new String[] { "h1", "h2" });
+        ContainerRequestCreator.createRequest(jobId, 2,
+                Resource.newInstance(2048, 1),
+                new String[] {"h1", "h2"});
     allocator.sendRequest(event2);
 
     // Send events to blacklist h2
@@ -2557,8 +2623,8 @@ public class TestRMContainerAllocator {
     List<TaskAttemptContainerAssignedEvent> assignedContainers =
         allocator.schedule();
     rm1.drainEvents();
-    Assert.assertEquals("No of assignments must be 0", 0,
-        assignedContainers.size());
+    assertEquals(0,
+        assignedContainers.size(), "No of assignments must be 0");
     // Why ask is 3, not 4? --> ask from blacklisted node h2 is removed
     assertAsksAndReleases(3, 0, rm1);
     assertBlacklistAdditionsAndRemovals(1, 0, rm1);
@@ -2569,14 +2635,14 @@ public class TestRMContainerAllocator {
     // Step-2 : 2 containers are allocated by RM.
     assignedContainers = allocator.schedule();
     rm1.drainEvents();
-    Assert.assertEquals("No of assignments must be 2", 2,
-        assignedContainers.size());
+    assertEquals(2,
+        assignedContainers.size(), "No of assignments must be 2");
     assertAsksAndReleases(0, 0, rm1);
     assertBlacklistAdditionsAndRemovals(0, 0, rm1);
 
     assignedContainers = allocator.schedule();
-    Assert.assertEquals("No of assignments must be 0", 0,
-        assignedContainers.size());
+    assertEquals(0,
+        assignedContainers.size(), "No of assignments must be 0");
     assertAsksAndReleases(3, 0, rm1);
     assertBlacklistAdditionsAndRemovals(0, 0, rm1);
 
@@ -2584,7 +2650,9 @@ public class TestRMContainerAllocator {
     // RM
     // send container request
     ContainerRequestEvent event3 =
-        createReq(jobId, 3, 1000, new String[] { "h1" });
+            ContainerRequestCreator.createRequest(jobId, 3,
+                    Resource.newInstance(1000, 1),
+                    new String[]{"h1"});
     allocator.sendRequest(event3);
 
     // send deallocate request
@@ -2593,8 +2661,8 @@ public class TestRMContainerAllocator {
     allocator.sendDeallocate(deallocate1);
 
     assignedContainers = allocator.schedule();
-    Assert.assertEquals("No of assignments must be 0", 0,
-        assignedContainers.size());
+    assertEquals(0,
+        assignedContainers.size(), "No of assignments must be 0");
     assertAsksAndReleases(3, 1, rm1);
     assertBlacklistAdditionsAndRemovals(0, 0, rm1);
 
@@ -2606,7 +2674,7 @@ public class TestRMContainerAllocator {
 
     // NM should be rebooted on heartbeat, even first heartbeat for nm2
     NodeHeartbeatResponse hbResponse = nm1.nodeHeartbeat(true);
-    Assert.assertEquals(NodeAction.RESYNC, hbResponse.getNodeAction());
+    assertEquals(NodeAction.RESYNC, hbResponse.getNodeAction());
 
     // new NM to represent NM re-register
     nm1 = new MockNM("h1:1234", 10240, rm2.getResourceTrackerService());
@@ -2628,18 +2696,22 @@ public class TestRMContainerAllocator {
     allocator.sendFailure(f2);
 
     ContainerRequestEvent event4 =
-        createReq(jobId, 4, 2000, new String[] { "h1", "h2" });
+            ContainerRequestCreator.createRequest(jobId, 4,
+                    Resource.newInstance(2000, 1),
+                    new String[]{"h1", "h2"});
     allocator.sendRequest(event4);
 
-    // send allocate request to 2nd RM and get resync command
+    // send allocate request to 2nd RM and get rsync command
     allocator.schedule();
     rm2.drainEvents();
 
-    // Step-5 : On Resync,AM sends all outstanding
-    // asks,release,blacklistAaddition
+    // Step-5 : On Rsync,AM sends all outstanding
+    // asks,release,blacklistAddition
     // and another containerRequest(event5)
     ContainerRequestEvent event5 =
-        createReq(jobId, 5, 3000, new String[] { "h1", "h2", "h3" });
+            ContainerRequestCreator.createRequest(jobId, 5,
+                    Resource.newInstance(3000, 1),
+                    new String[]{"h1", "h2", "h3"});
     allocator.sendRequest(event5);
 
     // send all outstanding request again.
@@ -2655,12 +2727,11 @@ public class TestRMContainerAllocator {
     assignedContainers = allocator.schedule();
     rm2.drainEvents();
 
-    Assert.assertEquals("Number of container should be 3", 3,
-        assignedContainers.size());
+    assertEquals(3, assignedContainers.size(),
+        "Number of container should be 3");
 
     for (TaskAttemptContainerAssignedEvent assig : assignedContainers) {
-      Assert.assertTrue("Assigned count not correct",
-          "h1".equals(assig.getContainer().getNodeId().getHost()));
+      assertEquals("h1", assig.getContainer().getNodeId().getHost(), "Assigned count not correct");
     }
 
     rm1.stop();
@@ -2696,14 +2767,15 @@ public class TestRMContainerAllocator {
       }
     };
 
-    ContainerRequestEvent mapRequestEvt = createReq(jobId, 0,
-        (int) (maxContainerSupported.getMemorySize() + 10),
-        maxContainerSupported.getVirtualCores(),
+    final int memory = (int) (maxContainerSupported.getMemorySize() + 10);
+    ContainerRequestEvent mapRequestEvt = createRequest(jobId, 0,
+            Resource.newInstance(memory,
+            maxContainerSupported.getVirtualCores()),
         new String[0], false, false);
     allocator.sendRequests(Arrays.asList(mapRequestEvt));
     allocator.schedule();
 
-    Assert.assertEquals(0, mockScheduler.lastAnyAskMap);
+    assertEquals(0, mockScheduler.lastAnyAskMap);
   }
 
   @Test
@@ -2734,10 +2806,11 @@ public class TestRMContainerAllocator {
       }
     };
 
-    ContainerRequestEvent reduceRequestEvt = createReq(jobId, 0,
-        (int) (maxContainerSupported.getMemorySize() + 10),
-        maxContainerSupported.getVirtualCores(),
-        new String[0], false, true);
+    final int memory = (int) (maxContainerSupported.getMemorySize() + 10);
+    ContainerRequestEvent reduceRequestEvt = createRequest(jobId, 0,
+            Resource.newInstance(memory,
+            maxContainerSupported.getVirtualCores()),
+            new String[0], false, true);
     allocator.sendRequests(Arrays.asList(reduceRequestEvt));
     // Reducer container requests are added to the pending queue upon request,
     // schedule all reducers here so that we can observe if reducer requests
@@ -2745,7 +2818,7 @@ public class TestRMContainerAllocator {
     allocator.scheduleAllReduces();
     allocator.schedule();
 
-    Assert.assertEquals(0, mockScheduler.lastAnyAskReduce);
+    assertEquals(0, mockScheduler.lastAnyAskReduce);
   }
 
   @Test
@@ -2757,7 +2830,7 @@ public class TestRMContainerAllocator {
     MyResourceManager rm1 = new MyResourceManager(conf);
     rm1.start();
 
-    RMApp app = rm1.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm1);
     rm1.drainEvents();
 
     MockNM nm1 = new MockNM("h1:1234", 15120, rm1.getResourceTrackerService());
@@ -2780,18 +2853,18 @@ public class TestRMContainerAllocator {
     allocator.jobEvents.clear();
     try {
       allocator.schedule();
-      Assert.fail("Should Have Exception");
+      fail("Should Have Exception");
     } catch (RMContainerAllocationException e) {
-      Assert.assertTrue(e.getMessage().contains("Could not contact RM after"));
+      assertTrue(e.getMessage().contains("Could not contact RM after"));
     }
     rm1.drainEvents();
-    Assert.assertEquals("Should Have 1 Job Event", 1,
-        allocator.jobEvents.size());
-    JobEvent event = allocator.jobEvents.get(0); 
-    Assert.assertTrue("Should Reboot", event.getType().equals(JobEventType.JOB_AM_REBOOT));
+    assertEquals(1, allocator.jobEvents.size(), "Should Have 1 Job Event");
+    JobEvent event = allocator.jobEvents.get(0);
+    assertEquals(event.getType(), JobEventType.JOB_AM_REBOOT, "Should Reboot");
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testAMRMTokenUpdate() throws Exception {
     LOG.info("Running testAMRMTokenUpdate");
 
@@ -2808,7 +2881,7 @@ public class TestRMContainerAllocator {
         rm.getRMContext().getAMRMTokenSecretManager();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
@@ -2829,7 +2902,7 @@ public class TestRMContainerAllocator {
 
     final Token<AMRMTokenIdentifier> oldToken = rm.getRMContext().getRMApps()
         .get(appId).getRMAppAttempt(appAttemptId).getAMRMToken();
-    Assert.assertNotNull("app should have a token", oldToken);
+    assertNotNull(oldToken, "app should have a token");
     UserGroupInformation testUgi = UserGroupInformation.createUserForTesting(
         "someuser", new String[0]);
     Token<AMRMTokenIdentifier> newToken = testUgi.doAs(
@@ -2844,7 +2917,7 @@ public class TestRMContainerAllocator {
             long startTime = Time.monotonicNow();
             while (currentToken == oldToken) {
               if (Time.monotonicNow() - startTime > 20000) {
-                Assert.fail("Took to long to see AMRM token change");
+                fail("Took to long to see AMRM token change");
               }
               Thread.sleep(100);
               allocator.schedule();
@@ -2867,13 +2940,12 @@ public class TestRMContainerAllocator {
       }
     }
 
-    Assert.assertEquals("too many AMRM tokens", 1, tokenCount);
-    Assert.assertArrayEquals("token identifier not updated",
-        newToken.getIdentifier(), ugiToken.getIdentifier());
-    Assert.assertArrayEquals("token password not updated",
-        newToken.getPassword(), ugiToken.getPassword());
-    Assert.assertEquals("AMRM token service not updated",
-        new Text(rmAddr), ugiToken.getService());
+    assertEquals(1, tokenCount, "too many AMRM tokens");
+    assertArrayEquals(newToken.getIdentifier(), ugiToken.getIdentifier(),
+        "token identifier not updated");
+    assertArrayEquals(newToken.getPassword(), ugiToken.getPassword(),
+        "token password not updated");
+    assertEquals(new Text(rmAddr), ugiToken.getService(), "AMRM token service not updated");
   }
 
   @Test
@@ -2913,14 +2985,16 @@ public class TestRMContainerAllocator {
           @Override
           protected void setRequestLimit(Priority priority,
               Resource capability, int limit) {
-            Assert.fail("setRequestLimit() should not be invoked");
+            fail("setRequestLimit() should not be invoked");
           }
         };
 
     // create some map requests
     ContainerRequestEvent[] reqMapEvents = new ContainerRequestEvent[MAP_COUNT];
     for (int i = 0; i < reqMapEvents.length; ++i) {
-      reqMapEvents[i] = createReq(jobId, i, 1024, new String[] { "h" + i });
+      reqMapEvents[i] = ContainerRequestCreator.createRequest(jobId, i,
+              Resource.newInstance(1024, 1),
+              new String[] {"h" + i});
     }
     allocator.sendRequests(Arrays.asList(reqMapEvents));
     // create some reduce requests
@@ -2928,7 +3002,8 @@ public class TestRMContainerAllocator {
         new ContainerRequestEvent[REDUCE_COUNT];
     for (int i = 0; i < reqReduceEvents.length; ++i) {
       reqReduceEvents[i] =
-          createReq(jobId, i, 1024, new String[] {}, false, true);
+          createRequest(jobId, i, Resource.newInstance(1024, 1),
+                  new String[] {}, false, true);
     }
     allocator.sendRequests(Arrays.asList(reqReduceEvents));
     allocator.schedule();
@@ -2975,36 +3050,39 @@ public class TestRMContainerAllocator {
     // create some map requests
     ContainerRequestEvent[] reqMapEvents = new ContainerRequestEvent[MAP_COUNT];
     for (int i = 0; i < reqMapEvents.length; ++i) {
-      reqMapEvents[i] = createReq(jobId, i, 1024, new String[] { "h" + i });
+      reqMapEvents[i] = ContainerRequestCreator.createRequest(jobId, i,
+          Resource.newInstance(1024, 1), new String[] {"h" + i});
     }
     allocator.sendRequests(Arrays.asList(reqMapEvents));
     // create some reduce requests
-    ContainerRequestEvent[] reqReduceEvents = new ContainerRequestEvent[REDUCE_COUNT];
+    ContainerRequestEvent[] reqReduceEvents =
+        new ContainerRequestEvent[REDUCE_COUNT];
     for (int i = 0; i < reqReduceEvents.length; ++i) {
-      reqReduceEvents[i] = createReq(jobId, i, 1024, new String[] {},
-          false, true);
+      reqReduceEvents[i] =
+          createRequest(jobId, i, Resource.newInstance(1024, 1),
+              new String[] {}, false, true);
     }
     allocator.sendRequests(Arrays.asList(reqReduceEvents));
     allocator.schedule();
 
     // verify all of the host-specific asks were sent plus one for the
     // default rack and one for the ANY request
-    Assert.assertEquals(reqMapEvents.length + 2, mockScheduler.lastAsk.size());
+    assertEquals(reqMapEvents.length + 2, mockScheduler.lastAsk.size());
 
     // verify AM is only asking for the map limit overall
-    Assert.assertEquals(MAP_LIMIT, mockScheduler.lastAnyAskMap);
+    assertEquals(MAP_LIMIT, mockScheduler.lastAnyAskMap);
 
     // assign a map task and verify we do not ask for any more maps
     ContainerId cid0 = mockScheduler.assignContainer("h0", false);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(2, mockScheduler.lastAnyAskMap);
+    assertEquals(2, mockScheduler.lastAnyAskMap);
 
     // complete the map task and verify that we ask for one more
     mockScheduler.completeContainer(cid0);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(3, mockScheduler.lastAnyAskMap);
+    assertEquals(3, mockScheduler.lastAnyAskMap);
 
     // assign three more maps and verify we ask for no more maps
     ContainerId cid1 = mockScheduler.assignContainer("h1", false);
@@ -3012,7 +3090,7 @@ public class TestRMContainerAllocator {
     ContainerId cid3 = mockScheduler.assignContainer("h3", false);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(0, mockScheduler.lastAnyAskMap);
+    assertEquals(0, mockScheduler.lastAnyAskMap);
 
     // complete two containers and verify we only asked for one more
     // since at that point all maps should be scheduled/completed
@@ -3020,7 +3098,7 @@ public class TestRMContainerAllocator {
     mockScheduler.completeContainer(cid3);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(1, mockScheduler.lastAnyAskMap);
+    assertEquals(1, mockScheduler.lastAnyAskMap);
 
     // allocate the last container and complete the first one
     // and verify there are no more map asks.
@@ -3028,76 +3106,78 @@ public class TestRMContainerAllocator {
     ContainerId cid4 = mockScheduler.assignContainer("h4", false);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(0, mockScheduler.lastAnyAskMap);
+    assertEquals(0, mockScheduler.lastAnyAskMap);
 
     // complete the last map
     mockScheduler.completeContainer(cid4);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(0, mockScheduler.lastAnyAskMap);
+    assertEquals(0, mockScheduler.lastAnyAskMap);
 
     // verify only reduce limit being requested
-    Assert.assertEquals(REDUCE_LIMIT, mockScheduler.lastAnyAskReduce);
+    assertEquals(REDUCE_LIMIT, mockScheduler.lastAnyAskReduce);
 
     // assign a reducer and verify ask goes to zero
     cid0 = mockScheduler.assignContainer("h0", true);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(0, mockScheduler.lastAnyAskReduce);
+    assertEquals(0, mockScheduler.lastAnyAskReduce);
 
     // complete the reducer and verify we ask for another
     mockScheduler.completeContainer(cid0);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(1, mockScheduler.lastAnyAskReduce);
+    assertEquals(1, mockScheduler.lastAnyAskReduce);
 
     // assign a reducer and verify ask goes to zero
     cid0 = mockScheduler.assignContainer("h0", true);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(0, mockScheduler.lastAnyAskReduce);
+    assertEquals(0, mockScheduler.lastAnyAskReduce);
 
     // complete the reducer and verify no more reducers
     mockScheduler.completeContainer(cid0);
     allocator.schedule();
     allocator.schedule();
-    Assert.assertEquals(0, mockScheduler.lastAnyAskReduce);
+    assertEquals(0, mockScheduler.lastAnyAskReduce);
     allocator.close();
   }
 
-  @Test(expected = RMContainerAllocationException.class)
+  @Test
   public void testAttemptNotFoundCausesRMCommunicatorException()
       throws Exception {
 
-    Configuration conf = new Configuration();
-    MyResourceManager rm = new MyResourceManager(conf);
-    rm.start();
+    assertThrows(RMContainerAllocationException.class, () -> {
+      Configuration conf = new Configuration();
+      MyResourceManager rm = new MyResourceManager(conf);
+      rm.start();
 
-    // Submit the application
-    RMApp app = rm.submitApp(1024);
-    rm.drainEvents();
+      // Submit the application
+      RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
+      rm.drainEvents();
 
-    MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
-    amNodeManager.nodeHeartbeat(true);
-    rm.drainEvents();
+      MockNM amNodeManager = rm.registerNode("amNM:1234", 2048);
+      amNodeManager.nodeHeartbeat(true);
+      rm.drainEvents();
 
-    ApplicationAttemptId appAttemptId = app.getCurrentAppAttempt()
-        .getAppAttemptId();
-    rm.sendAMLaunched(appAttemptId);
-    rm.drainEvents();
+      ApplicationAttemptId appAttemptId = app.getCurrentAppAttempt()
+              .getAppAttemptId();
+      rm.sendAMLaunched(appAttemptId);
+      rm.drainEvents();
 
-    JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
-    Job mockJob = mock(Job.class);
-    when(mockJob.getReport()).thenReturn(
-        MRBuilderUtils.newJobReport(jobId, "job", "user", JobState.RUNNING, 0,
-            0, 0, 0, 0, 0, 0, "jobfile", null, false, ""));
-    MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
-        appAttemptId, mockJob);
+      JobId jobId = MRBuilderUtils.newJobId(appAttemptId.getApplicationId(), 0);
+      Job mockJob = mock(Job.class);
+      when(mockJob.getReport()).thenReturn(
+          MRBuilderUtils.newJobReport(jobId, "job", "user", JobState.RUNNING, 0,
+          0, 0, 0, 0, 0, 0, "jobfile", null, false, ""));
+      MyContainerAllocator allocator = new MyContainerAllocator(rm, conf,
+          appAttemptId, mockJob);
 
-    // Now kill the application
-    rm.killApp(app.getApplicationId());
-    rm.waitForState(app.getApplicationId(), RMAppState.KILLED);
-    allocator.schedule();
+      // Now kill the application
+      rm.killApp(app.getApplicationId());
+      rm.waitForState(app.getApplicationId(), RMAppState.KILLED);
+      allocator.schedule();
+    });
   }
 
   @Test
@@ -3108,7 +3188,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 1260);
@@ -3137,13 +3217,19 @@ public class TestRMContainerAllocator {
 
     // Request 2 maps and 1 reducer(sone on nodes which are not registered).
     ContainerRequestEvent event1 =
-        createReq(jobId, 1, 1024, new String[] { "h1" });
+            ContainerRequestCreator.createRequest(jobId, 1,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h1"});
     allocator.sendRequest(event1);
     ContainerRequestEvent event2 =
-        createReq(jobId, 2, 1024, new String[] { "h2" });
+            ContainerRequestCreator.createRequest(jobId, 2,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h2"});
     allocator.sendRequest(event2);
     ContainerRequestEvent event3 =
-        createReq(jobId, 3, 1024, new String[] { "h2" }, false, true);
+            createRequest(jobId, 3,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h2"}, false, true);
     allocator.sendRequest(event3);
 
     // This will tell the scheduler about the requests but there will be no
@@ -3156,7 +3242,8 @@ public class TestRMContainerAllocator {
 
     // Request for another reducer on h3 which has not registered.
     ContainerRequestEvent event4 =
-        createReq(jobId, 4, 1024, new String[] { "h3" }, false, true);
+        createRequest(jobId, 4, Resource.newInstance(1024, 1),
+                new String[] {"h3"}, false, true);
     allocator.sendRequest(event4);
 
     allocator.schedule();
@@ -3171,29 +3258,29 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
 
     // One map is assigned.
-    Assert.assertEquals(1, allocator.getAssignedRequests().maps.size());
+    assertEquals(1, allocator.getAssignedRequests().maps.size());
     // Send deallocate request for map so that no maps are assigned after this.
     ContainerAllocatorEvent deallocate = createDeallocateEvent(jobId, 1, false);
     allocator.sendDeallocate(deallocate);
     // Now one reducer should be scheduled and one should be pending.
-    Assert.assertEquals(1, allocator.getScheduledRequests().reduces.size());
-    Assert.assertEquals(1, allocator.getNumOfPendingReduces());
+    assertEquals(1, allocator.getScheduledRequests().reduces.size());
+    assertEquals(1, allocator.getNumOfPendingReduces());
     // No map should be assigned and one should be scheduled.
-    Assert.assertEquals(1, allocator.getScheduledRequests().maps.size());
-    Assert.assertEquals(0, allocator.getAssignedRequests().maps.size());
+    assertEquals(1, allocator.getScheduledRequests().maps.size());
+    assertEquals(0, allocator.getAssignedRequests().maps.size());
 
-    Assert.assertEquals(6, allocator.getAsk().size());
+    assertEquals(6, allocator.getAsk().size());
     for (ResourceRequest req : allocator.getAsk()) {
       boolean isReduce =
           req.getPriority().equals(RMContainerAllocator.PRIORITY_REDUCE);
       if (isReduce) {
         // 1 reducer each asked on h2, * and default-rack
-        Assert.assertTrue((req.getResourceName().equals("*") ||
+        assertTrue((req.getResourceName().equals("*") ||
             req.getResourceName().equals("/default-rack") ||
             req.getResourceName().equals("h2")) && req.getNumContainers() == 1);
       } else { //map
         // 0 mappers asked on h1 and 1 each on * and default-rack
-        Assert.assertTrue(((req.getResourceName().equals("*") ||
+        assertTrue(((req.getResourceName().equals("*") ||
             req.getResourceName().equals("/default-rack")) &&
             req.getNumContainers() == 1) || (req.getResourceName().equals("h1")
             && req.getNumContainers() == 0));
@@ -3206,17 +3293,17 @@ public class TestRMContainerAllocator {
     // After allocate response from scheduler, all scheduled reduces are ramped
     // down and move to pending. 3 asks are also updated with 0 containers to
     // indicate ramping down of reduces to scheduler.
-    Assert.assertEquals(0, allocator.getScheduledRequests().reduces.size());
-    Assert.assertEquals(2, allocator.getNumOfPendingReduces());
-    Assert.assertEquals(3, allocator.getAsk().size());
+    assertEquals(0, allocator.getScheduledRequests().reduces.size());
+    assertEquals(2, allocator.getNumOfPendingReduces());
+    assertEquals(3, allocator.getAsk().size());
     for (ResourceRequest req : allocator.getAsk()) {
-      Assert.assertEquals(
+      assertEquals(
           RMContainerAllocator.PRIORITY_REDUCE, req.getPriority());
-      Assert.assertTrue(req.getResourceName().equals("*") ||
+      assertTrue(req.getResourceName().equals("*") ||
           req.getResourceName().equals("/default-rack") ||
           req.getResourceName().equals("h2"));
-      Assert.assertEquals(Resource.newInstance(1024, 1), req.getCapability());
-      Assert.assertEquals(0, req.getNumContainers());
+      assertEquals(Resource.newInstance(1024, 1), req.getCapability());
+      assertEquals(0, req.getNumContainers());
     }
   }
 
@@ -3272,7 +3359,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 1260);
@@ -3301,13 +3388,18 @@ public class TestRMContainerAllocator {
 
     // Request 2 maps and 1 reducer(sone on nodes which are not registered).
     ContainerRequestEvent event1 =
-        createReq(jobId, 1, 1024, new String[] { "h1" });
+            ContainerRequestCreator.createRequest(jobId, 1,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h1"});
     allocator.sendRequest(event1);
     ContainerRequestEvent event2 =
-        createReq(jobId, 2, 1024, new String[] { "h2" });
+            ContainerRequestCreator.createRequest(jobId, 2,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h2"});
     allocator.sendRequest(event2);
     ContainerRequestEvent event3 =
-        createReq(jobId, 3, 1024, new String[] { "h2" }, false, true);
+            createRequest(jobId, 3, Resource.newInstance(1024, 1),
+                    new String[]{"h2"}, false, true);
     allocator.sendRequest(event3);
 
     // This will tell the scheduler about the requests but there will be no
@@ -3320,7 +3412,8 @@ public class TestRMContainerAllocator {
 
     // Request for another reducer on h3 which has not registered.
     ContainerRequestEvent event4 =
-        createReq(jobId, 4, 1024, new String[] { "h3" }, false, true);
+            createRequest(jobId, 4, Resource.newInstance(1024, 1),
+                    new String[]{"h3"}, false, true);
     allocator.sendRequest(event4);
 
     allocator.schedule();
@@ -3335,29 +3428,29 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
 
     // One map is assigned.
-    Assert.assertEquals(1, allocator.getAssignedRequests().maps.size());
+    assertEquals(1, allocator.getAssignedRequests().maps.size());
     // Send deallocate request for map so that no maps are assigned after this.
     ContainerAllocatorEvent deallocate = createDeallocateEvent(jobId, 1, false);
     allocator.sendDeallocate(deallocate);
     // Now one reducer should be scheduled and one should be pending.
-    Assert.assertEquals(1, allocator.getScheduledRequests().reduces.size());
-    Assert.assertEquals(1, allocator.getNumOfPendingReduces());
+    assertEquals(1, allocator.getScheduledRequests().reduces.size());
+    assertEquals(1, allocator.getNumOfPendingReduces());
     // No map should be assigned and one should be scheduled.
-    Assert.assertEquals(1, allocator.getScheduledRequests().maps.size());
-    Assert.assertEquals(0, allocator.getAssignedRequests().maps.size());
+    assertEquals(1, allocator.getScheduledRequests().maps.size());
+    assertEquals(0, allocator.getAssignedRequests().maps.size());
 
-    Assert.assertEquals(6, allocator.getAsk().size());
+    assertEquals(6, allocator.getAsk().size());
     for (ResourceRequest req : allocator.getAsk()) {
       boolean isReduce =
           req.getPriority().equals(RMContainerAllocator.PRIORITY_REDUCE);
       if (isReduce) {
         // 1 reducer each asked on h2, * and default-rack
-        Assert.assertTrue((req.getResourceName().equals("*") ||
+        assertTrue((req.getResourceName().equals("*") ||
             req.getResourceName().equals("/default-rack") ||
             req.getResourceName().equals("h2")) && req.getNumContainers() == 1);
       } else { //map
         // 0 mappers asked on h1 and 1 each on * and default-rack
-        Assert.assertTrue(((req.getResourceName().equals("*") ||
+        assertTrue(((req.getResourceName().equals("*") ||
             req.getResourceName().equals("/default-rack")) &&
             req.getNumContainers() == 1) || (req.getResourceName().equals("h1")
             && req.getNumContainers() == 0));
@@ -3373,17 +3466,17 @@ public class TestRMContainerAllocator {
     // After allocate response from scheduler, all scheduled reduces are ramped
     // down and move to pending. 3 asks are also updated with 0 containers to
     // indicate ramping down of reduces to scheduler.
-    Assert.assertEquals(0, allocator.getScheduledRequests().reduces.size());
-    Assert.assertEquals(2, allocator.getNumOfPendingReduces());
-    Assert.assertEquals(3, allocator.getAsk().size());
+    assertEquals(0, allocator.getScheduledRequests().reduces.size());
+    assertEquals(2, allocator.getNumOfPendingReduces());
+    assertEquals(3, allocator.getAsk().size());
     for (ResourceRequest req : allocator.getAsk()) {
-      Assert.assertEquals(
+      assertEquals(
           RMContainerAllocator.PRIORITY_REDUCE, req.getPriority());
-      Assert.assertTrue(req.getResourceName().equals("*") ||
+      assertTrue(req.getResourceName().equals("*") ||
           req.getResourceName().equals("/default-rack") ||
           req.getResourceName().equals("h2"));
-      Assert.assertEquals(Resource.newInstance(1024, 1), req.getCapability());
-      Assert.assertEquals(0, req.getNumContainers());
+      assertEquals(Resource.newInstance(1024, 1), req.getCapability());
+      assertEquals(0, req.getNumContainers());
     }
   }
 
@@ -3400,7 +3493,7 @@ public class TestRMContainerAllocator {
     rm.start();
 
     // Submit the application
-    RMApp app = rm.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm);
     rm.drainEvents();
 
     MockNM amNodeManager = rm.registerNode("amNM:1234", 1260);
@@ -3433,13 +3526,19 @@ public class TestRMContainerAllocator {
 
     // Request 2 maps and 1 reducer(sone on nodes which are not registered).
     ContainerRequestEvent event1 =
-        createReq(jobId, 1, 1024, new String[] { "h1" });
+            ContainerRequestCreator.createRequest(jobId, 1,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h1"});
     allocator.sendRequest(event1);
     ContainerRequestEvent event2 =
-        createReq(jobId, 2, 1024, new String[] { "h2" });
+            ContainerRequestCreator.createRequest(jobId, 2,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h2"});
     allocator.sendRequest(event2);
     ContainerRequestEvent event3 =
-         createReq(jobId, 3, 1024, new String[] { "h1" }, false, true);
+            createRequest(jobId, 3,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h1"}, false, true);
     allocator.sendRequest(event3);
 
     // This will tell the scheduler about the requests but there will be no
@@ -3449,7 +3548,8 @@ public class TestRMContainerAllocator {
 
     // Request for another reducer on h3 which has not registered.
     ContainerRequestEvent event4 =
-        createReq(jobId, 4, 1024, new String[] { "h3" }, false, true);
+        createRequest(jobId, 4, Resource.newInstance(1024, 1),
+                new String[] {"h3"}, false, true);
     allocator.sendRequest(event4);
 
     allocator.schedule();
@@ -3464,14 +3564,14 @@ public class TestRMContainerAllocator {
     rm.drainEvents();
 
     // Two maps are assigned.
-    Assert.assertEquals(2, allocator.getAssignedRequests().maps.size());
+    assertEquals(2, allocator.getAssignedRequests().maps.size());
     // Send deallocate request for map so that no maps are assigned after this.
     ContainerAllocatorEvent deallocate1 = createDeallocateEvent(jobId, 1, false);
     allocator.sendDeallocate(deallocate1);
     ContainerAllocatorEvent deallocate2 = createDeallocateEvent(jobId, 2, false);
     allocator.sendDeallocate(deallocate2);
     // No map should be assigned.
-    Assert.assertEquals(0, allocator.getAssignedRequests().maps.size());
+    assertEquals(0, allocator.getAssignedRequests().maps.size());
 
     nodeManager.nodeHeartbeat(true);
     rm.drainEvents();
@@ -3486,25 +3586,27 @@ public class TestRMContainerAllocator {
 
     // Send request for one more mapper.
     ContainerRequestEvent event5 =
-        createReq(jobId, 5, 1024, new String[] { "h1" });
+            ContainerRequestCreator.createRequest(jobId, 5,
+                    Resource.newInstance(1024, 1),
+                    new String[]{"h1"});
     allocator.sendRequest(event5);
 
     rm.getMyFifoScheduler().forceResourceLimit(Resource.newInstance(2048, 2));
     allocator.schedule();
     rm.drainEvents();
     // One reducer is assigned and one map is scheduled
-    Assert.assertEquals(1, allocator.getScheduledRequests().maps.size());
-    Assert.assertEquals(1, allocator.getAssignedRequests().reduces.size());
+    assertEquals(1, allocator.getScheduledRequests().maps.size());
+    assertEquals(1, allocator.getAssignedRequests().reduces.size());
     // Headroom enough to run a mapper if headroom is taken as it is but wont be
     // enough if scheduled reducers resources are deducted.
     rm.getMyFifoScheduler().forceResourceLimit(Resource.newInstance(1260, 2));
     allocator.schedule();
     rm.drainEvents();
     // After allocate response, the one assigned reducer is preempted and killed
-    Assert.assertEquals(1, MyContainerAllocator.getTaskAttemptKillEvents().size());
-    Assert.assertEquals(RMContainerAllocator.RAMPDOWN_DIAGNOSTIC,
+    assertEquals(1, MyContainerAllocator.getTaskAttemptKillEvents().size());
+    assertEquals(RMContainerAllocator.RAMPDOWN_DIAGNOSTIC,
         MyContainerAllocator.getTaskAttemptKillEvents().get(0).getMessage());
-    Assert.assertEquals(1, allocator.getNumOfPendingReduces());
+    assertEquals(1, allocator.getNumOfPendingReduces());
   }
 
   private static class MockScheduler implements ApplicationMasterProtocol {
@@ -3528,7 +3630,7 @@ public class TestRMContainerAllocator {
       return RegisterApplicationMasterResponse.newInstance(
           Resource.newInstance(512, 1),
           Resource.newInstance(512000, 1024),
-          Collections.<ApplicationAccessType,String>emptyMap(),
+          Collections.emptyMap(),
           ByteBuffer.wrap("fake_key".getBytes()),
           Collections.<Container>emptyList(),
           "default",
@@ -3576,7 +3678,7 @@ public class TestRMContainerAllocator {
           : RMContainerAllocator.PRIORITY_MAP;
       Container container = Container.newInstance(containerId,
           NodeId.newInstance(nodeName, 1234), nodeName + ":5678",
-        Resource.newInstance(1024, 1), priority, null);
+          Resource.newInstance(1024, 1), priority, null);
       containersToAllocate.add(container);
       return containerId;
     }
@@ -3627,7 +3729,7 @@ public class TestRMContainerAllocator {
     }
   }
 
-  public static void main(String[] args) throws Exception {
+  /*public static void main(String[] args) throws Exception {
     TestRMContainerAllocator t = new TestRMContainerAllocator();
     t.testSimple();
     t.testResource();
@@ -3637,6 +3739,6 @@ public class TestRMContainerAllocator {
     t.testBlackListedNodes();
     t.testCompletedTasksRecalculateSchedule();
     t.testAMRMTokenUpdate();
-  }
+  }*/
 
 }

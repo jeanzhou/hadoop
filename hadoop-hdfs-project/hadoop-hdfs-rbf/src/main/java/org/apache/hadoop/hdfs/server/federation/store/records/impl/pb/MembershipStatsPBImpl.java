@@ -25,7 +25,7 @@ import org.apache.hadoop.hdfs.federation.protocol.proto.HdfsServerFederationProt
 import org.apache.hadoop.hdfs.server.federation.store.protocol.impl.pb.FederationProtocolPBTranslator;
 import org.apache.hadoop.hdfs.server.federation.store.records.MembershipStats;
 
-import com.google.protobuf.Message;
+import org.apache.hadoop.thirdparty.protobuf.Message;
 
 /**
  * Protobuf implementation of the MembershipStats record.
@@ -169,6 +169,16 @@ public class MembershipStatsPBImpl extends MembershipStats
   }
 
   @Override
+  public void setNumOfStaleDatanodes(int nodes) {
+    this.translator.getBuilder().setNumOfStaleDatanodes(nodes);
+  }
+
+  @Override
+  public int getNumOfStaleDatanodes() {
+    return this.translator.getProtoOrBuilder().getNumOfStaleDatanodes();
+  }
+
+  @Override
   public void setNumOfDecommissioningDatanodes(int nodes) {
     this.translator.getBuilder().setNumOfDecommissioningDatanodes(nodes);
   }
@@ -197,5 +207,116 @@ public class MembershipStatsPBImpl extends MembershipStats
   @Override
   public int getNumOfDecomDeadDatanodes() {
     return this.translator.getProtoOrBuilder().getNumOfDecomDeadDatanodes();
+  }
+
+  @Override
+  public void setNumOfInMaintenanceLiveDataNodes(int nodes) {
+    this.translator.getBuilder().setNumOfInMaintenanceLiveDataNodes(nodes);
+  }
+
+  @Override
+  public int getNumOfInMaintenanceLiveDataNodes() {
+    return this.translator.getProtoOrBuilder()
+        .getNumOfInMaintenanceLiveDataNodes();
+  }
+
+  @Override
+  public void setNumOfInMaintenanceDeadDataNodes(int nodes) {
+    this.translator.getBuilder().setNumOfInMaintenanceDeadDataNodes(nodes);
+  }
+
+  @Override
+  public int getNumOfInMaintenanceDeadDataNodes() {
+    return this.translator.getProtoOrBuilder()
+        .getNumOfInMaintenanceDeadDataNodes();
+  }
+
+  @Override
+  public void setNumOfEnteringMaintenanceDataNodes(int nodes) {
+    this.translator.getBuilder().setNumOfEnteringMaintenanceDataNodes(nodes);
+  }
+
+  @Override
+  public int getNumOfEnteringMaintenanceDataNodes() {
+    return this.translator.getProtoOrBuilder()
+        .getNumOfEnteringMaintenanceDataNodes();
+  }
+
+  @Override
+  public void setCorruptFilesCount(int num) {
+    this.translator.getBuilder().setCorruptFilesCount(num);
+  }
+
+  @Override
+  public int getCorruptFilesCount() {
+    return this.translator.getProtoOrBuilder().getCorruptFilesCount();
+  }
+
+  @Override
+  public void setScheduledReplicationBlocks(long blocks) {
+    this.translator.getBuilder().setScheduledReplicationBlocks(blocks);
+  }
+
+  @Override
+  public long getScheduledReplicationBlocks() {
+    return this.translator.getProtoOrBuilder().getScheduledReplicationBlocks();
+  }
+
+  @Override
+  public void setNumberOfMissingBlocksWithReplicationFactorOne(long blocks) {
+    this.translator.getBuilder()
+        .setNumberOfMissingBlocksWithReplicationFactorOne(blocks);
+  }
+
+  @Override
+  public long getNumberOfMissingBlocksWithReplicationFactorOne() {
+    return this.translator.getProtoOrBuilder()
+        .getNumberOfMissingBlocksWithReplicationFactorOne();
+  }
+
+  @Override
+  public void setNumberOfBadlyDistributedBlocks(long blocks) {
+    this.translator.getBuilder()
+        .setBadlyDistributedBlocks(blocks);
+  }
+
+  @Override
+  public long getNumberOfBadlyDistributedBlocks() {
+    return this.translator.getProtoOrBuilder()
+        .getBadlyDistributedBlocks();
+  }
+
+  @Override
+  public void setHighestPriorityLowRedundancyReplicatedBlocks(long blocks) {
+    this.translator.getBuilder()
+        .setHighestPriorityLowRedundancyReplicatedBlocks(blocks);
+  }
+
+  @Override
+  public long getHighestPriorityLowRedundancyReplicatedBlocks() {
+    return this.translator.getProtoOrBuilder()
+        .getHighestPriorityLowRedundancyReplicatedBlocks();
+  }
+
+  @Override
+  public void setHighestPriorityLowRedundancyECBlocks(long blocks) {
+    this.translator.getBuilder()
+        .setHighestPriorityLowRedundancyECBlocks(blocks);
+  }
+
+  @Override
+  public long getHighestPriorityLowRedundancyECBlocks() {
+    return this.translator.getProtoOrBuilder()
+        .getHighestPriorityLowRedundancyECBlocks();
+  }
+
+  @Override
+  public void setPendingSPSPaths(int pendingSPSPaths) {
+    this.translator.getBuilder().setPendingSPSPaths(pendingSPSPaths);
+  }
+
+  @Override
+  public int getPendingSPSPaths() {
+    return this.translator.getProtoOrBuilder().getPendingSPSPaths();
   }
 }

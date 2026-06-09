@@ -17,7 +17,9 @@
  */
 package org.apache.hadoop.ipc;
 
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -25,8 +27,6 @@ import java.net.InetSocketAddress;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 
-import org.apache.hadoop.ipc.protobuf.TestProtos.EchoRequestProto;
-import org.apache.hadoop.ipc.protobuf.TestProtos.EchoResponseProto;
 import org.apache.hadoop.ipc.protobuf.TestProtos.EmptyRequestProto;
 import org.apache.hadoop.ipc.protobuf.TestProtos.EmptyResponseProto;
 import org.apache.hadoop.ipc.protobuf.TestProtos.OptRequestProto;
@@ -36,12 +36,11 @@ import org.apache.hadoop.ipc.protobuf.TestRpcServiceProtos.OldProtobufRpcProto;
 import org.apache.hadoop.ipc.protobuf.TestRpcServiceProtos.NewProtobufRpcProto;
 import org.apache.hadoop.ipc.protobuf.TestRpcServiceProtos.NewerProtobufRpcProto;
 import org.apache.hadoop.net.NetUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import com.google.protobuf.BlockingService;
-import com.google.protobuf.RpcController;
-import com.google.protobuf.ServiceException;
+import org.apache.hadoop.thirdparty.protobuf.BlockingService;
+import org.apache.hadoop.thirdparty.protobuf.RpcController;
+import org.apache.hadoop.thirdparty.protobuf.ServiceException;
 
 public class TestProtoBufRPCCompatibility {
 
@@ -73,8 +72,8 @@ public class TestProtoBufRPCCompatibility {
         EmptyRequestProto request) throws ServiceException {
       // Ensure clientId is received
       byte[] clientId = Server.getClientId();
-      Assert.assertNotNull(Server.getClientId());
-      Assert.assertEquals(16, clientId.length);
+      assertNotNull(Server.getClientId());
+      assertEquals(16, clientId.length);
       return EmptyResponseProto.newBuilder().build();
     }
 
@@ -83,8 +82,8 @@ public class TestProtoBufRPCCompatibility {
         EmptyRequestProto request) throws ServiceException {
       // Ensure clientId is received
       byte[] clientId = Server.getClientId();
-      Assert.assertNotNull(Server.getClientId());
-      Assert.assertEquals(16, clientId.length);
+      assertNotNull(Server.getClientId());
+      assertEquals(16, clientId.length);
       return EmptyResponseProto.newBuilder().build();
     }
   }
@@ -96,8 +95,8 @@ public class TestProtoBufRPCCompatibility {
         EmptyRequestProto request) throws ServiceException {
       // Ensure clientId is received
       byte[] clientId = Server.getClientId();
-      Assert.assertNotNull(Server.getClientId());
-      Assert.assertEquals(16, clientId.length);
+      assertNotNull(Server.getClientId());
+      assertEquals(16, clientId.length);
       return EmptyResponseProto.newBuilder().build();
     }
 
@@ -117,8 +116,8 @@ public class TestProtoBufRPCCompatibility {
         EmptyRequestProto request) throws ServiceException {
       // Ensure clientId is received
       byte[] clientId = Server.getClientId();
-      Assert.assertNotNull(Server.getClientId());
-      Assert.assertEquals(16, clientId.length);
+      assertNotNull(Server.getClientId());
+      assertEquals(16, clientId.length);
       return EmptyResponseProto.newBuilder().build();
     }
 
@@ -127,8 +126,8 @@ public class TestProtoBufRPCCompatibility {
         throws ServiceException {
       // Ensure clientId is received
       byte[] clientId = Server.getClientId();
-      Assert.assertNotNull(Server.getClientId());
-      Assert.assertEquals(16, clientId.length);
+      assertNotNull(Server.getClientId());
+      assertEquals(16, clientId.length);
       return EmptyResponseProto.newBuilder().build();
     }
   }
@@ -138,7 +137,7 @@ public class TestProtoBufRPCCompatibility {
     conf = new Configuration();
     conf.setInt(CommonConfigurationKeys.IPC_MAXIMUM_DATA_LENGTH, 1024);
     // Set RPC engine to protobuf RPC engine
-    RPC.setProtocolEngine(conf, NewRpcService.class, ProtobufRpcEngine.class);
+    RPC.setProtocolEngine(conf, NewRpcService.class, ProtobufRpcEngine2.class);
 
     // Create server side implementation
     NewServerImpl serverImpl = new NewServerImpl();
@@ -151,7 +150,7 @@ public class TestProtoBufRPCCompatibility {
 
     server.start();
 
-    RPC.setProtocolEngine(conf, OldRpcService.class, ProtobufRpcEngine.class);
+    RPC.setProtocolEngine(conf, OldRpcService.class, ProtobufRpcEngine2.class);
 
     OldRpcService proxy = RPC.getProxy(OldRpcService.class, 0, addr, conf);
     // Verify that exception is thrown if protocolVersion is mismatch between
@@ -168,7 +167,8 @@ public class TestProtoBufRPCCompatibility {
     }
 
     // Verify that missing of optional field is still compatible in RPC call.
-    RPC.setProtocolEngine(conf, NewerRpcService.class, ProtobufRpcEngine.class);
+    RPC.setProtocolEngine(conf, NewerRpcService.class,
+        ProtobufRpcEngine2.class);
     NewerRpcService newProxy = RPC.getProxy(NewerRpcService.class, 0, addr,
         conf);
     newProxy.echo(null, emptyRequest);

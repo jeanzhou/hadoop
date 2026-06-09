@@ -17,15 +17,25 @@
  */
 package org.apache.hadoop.fs.shell;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SHELL_MISSING_DEFAULT_FS_WARNING_KEY;
-import static org.junit.Assert.*;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.reset;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -39,9 +49,9 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsPermission;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
 /**
@@ -54,20 +64,21 @@ public class TestLs {
 
   private static final Date NOW = new Date();
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws IOException {
     conf = new Configuration();
-    conf.set("fs.defaultFS", "mockfs:///");
+    conf.set(FS_DEFAULT_NAME_KEY, "mockfs:///");
     conf.setClass("fs.mockfs.impl", MockFileSystem.class, FileSystem.class);
     mockFs = mock(FileSystem.class);
   }
 
-  @Before
-  public void resetMock() throws IOException {
+  @BeforeEach
+  public void resetMock() throws IOException, URISyntaxException {
     reset(mockFs);
     AclStatus mockAclStatus = mock(AclStatus.class);
     when(mockAclStatus.getEntries()).thenReturn(new ArrayList<AclEntry>());
     when(mockFs.getAclStatus(any(Path.class))).thenReturn(mockAclStatus);
+    when(mockFs.getUri()).thenReturn(new URI(conf.get(FS_DEFAULT_NAME_KEY)));
   }
 
   // check that default options are correct
@@ -84,6 +95,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertFalse(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the -C option is recognised
@@ -101,6 +113,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertFalse(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the -d option is recognised
@@ -118,6 +131,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertFalse(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the -h option is recognised
@@ -135,6 +149,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertFalse(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the -R option is recognised
@@ -152,6 +167,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertFalse(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the -r option is recognised
@@ -169,6 +185,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertFalse(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the -S option is recognised
@@ -186,6 +203,7 @@ public class TestLs {
     assertTrue(ls.isOrderSize());
     assertFalse(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the -t option is recognised
@@ -203,6 +221,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertTrue(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the precedence of the -t and -S options
@@ -221,6 +240,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertTrue(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // check the precedence of the -t, -S and -r options
@@ -240,6 +260,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertTrue(ls.isOrderTime());
     assertFalse(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
   }
 
   // chheck the -u option is recognised
@@ -257,6 +278,25 @@ public class TestLs {
     assertFalse(ls.isOrderSize());
     assertFalse(ls.isOrderTime());
     assertTrue(ls.isUseAtime());
+    assertFalse(ls.isDisplayECPolicy());
+  }
+
+  // chheck the -e option is recognised
+  @Test
+  public void processOptionsDisplayECPolicy() throws IOException {
+    LinkedList<String> options = new LinkedList<String>();
+    options.add("-e");
+    Ls ls = new Ls();
+    ls.processOptions(options);
+    assertFalse(ls.isPathOnly());
+    assertTrue(ls.isDirRecurse());
+    assertFalse(ls.isHumanReadable());
+    assertFalse(ls.isRecursive());
+    assertFalse(ls.isOrderReverse());
+    assertFalse(ls.isOrderSize());
+    assertFalse(ls.isOrderTime());
+    assertFalse(ls.isUseAtime());
+    assertTrue(ls.isDisplayECPolicy());
   }
 
   // check all options is handled correctly
@@ -271,6 +311,7 @@ public class TestLs {
     options.add("-t"); // time order
     options.add("-S"); // size order
     options.add("-u"); // show atime
+    options.add("-e"); // show EC policies
     Ls ls = new Ls();
     ls.processOptions(options);
     assertTrue(ls.isPathOnly());
@@ -281,6 +322,7 @@ public class TestLs {
     assertFalse(ls.isOrderSize()); // -t overrules -S
     assertTrue(ls.isOrderTime());
     assertTrue(ls.isUseAtime());
+    assertTrue(ls.isDisplayECPolicy());
   }
 
   // check listing of a single file
@@ -1079,7 +1121,7 @@ public class TestLs {
     Ls ls = new Ls();
     boolean actual = ls.isDeprecated();
     boolean expected = false;
-    assertEquals("Ls.isDeprecated", expected, actual);
+    assertEquals(expected, actual, "Ls.isDeprecated");
   }
 
   // check there's no replacement command
@@ -1088,7 +1130,7 @@ public class TestLs {
     Ls ls = new Ls();
     String actual = ls.getReplacementCommand();
     String expected = null;
-    assertEquals("Ls.getReplacementCommand", expected, actual);
+    assertEquals(expected, actual, "Ls.getReplacementCommand");
   }
 
   // check the correct name is returned
@@ -1097,7 +1139,40 @@ public class TestLs {
     Ls ls = new Ls();
     String actual = ls.getName();
     String expected = "ls";
-    assertEquals("Ls.getName", expected, actual);
+    assertEquals(expected, actual, "Ls.getName");
+  }
+
+  @Test
+  public void processPathFileDisplayECPolicyWhenUnsupported()
+      throws IOException {
+    assertThrows(UnsupportedOperationException.class, ()->{
+      TestFile testFile = new TestFile("testDirectory", "testFile");
+      LinkedList<PathData> pathData = new LinkedList<PathData>();
+      pathData.add(testFile.getPathData());
+      Ls ls = new Ls();
+      LinkedList<String> options = new LinkedList<String>();
+      options.add("-e");
+      ls.processOptions(options);
+      ls.processArguments(pathData);
+    });
+  }
+
+  @Test
+  public void processPathDirDisplayECPolicyWhenUnsupported()
+      throws IOException {
+    assertThrows(UnsupportedOperationException.class, () -> {
+      TestFile testFile = new TestFile("testDirectory", "testFile");
+      TestFile testDir = new TestFile("", "testDirectory");
+      testDir.setIsDir(true);
+      testDir.addContents(testFile);
+      LinkedList<PathData> pathData = new LinkedList<PathData>();
+      pathData.add(testDir.getPathData());
+      Ls ls = new Ls();
+      LinkedList<String> options = new LinkedList<String>();
+      options.add("-e");
+      ls.processOptions(options);
+      ls.processArguments(pathData);
+    });
   }
 
   // test class representing a file to be listed

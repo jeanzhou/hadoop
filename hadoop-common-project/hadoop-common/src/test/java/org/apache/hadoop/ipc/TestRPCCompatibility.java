@@ -19,9 +19,9 @@
 package org.apache.hadoop.ipc;
 
 import org.apache.hadoop.conf.Configuration;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,8 +29,8 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /** Unit test for supporting method-name based compatible RPCs. */
 public class TestRPCCompatibility {
@@ -109,27 +109,27 @@ public class TestRPCCompatibility {
 
   }
 
-  @Before
+  @BeforeEach
   public void setUp() {
     ProtocolSignature.resetCache();
 
     RPC.setProtocolEngine(conf,
-        TestProtocol0.class, ProtobufRpcEngine.class);
+        TestProtocol0.class, ProtobufRpcEngine2.class);
 
     RPC.setProtocolEngine(conf,
-        TestProtocol1.class, ProtobufRpcEngine.class);
+        TestProtocol1.class, ProtobufRpcEngine2.class);
 
     RPC.setProtocolEngine(conf,
-        TestProtocol2.class, ProtobufRpcEngine.class);
+        TestProtocol2.class, ProtobufRpcEngine2.class);
 
     RPC.setProtocolEngine(conf,
-        TestProtocol3.class, ProtobufRpcEngine.class);
+        TestProtocol3.class, ProtobufRpcEngine2.class);
 
     RPC.setProtocolEngine(conf,
-        TestProtocol4.class, ProtobufRpcEngine.class);
+        TestProtocol4.class, ProtobufRpcEngine2.class);
   }
   
-  @After
+  @AfterEach
   public void tearDown() {
     if (proxy != null) {
       RPC.stopProxy(proxy.getProxy());

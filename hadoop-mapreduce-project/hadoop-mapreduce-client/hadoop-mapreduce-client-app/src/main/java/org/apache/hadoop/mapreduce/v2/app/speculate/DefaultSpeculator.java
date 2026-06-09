@@ -45,11 +45,12 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptStatusUpdateEvent
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEventType;
 import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.util.Clock;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.yarn.event.Event;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,8 +101,6 @@ public class DefaultSpeculator extends AbstractService implements
   private AppContext context;
   private Thread speculationBackgroundThread = null;
   private volatile boolean stopped = false;
-  private BlockingQueue<SpeculatorEvent> eventQueue
-      = new LinkedBlockingQueue<SpeculatorEvent>();
   private TaskRuntimeEstimator estimator;
 
   private BlockingQueue<Object> scanControl = new LinkedBlockingQueue<Object>();
@@ -221,7 +220,7 @@ public class DefaultSpeculator extends AbstractService implements
               }
             }
           };
-    speculationBackgroundThread = new Thread
+    speculationBackgroundThread = new SubjectInheritingThread
         (speculationBackgroundCore, "DefaultSpeculator background processing");
     speculationBackgroundThread.start();
 
@@ -247,7 +246,7 @@ public class DefaultSpeculator extends AbstractService implements
   // This section is not part of the Speculator interface; it's used only for
   //  testing
   public boolean eventQueueEmpty() {
-    return eventQueue.isEmpty();
+    return scanControl.isEmpty();
   }
 
   // This interface is intended to be used only for test cases.
@@ -418,7 +417,8 @@ public class DefaultSpeculator extends AbstractService implements
           if (estimatedRunTime == data.getEstimatedRunTime()
               && progress == data.getProgress()) {
             // Previous stats are same as same stats
-            if (data.notHeartbeatedInAWhile(now)) {
+            if (data.notHeartbeatedInAWhile(now)
+                || estimator.hasStagnatedProgress(runningTaskAttemptID, now)) {
               // Stats have stagnated for a while, simulate heart-beat.
               TaskAttemptStatus taskAttemptStatus = new TaskAttemptStatus();
               taskAttemptStatus.id = runningTaskAttemptID;

@@ -17,25 +17,24 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.server.datanode.FinalizedReplica;
-import org.apache.hadoop.util.AutoCloseableLock;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Unit test for ReplicasMap class
  */
 public class TestReplicaMap {
-  private final ReplicaMap map = new ReplicaMap(new AutoCloseableLock());
+  private final ReplicaMap map = new ReplicaMap();
   private final String bpid = "BP-TEST";
   private final  Block block = new Block(1234, 1234, 1234);
   
-  @Before
+  @BeforeEach
   public void setup() {
     map.add(bpid, new FinalizedReplica(block, null, null));
   }
@@ -107,5 +106,27 @@ public class TestReplicaMap {
     // Test 6: remove success
     map.add(bpid, new FinalizedReplica(block, null, null));
     assertNotNull(map.remove(bpid, block.getBlockId()));
+  }
+
+  @Test
+  public void testMergeAll() {
+    ReplicaMap temReplicaMap = new ReplicaMap();
+    Block tmpBlock = new Block(5678, 5678, 5678);
+    temReplicaMap.add(bpid, new FinalizedReplica(tmpBlock, null, null));
+
+    map.mergeAll(temReplicaMap);
+    assertNotNull(map.get(bpid, 1234));
+    assertNotNull(map.get(bpid, 5678));
+  }
+
+  @Test
+  public void testAddAll() {
+    ReplicaMap temReplicaMap = new ReplicaMap();
+    Block tmpBlock = new Block(5678, 5678, 5678);
+    temReplicaMap.add(bpid, new FinalizedReplica(tmpBlock, null, null));
+
+    map.addAll(temReplicaMap);
+    assertNull(map.get(bpid, 1234));
+    assertNotNull(map.get(bpid, 5678));
   }
 }

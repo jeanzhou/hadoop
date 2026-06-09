@@ -20,7 +20,9 @@ Hadoop in Secure Mode
 Introduction
 ------------
 
-This document describes how to configure authentication for Hadoop in secure mode. When Hadoop is configured to run in secure mode, each Hadoop service and each user must be authenticated by Kerberos.
+In its default configuration, we expect you to make sure attackers don't have access to your Hadoop cluster by restricting all network access. If you want any restrictions on who can remotely access data or submit work, you MUST secure authentication and access for your Hadoop cluster as described in this document.
+
+When Hadoop is configured to run in secure mode, each Hadoop service and each user must be authenticated by Kerberos.
 
 Forward and reverse host lookup for all service hosts must be configured correctly to allow services to authenticate with each other. Host lookups may be configured using either DNS or `/etc/hosts` files. Working knowledge of Kerberos and DNS is recommended before attempting to configure Hadoop services in Secure Mode.
 
@@ -37,7 +39,7 @@ When service level authentication is turned on, end users must authenticate them
 
 Ensure that HDFS and YARN daemons run as different Unix users, e.g. `hdfs` and `yarn`. Also, ensure that the MapReduce JobHistory server runs as different user such as `mapred`.
 
-It's recommended to have them share a Unix group, for e.g. `hadoop`. See also "[Mapping from user to group](#Mapping_from_user_to_group)" for group management.
+It's recommended to have them share a Unix group, e.g. `hadoop`. See also "[Mapping from user to group](#Mapping_from_user_to_group)" for group management.
 
 | User:Group    | Daemons                                             |
 |:--------------|:----------------------------------------------------|
@@ -133,21 +135,34 @@ The MapReduce JobHistory Server keytab file, on that host, should look like the 
 
 ### Mapping from Kerberos principals to OS user accounts
 
-Hadoop maps Kerberos principals to OS user (system) accounts using rules specified by `hadoop.security.auth_to_local`. These rules work in the same way as the `auth_to_local` in [Kerberos configuration file (krb5.conf)](http://web.mit.edu/Kerberos/krb5-latest/doc/admin/conf_files/krb5_conf.html). In addition, Hadoop `auth_to_local` mapping supports the **/L** flag that lowercases the returned name.
+Hadoop maps Kerberos principals to OS user (system) accounts using rules specified by `hadoop.security.auth_to_local`. How Hadoop evaluates these rules is determined by the setting of `hadoop.security.auth_to_local.mechanism`.
 
-The default is to pick the first component of the principal name as the system user name if the realm matches the `default_realm` (usually defined in /etc/krb5.conf). e.g. The default rule maps the principal `host/full.qualified.domain.name@REALM.TLD` to system user `host`. The default rule will *not be appropriate* for most clusters.
+In the default `hadoop` mode a Kerberos principal *must* be matched against a rule that transforms the principal to a simple form, i.e. a user account name without '@' or '/', otherwise a principal will not be authorized and a error will be logged.  In case of the `MIT` mode the rules work in the same way as the `auth_to_local` in [Kerberos configuration file (krb5.conf)](http://web.mit.edu/Kerberos/krb5-latest/doc/admin/conf_files/krb5_conf.html) and the restrictions of `hadoop` mode do *not* apply. If you use `MIT` mode it is suggested to use the same `auth_to_local` rules that are specified in your /etc/krb5.conf as part of your default realm and keep them in sync. In both `hadoop` and `MIT` mode the rules are being applied (with the exception of `DEFAULT`) to *all* principals regardless of their specified realm. Also, note you should *not* rely on the `auth_to_local` rules as an ACL and use proper (OS) mechanisms.
 
+Possible values for `auth_to_local` are:
+
+* `RULE:exp` The local name will be formulated from exp. The format for exp is `[n:string](regexp)s/pattern/replacement/g`. The integer n indicates how many components the target principal should have. If this matches, then a string will be formed from string, substituting the realm of the principal for `$0` and the n’th component of the principal for `$n` (e.g., if the principal was johndoe/admin then `[2:$2$1foo]` would result in the string `adminjohndoefoo`). If this string matches regexp, then the `s//[g]` substitution command will be run over the string. The optional g will cause the substitution to be global over the string, instead of replacing only the first match in the string. As an extension to MIT, Hadoop `auth_to_local` mapping supports the **/L** flag that lowercases the returned name.
+
+* `DEFAULT` Picks the first component of the principal name as the system user name if and only if the realm matches the `default_realm` (usually defined in /etc/krb5.conf). e.g. The default rule maps the principal `host/full.qualified.domain.name@MYREALM.TLD` to system user `host` if the default realm is `MYREALM.TLD`.
+
+In case no rules are specified Hadoop defaults to using `DEFAULT`, which is probably *not suitable* to most of the clusters.
+
+Please note that Hadoop does not support multiple default realms (e.g like Heimdal does). Also, Hadoop does not do a verification on mapping whether a local system account exists.
+
+### Example rules
 In a typical cluster HDFS and YARN services will be launched as the system `hdfs` and `yarn` users respectively. `hadoop.security.auth_to_local` can be configured as follows:
 
     <property>
       <name>hadoop.security.auth_to_local</name>
       <value>
-        RULE:[2:$1/$2@$0]([ndj]n/.*@REALM.TLD)s/.*/hdfs/
-        RULE:[2:$1/$2@$0]([rn]m/.*@REALM.TLD)s/.*/yarn/
-        RULE:[2:$1/$2@$0](jhs/.*@REALM.TLD)s/.*/mapred/
+        RULE:[2:$1/$2@$0]([ndj]n/.*@REALM.\TLD)s/.*/hdfs/
+        RULE:[2:$1/$2@$0]([rn]m/.*@REALM\.TLD)s/.*/yarn/
+        RULE:[2:$1/$2@$0](jhs/.*@REALM\.TLD)s/.*/mapred/
         DEFAULT
       </value>
     </property>
+
+This would map any principal `nn, dn, jn` on any `host` from realm `REALM.TLD` to the local system account `hdfs`. Secondly it would map any principal `rm, nm` on any `host` from `REALM.TLD` to the local system account `yarn`. Thirdly, it would map the principal `jhs` on any `host` from realm `REALM.TLD` to the local system account `mapred`. Finally, any principal on any host from the default realm will be mapped to the user component of that principal.
 
 Custom rules can be tested using the `hadoop kerbname` command.  This command allows one to specify a principal and apply Hadoop's current `auth_to_local` ruleset.
 
@@ -189,6 +204,8 @@ Optionally, you may set `dfs.encrypt.data.transfer.algorithm` to either `3des` o
 Setting `dfs.encrypt.data.transfer.cipher.suites` to `AES/CTR/NoPadding` activates AES encryption. By default, this is unspecified, so AES is not used. When AES is used, the algorithm specified in `dfs.encrypt.data.transfer.algorithm` is still used during an initial key exchange. The AES key bit length can be configured by setting `dfs.encrypt.data.transfer.cipher.key.bitlength` to 128, 192 or 256. The default is 128.
 
 AES offers the greatest cryptographic strength and the best performance. At this time, 3DES and RC4 have been used more often in Hadoop clusters.
+
+You can also set `dfs.encrypt.data.transfer.cipher.suites` to `SM4/CTR/NoPadding` to activates SM4 encryption. By default, this is unspecified. The SM4 key bit length can be configured by setting `dfs.encrypt.data.transfer.cipher.key.bitlength` to 128, 192 or 256. The default is 128.
 
 ### Data Encryption on HTTP
 
@@ -254,9 +271,8 @@ The following settings allow configuring SSL access to the NameNode web UI (opti
 
 | Parameter                    | Value                                           | Notes                                                                                                                                                                                                                                                                                                                                                                                              |
 |:-----------------------------|:------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `dfs.http.policy`            | `HTTP_ONLY` or `HTTPS_ONLY` or `HTTP_AND_HTTPS` | `HTTPS_ONLY` turns off http access. This option takes precedence over the deprecated configuration dfs.https.enable and hadoop.ssl.enabled. If using SASL to authenticate data transfer protocol instead of running DataNode as root and using privileged ports, then this property must be set to `HTTPS_ONLY` to guarantee authentication of HTTP servers. (See `dfs.data.transfer.protection`.) |
+| `dfs.http.policy`            | `HTTP_ONLY` or `HTTPS_ONLY` or `HTTP_AND_HTTPS` | `HTTPS_ONLY` turns off http access. If using SASL to authenticate data transfer protocol instead of running DataNode as root and using privileged ports, then this property must be set to `HTTPS_ONLY` to guarantee authentication of HTTP servers. (See `dfs.data.transfer.protection`.) |
 | `dfs.namenode.https-address` | `0.0.0.0:9871`                                 | This parameter is used in non-HA mode and without federation. See [HDFS High Availability](../hadoop-hdfs/HDFSHighAvailabilityWithNFS.html#Deployment) and [HDFS Federation](../hadoop-hdfs/Federation.html#Federation_Configuration) for details.                                                                                                                                                 |
-| `dfs.https.enable`           | `true`                                          | This value is deprecated. `Use dfs.http.policy`                                                                                                                                                                                                                                                                                                                                                    |
 
 ### Secondary NameNode
 
@@ -581,7 +597,7 @@ hadoop kdiag \
   --keytab zk.service.keytab --principal zookeeper/devix.example.org@REALM
 ```
 
-This attempts to to perform all diagnostics without failing early, load in
+This attempts to perform all diagnostics without failing early, load in
 the HDFS and YARN XML resources, require a minimum key length of 1024 bytes,
 and log in as the principal `zookeeper/devix.example.org@REALM`, whose key must be in
 the keytab `zk.service.keytab`

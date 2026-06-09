@@ -70,6 +70,12 @@ public interface CapacitySchedulerPreemptionContext {
 
   float getMaxAllowableLimitForIntraQueuePreemption();
 
+  long getDefaultMaximumKillWaitTimeout();
+
   @Unstable
   IntraQueuePreemptionOrderPolicy getIntraQueuePreemptionOrderPolicy();
+
+  boolean getCrossQueuePreemptionConservativeDRF();
+
+  boolean getInQueuePreemptionConservativeDRF();
 }

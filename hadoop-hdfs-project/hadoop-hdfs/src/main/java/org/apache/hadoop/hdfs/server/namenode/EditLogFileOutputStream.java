@@ -26,15 +26,15 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.LayoutFlags;
 import org.apache.hadoop.io.IOUtils;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * An implementation of the abstract class {@link EditLogOutputStream}, which
@@ -42,7 +42,8 @@ import com.google.common.annotations.VisibleForTesting;
  */
 @InterfaceAudience.Private
 public class EditLogFileOutputStream extends EditLogOutputStream {
-  private static final Log LOG = LogFactory.getLog(EditLogFileOutputStream.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(EditLogFileOutputStream.class);
   public static final int MIN_PREALLOCATION_LENGTH = 1024 * 1024;
 
   private File file;
@@ -83,18 +84,23 @@ public class EditLogFileOutputStream extends EditLogOutputStream {
     doubleBuf = new EditsDoubleBuffer(size);
     RandomAccessFile rp;
     if (shouldSyncWritesAndSkipFsync) {
-      rp = new RandomAccessFile(name, "rws");
+      rp = new RandomAccessFile(name, "rwd");
     } else {
       rp = new RandomAccessFile(name, "rw");
     }
-    fp = new FileOutputStream(rp.getFD()); // open for append
+    try {
+      fp = new FileOutputStream(rp.getFD()); // open for append
+    } catch (IOException e) {
+      IOUtils.closeStream(rp);
+      throw e;
+    }
     fc = rp.getChannel();
     fc.position(fc.size());
   }
 
   @Override
   public void write(FSEditLogOp op) throws IOException {
-    doubleBuf.writeOp(op);
+    doubleBuf.writeOp(op, getCurrentLogVersion());
   }
 
   /**
@@ -120,6 +126,7 @@ public class EditLogFileOutputStream extends EditLogOutputStream {
     writeHeader(layoutVersion, doubleBuf.getCurrentBuf());
     setReadyToFlush();
     flush();
+    setCurrentLogVersion(layoutVersion);
   }
 
   /**
@@ -161,7 +168,7 @@ public class EditLogFileOutputStream extends EditLogOutputStream {
       fp.close();
       fp = null;
     } finally {
-      IOUtils.cleanup(LOG, fc, fp);
+      IOUtils.cleanupWithLogger(LOG, fc, fp);
       doubleBuf = null;
       fc = null;
       fp = null;
@@ -174,7 +181,7 @@ public class EditLogFileOutputStream extends EditLogOutputStream {
     if (fp == null) {
       return;
     }
-    IOUtils.cleanup(LOG, fp);
+    IOUtils.cleanupWithLogger(LOG, fp);
     fp = null;
   }
 

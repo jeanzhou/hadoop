@@ -17,17 +17,18 @@
  */
 package org.apache.hadoop.fs;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestBlockLocation {
 
   private static final String[] EMPTY_STR_ARRAY = new String[0];
   private static final StorageType[] EMPTY_STORAGE_TYPE_ARRAY =
-      new StorageType[0];
+      StorageType.EMPTY_ARRAY;
 
   private static void checkBlockLocation(final BlockLocation loc)
       throws Exception {
@@ -70,7 +71,8 @@ public class TestBlockLocation {
   /**
    * Call all the constructors and verify the delegation is working properly
    */
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testBlockLocationConstructors() throws Exception {
     //
     BlockLocation loc;
@@ -91,7 +93,8 @@ public class TestBlockLocation {
   /**
    * Call each of the setters and verify
    */
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testBlockLocationSetters() throws Exception {
     BlockLocation loc;
     loc = new BlockLocation();

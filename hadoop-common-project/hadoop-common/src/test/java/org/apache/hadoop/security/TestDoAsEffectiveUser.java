@@ -17,11 +17,11 @@
  */
 package org.apache.hadoop.security;
 
-import com.google.protobuf.ServiceException;
+import org.apache.hadoop.thirdparty.protobuf.ServiceException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.ipc.TestRpcBase;
@@ -29,9 +29,9 @@ import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
 import org.apache.hadoop.security.authorize.DefaultImpersonationProvider;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.security.token.Token;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,6 +41,9 @@ import java.net.NetworkInterface;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Enumeration;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test do as effective user.
@@ -69,7 +72,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
         + "DEFAULT");
   }
 
-  @Before
+  @BeforeEach
   public void setMasterConf() throws IOException {
     UserGroupInformation.setConfiguration(masterConf);
     refreshConf(masterConf);
@@ -120,7 +123,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
             return UserGroupInformation.getCurrentUser();
           }
         });
-    Assert.assertEquals(
+    assertEquals(
         PROXY_USER_NAME + " (auth:PROXY) via " + REAL_USER_NAME + " (auth:SIMPLE)",
         curUGI.toString());
   }
@@ -136,14 +139,15 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
         String serverRemoteUser = client.getServerRemoteUser(null,
             newEmptyRequest()).getUser();
 
-        Assert.assertEquals(ugi.toString(), currentUser);
-        Assert.assertEquals(ugi.toString(), serverRemoteUser);
+        assertEquals(ugi.toString(), currentUser);
+        assertEquals(ugi.toString(), serverRemoteUser);
         return null;
       }
     });    
   }
   
-  @Test(timeout=4000)
+  @Test
+  @Timeout(value = 4)
   public void testRealUserSetup() throws IOException {
     final Configuration conf = new Configuration();
     conf.setStrings(DefaultImpersonationProvider.getTestProvider().
@@ -151,7 +155,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
     configureSuperUserIPAddresses(conf, REAL_USER_SHORT_NAME);
     // Set RPC engine to protobuf RPC engine
     RPC.setProtocolEngine(conf, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation.setConfiguration(conf);
     final Server server = setupTestServer(conf, 5);
 
@@ -167,13 +171,14 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
       checkRemoteUgi(proxyUserUgi, conf);
     } catch (Exception e) {
       e.printStackTrace();
-      Assert.fail();
+      fail();
     } finally {
       stop(server, client);
     }
   }
 
-  @Test(timeout=4000)
+  @Test
+  @Timeout(value = 4)
   public void testRealUserAuthorizationSuccess() throws IOException {
     final Configuration conf = new Configuration();
     configureSuperUserIPAddresses(conf, REAL_USER_SHORT_NAME);
@@ -181,7 +186,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
             getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
         "group1");
     RPC.setProtocolEngine(conf, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation.setConfiguration(conf);
     final Server server = setupTestServer(conf, 5);
 
@@ -196,7 +201,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
       checkRemoteUgi(proxyUserUgi, conf);
     } catch (Exception e) {
       e.printStackTrace();
-      Assert.fail();
+      fail();
     } finally {
       stop(server, client);
     }
@@ -215,7 +220,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
             getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
         "group1");
     RPC.setProtocolEngine(conf, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation.setConfiguration(conf);
     final Server server = setupTestServer(conf, 5);
 
@@ -237,7 +242,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
             }
           });
 
-      Assert.fail("The RPC must have failed " + retVal);
+      fail("The RPC must have failed " + retVal);
     } catch (Exception e) {
       e.printStackTrace();
     } finally {
@@ -251,7 +256,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
     conf.setStrings(DefaultImpersonationProvider.getTestProvider().
         getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME), "group1");
     RPC.setProtocolEngine(conf, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation.setConfiguration(conf);
     final Server server = setupTestServer(conf, 2);
 
@@ -273,7 +278,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
             }
           });
 
-      Assert.fail("The RPC must have failed " + retVal);
+      fail("The RPC must have failed " + retVal);
     } catch (Exception e) {
       e.printStackTrace();
     } finally {
@@ -286,7 +291,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
     final Configuration conf = new Configuration();
     configureSuperUserIPAddresses(conf, REAL_USER_SHORT_NAME);
     RPC.setProtocolEngine(conf, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation.setConfiguration(conf);
     final Server server = setupTestServer(conf, 2);
 
@@ -306,7 +311,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
             }
           });
 
-      Assert.fail("The RPC must have failed " + retVal);
+      fail("The RPC must have failed " + retVal);
     } catch (Exception e) {
       e.printStackTrace();
     } finally {
@@ -322,7 +327,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
             getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
         "group3");
     RPC.setProtocolEngine(conf, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation.setConfiguration(conf);
     final Server server = setupTestServer(conf, 2);
     
@@ -344,7 +349,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
             }
           });
 
-      Assert.fail("The RPC must have failed " + retVal);
+      fail("The RPC must have failed " + retVal);
     } catch (Exception e) {
       e.printStackTrace();
     } finally {
@@ -363,7 +368,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
     TestTokenSecretManager sm = new TestTokenSecretManager();
     SecurityUtil.setAuthenticationMethod(AuthenticationMethod.KERBEROS, conf);
     RPC.setProtocolEngine(conf, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation.setConfiguration(conf);
     final Server server = setupTestServer(conf, 5, sm);
 
@@ -397,7 +402,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
       }
     });
     //The user returned by server must be the one in the token.
-    Assert.assertEquals(REAL_USER_NAME + " (auth:TOKEN) via SomeSuperUser (auth:SIMPLE)", retVal);
+    assertEquals(REAL_USER_NAME + " (auth:TOKEN) via SomeSuperUser (auth:SIMPLE)", retVal);
   }
 
   /*
@@ -411,7 +416,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
     SecurityUtil.setAuthenticationMethod(AuthenticationMethod.KERBEROS, newConf);
     // Set RPC engine to protobuf RPC engine
     RPC.setProtocolEngine(newConf, TestRpcService.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation.setConfiguration(newConf);
     final Server server = setupTestServer(newConf, 5, sm);
 
@@ -441,7 +446,7 @@ public class TestDoAsEffectiveUser extends TestRpcBase {
       }
     });
     String expected = REAL_USER_NAME + " (auth:TOKEN) via SomeSuperUser (auth:SIMPLE)";
-    Assert.assertEquals(retVal + "!=" + expected, expected, retVal);
+    assertEquals(expected, retVal, retVal + "!=" + expected);
   }
   
   //

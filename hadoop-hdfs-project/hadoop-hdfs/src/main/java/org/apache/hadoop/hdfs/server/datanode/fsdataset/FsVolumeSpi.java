@@ -22,7 +22,7 @@ import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.channels.ClosedChannelException;
-import java.util.LinkedList;
+import java.util.Collection;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -32,9 +32,9 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.server.datanode.FileIoProvider;
 import org.apache.hadoop.hdfs.server.common.FileRegion;
 import org.apache.hadoop.hdfs.server.datanode.DirectoryScanner.ReportCompiler;
+import org.apache.hadoop.hdfs.server.datanode.FileIoProvider;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 import org.apache.hadoop.hdfs.server.datanode.checker.Checkable;
 import org.apache.hadoop.hdfs.server.datanode.checker.VolumeCheckResult;
@@ -77,6 +77,9 @@ public interface FsVolumeSpi
   /** Returns true if the volume is NOT backed by persistent storage. */
   boolean isTransientStorage();
 
+  /** Returns true if the volume is backed by RAM storage. */
+  boolean isRAMStorage();
+
   /**
    * Reserve disk space for a block (RBW or Re-replicating)
    * so a writer does not run out of space before the block is full.
@@ -98,17 +101,17 @@ public interface FsVolumeSpi
 
   /**
    * BlockIterator will return ExtendedBlock entries from a block pool in
-   * this volume.  The entries will be returned in sorted order.<p/>
+   * this volume.  The entries will be returned in sorted order.<p>
    *
    * BlockIterator objects themselves do not always have internal
    * synchronization, so they can only safely be used by a single thread at a
-   * time.<p/>
+   * time.<p>
    *
    * Closing the iterator does not save it.  You must call save to save it.
    */
   interface BlockIterator extends Closeable {
     /**
-     * Get the next block.<p/>
+     * Get the next block.<p>
      *
      * Note that this block may be removed in between the time we list it,
      * and the time the caller tries to use it, or it may represent a stale
@@ -146,7 +149,7 @@ public interface FsVolumeSpi
     void save() throws IOException;
 
     /**
-     * Set the maximum staleness of entries that we will return.<p/>
+     * Set the maximum staleness of entries that we will return.<p>
      *
      * A maximum staleness of 0 means we will never return stale entries; a
      * larger value will allow us to reduce resource consumption in exchange
@@ -211,12 +214,12 @@ public interface FsVolumeSpi
    * Because millions of these structures may be created, we try to save
    * memory here.  So instead of storing full paths, we store path suffixes.
    * The block file, if it exists, will have a path like this:
-   * <volume_base_path>/<block_path>
+   * {@literal <volume_base_path>/<block_path>}
    * So we don't need to store the volume path, since we already know what the
    * volume is.
    *
    * The metadata file, if it exists, will have a path like this:
-   * <volume_base_path>/<block_path>_<genstamp>.meta
+   * {@literal <volume_base_path>/<block_path>_<genstamp>.meta}
    * So if we have a block file, there isn't any need to store the block path
    * again.
    *
@@ -224,27 +227,27 @@ public interface FsVolumeSpi
    */
   public static class ScanInfo implements Comparable<ScanInfo> {
     private final long blockId;
-
     /**
-     * The block file path, relative to the volume's base directory.
-     * If there was no block file found, this may be null. If 'vol'
-     * is null, then this is the full path of the block file.
+     * The full path to the folder containing the block / meta files.
      */
-    private final String blockSuffix;
-
+    private final File basePath;
     /**
-     * The suffix of the meta file path relative to the block file.
-     * If blockSuffix is null, then this will be the entire path relative
-     * to the volume base directory, or an absolute path if vol is also
-     * null.
+     * The block file name, with no path
      */
-    private final String metaSuffix;
+    private final String blockFile;
+    /**
+     * Holds the meta file name, with no path, only if blockFile is null.
+     * If blockFile is not null, the meta file will be named identically to
+     * the blockFile, but with a suffix like "_1234.meta". If the blockFile
+     * is present, we store only the meta file suffix.
+     */
+    private final String metaFile;
 
     private final FsVolumeSpi volume;
 
     private final FileRegion fileRegion;
     /**
-     * Get the file's length in async block scan
+     * Get the file's length in async block scan.
      */
     private final long blockLength;
 
@@ -255,34 +258,18 @@ public interface FsVolumeSpi
         Matcher.quoteReplacement(File.separator);
 
     /**
-     * Get the most condensed version of the path.
-     *
-     * For example, the condensed version of /foo//bar is /foo/bar
-     * Unlike {@link File#getCanonicalPath()}, this will never perform I/O
-     * on the filesystem.
-     *
-     * @param path the path to condense
-     * @return the condensed path
-     */
-    private static String getCondensedPath(String path) {
-      return CONDENSED_PATH_REGEX.matcher(path).
-          replaceAll(QUOTED_FILE_SEPARATOR);
-    }
-
-    /**
      * Get a path suffix.
      *
-     * @param f            The file to get the suffix for.
+     * @param f            The string to get the suffix for.
      * @param prefix       The prefix we're stripping off.
      *
-     * @return             A suffix such that prefix + suffix = path to f
+     * @return             A suffix such that prefix + suffix = f
      */
-    private static String getSuffix(File f, String prefix) {
-      String fullPath = getCondensedPath(f.getAbsolutePath());
-      if (fullPath.startsWith(prefix)) {
-        return fullPath.substring(prefix.length());
+    private static String getSuffix(String f, String prefix) {
+      if (f.startsWith(prefix)) {
+        return f.substring(prefix.length());
       }
-      throw new RuntimeException(prefix + " is not a prefix of " + fullPath);
+      throw new RuntimeException(prefix + " is not a prefix of " + f);
     }
 
     /**
@@ -290,27 +277,27 @@ public interface FsVolumeSpi
      * the block data and meta-data files.
      *
      * @param blockId the block ID
-     * @param blockFile the path to the block data file
-     * @param metaFile the path to the block meta-data file
+     * @param basePath The full path to the directory the block is stored in
+     * @param blockFile The block filename, with no path
+     * @param metaFile The meta filename, with no path. If blockFile is not null
+     *                 then the metaFile and blockFile should have the same
+     *                 prefix, with the meta file having a suffix like
+     *                 "_1234.meta". To save memory, if the blockFile is present
+     *                 we store only the meta file suffix in the object
      * @param vol the volume that contains the block
      */
-    public ScanInfo(long blockId, File blockFile, File metaFile,
-        FsVolumeSpi vol) {
+    public ScanInfo(long blockId, File basePath, String blockFile,
+        String metaFile, FsVolumeSpi vol) {
       this.blockId = blockId;
-      String condensedVolPath =
-          (vol == null || vol.getBaseURI() == null) ? null :
-              getCondensedPath(new File(vol.getBaseURI()).getAbsolutePath());
-      this.blockSuffix = blockFile == null ? null :
-              getSuffix(blockFile, condensedVolPath);
-      this.blockLength = (blockFile != null) ? blockFile.length() : 0;
-      if (metaFile == null) {
-        this.metaSuffix = null;
-      } else if (blockFile == null) {
-        this.metaSuffix = getSuffix(metaFile, condensedVolPath);
+      this.basePath = basePath;
+      this.blockFile = blockFile;
+      if (blockFile != null && metaFile != null) {
+        this.metaFile = getSuffix(metaFile, blockFile);
       } else {
-        this.metaSuffix = getSuffix(metaFile,
-            condensedVolPath + blockSuffix);
+        this.metaFile = metaFile;
       }
+      this.blockLength = (blockFile != null) ?
+          new File(basePath, blockFile).length() : 0;
       this.volume = vol;
       this.fileRegion = null;
     }
@@ -330,8 +317,9 @@ public interface FsVolumeSpi
       this.blockLength = length;
       this.volume = vol;
       this.fileRegion = fileRegion;
-      this.blockSuffix = null;
-      this.metaSuffix = null;
+      this.basePath = null;
+      this.blockFile = null;
+      this.metaFile = null;
     }
 
     /**
@@ -340,8 +328,8 @@ public interface FsVolumeSpi
      * @return the block data file
      */
     public File getBlockFile() {
-      return (blockSuffix == null) ? null :
-        new File(new File(volume.getBaseURI()).getAbsolutePath(), blockSuffix);
+      return (blockFile == null) ? null :
+          new File(basePath.getAbsolutePath(), blockFile);
     }
 
     /**
@@ -360,15 +348,10 @@ public interface FsVolumeSpi
      * @return the block meta data file
      */
     public File getMetaFile() {
-      if (metaSuffix == null) {
+      if (metaFile == null) {
         return null;
-      } else if (blockSuffix == null) {
-        return new File(new File(volume.getBaseURI()).getAbsolutePath(),
-            metaSuffix);
-      } else {
-        return new File(new File(volume.getBaseURI()).getAbsolutePath(),
-            blockSuffix + metaSuffix);
       }
+      return new File(basePath.getAbsolutePath(), fullMetaFile());
     }
 
     /**
@@ -389,18 +372,12 @@ public interface FsVolumeSpi
       return volume;
     }
 
-    @Override // Comparable
+    @Override
     public int compareTo(ScanInfo b) {
-      if (blockId < b.blockId) {
-        return -1;
-      } else if (blockId == b.blockId) {
-        return 0;
-      } else {
-        return 1;
-      }
+      return Long.compare(this.blockId, b.blockId);
     }
 
-    @Override // Object
+    @Override
     public boolean equals(Object o) {
       if (this == o) {
         return true;
@@ -411,19 +388,29 @@ public interface FsVolumeSpi
       return blockId == ((ScanInfo) o).blockId;
     }
 
-    @Override // Object
+    @Override
     public int hashCode() {
-      return (int)(blockId^(blockId>>>32));
+      return Long.hashCode(this.blockId);
     }
 
     public long getGenStamp() {
-      return metaSuffix != null ? Block.getGenerationStamp(
-          getMetaFile().getName()) :
-            HdfsConstants.GRANDFATHER_GENERATION_STAMP;
+      return metaFile != null ? Block.getGenerationStamp(fullMetaFile())
+          : HdfsConstants.GRANDFATHER_GENERATION_STAMP;
     }
 
     public FileRegion getFileRegion() {
       return fileRegion;
+    }
+
+    private String fullMetaFile() {
+      if (metaFile == null) {
+        return null;
+      }
+      if (blockFile == null) {
+        return metaFile;
+      } else {
+        return blockFile + metaFile;
+      }
     }
   }
 
@@ -445,10 +432,11 @@ public interface FsVolumeSpi
    * @param bpid block pool id to scan
    * @param report the list onto which blocks reports are placed
    * @param reportCompiler
+   * @throws InterruptedException
    * @throws IOException
    */
-  LinkedList<ScanInfo> compileReport(String bpid,
-      LinkedList<ScanInfo> report, ReportCompiler reportCompiler)
+  void compileReport(String bpid,
+      Collection<ScanInfo> report, ReportCompiler reportCompiler)
       throws InterruptedException, IOException;
 
   /**

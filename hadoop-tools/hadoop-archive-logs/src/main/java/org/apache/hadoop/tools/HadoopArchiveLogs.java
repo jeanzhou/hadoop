@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.tools;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
@@ -27,8 +27,8 @@ import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.io.output.FileWriterWithEncoding;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -54,6 +54,7 @@ import org.apache.hadoop.yarn.util.ConverterUtils;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -70,7 +71,7 @@ import java.util.Set;
  * {@link HadoopArchiveLogsRunner}.
  */
 public class HadoopArchiveLogs implements Tool {
-  private static final Log LOG = LogFactory.getLog(HadoopArchiveLogs.class);
+  private static final Logger LOG = LoggerFactory.getLogger(HadoopArchiveLogs.class);
 
   private static final String HELP_OPTION = "help";
   private static final String MAX_ELIGIBLE_APPS_OPTION = "maxEligibleApps";
@@ -505,7 +506,11 @@ public class HadoopArchiveLogs implements Tool {
     String classpath = halrJarPath + File.pathSeparator + harJarPath;
     FileWriterWithEncoding fw = null;
     try {
-      fw = new FileWriterWithEncoding(localScript, "UTF-8");
+      fw = FileWriterWithEncoding.builder()
+              .setFile(localScript)
+              .setCharset(StandardCharsets.UTF_8)
+              .setCharsetEncoder(StandardCharsets.UTF_8.newEncoder())
+              .get();
       fw.write("#!/bin/bash\nset -e\nset -x\n");
       int containerCount = 1;
       for (AppInfo context : eligibleApplications) {

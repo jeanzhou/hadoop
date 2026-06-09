@@ -21,17 +21,21 @@ package org.apache.hadoop.hdfs.server.protocol;
 import java.io.IOException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
 import org.apache.hadoop.hdfs.server.namenode.CheckpointSignature;
+import org.apache.hadoop.hdfs.server.namenode.NNStorage;
+import org.apache.hadoop.hdfs.server.namenode.ha.ReadOnly;
 import org.apache.hadoop.io.retry.AtMostOnce;
 import org.apache.hadoop.io.retry.Idempotent;
 import org.apache.hadoop.security.KerberosInfo;
 
 /*****************************************************************************
  * Protocol that a secondary NameNode uses to communicate with the NameNode.
- * It's used to get part of the name node state
+ * Also used by external storage policy satisfier. It's used to get part of the
+ * name node state
  *****************************************************************************/
 @KerberosInfo(
     serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
@@ -72,13 +76,17 @@ public interface NamenodeProtocol {
    * @param datanode  a data node
    * @param size      requested size
    * @param minBlockSize each block should be of this minimum Block Size
-   * @return          a list of blocks & their locations
+   * @param hotBlockTimeInterval prefer to get blocks which are belong to
+   * the cold files accessed before the time interval
+   * @param storageType the given storage type {@link StorageType}
+   * @return BlocksWithLocations a list of blocks &amp; their locations
    * @throws IOException if size is less than or equal to 0 or
   datanode does not exist
    */
   @Idempotent
+  @ReadOnly
   BlocksWithLocations getBlocks(DatanodeInfo datanode, long size, long
-      minBlockSize) throws IOException;
+      minBlockSize, long hotBlockTimeInterval, StorageType storageType) throws IOException;
 
   /**
    * Get the current block keys
@@ -103,6 +111,12 @@ public interface NamenodeProtocol {
    */
   @Idempotent
   public long getMostRecentCheckpointTxId() throws IOException;
+
+  /**
+   * Get the transaction ID of the most recent checkpoint for the given NameNodeFile.
+   */
+  @Idempotent
+  long getMostRecentNameNodeFileTxId(NNStorage.NameNodeFile nnf) throws IOException;
 
   /**
    * Closes the current edit log and opens a new one. The 
@@ -182,7 +196,8 @@ public interface NamenodeProtocol {
   /**
    * Return a structure containing details about all edit logs
    * available to be fetched from the NameNode.
-   * @param sinceTxId return only logs that contain transactions >= sinceTxId
+   * @param sinceTxId return only logs that contain transactions {@literal >=}
+   * sinceTxId
    */
   @Idempotent
   public RemoteEditLogManifest getEditLogManifest(long sinceTxId)
@@ -202,5 +217,12 @@ public interface NamenodeProtocol {
    */
   @Idempotent
   boolean isRollingUpgrade() throws IOException;
+
+  /**
+   * @return Gets the next available sps path, otherwise null. This API used
+   *         by External SPS.
+   */
+  @AtMostOnce
+  Long getNextSPSPath() throws IOException;
 }
 

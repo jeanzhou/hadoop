@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.yarn.sls.synthetic;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.commons.math3.random.JDKRandomGenerator;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.JobConf;
@@ -51,7 +51,7 @@ import static org.apache.hadoop.mapreduce.MRJobConfig.QUEUE_NAME;
 public class SynthJob implements JobStory {
 
   @SuppressWarnings("StaticVariableName")
-  private static Log LOG = LogFactory.getLog(SynthJob.class);
+  private static Logger LOG = LoggerFactory.getLogger(SynthJob.class);
 
   private static final long MIN_MEMORY = 1024;
   private static final long MIN_VCORES = 1;
@@ -184,9 +184,9 @@ public class SynthJob implements JobStory {
       int num = task.count.getInt();
       String taskType = task.type;
       long memory = task.max_memory.getLong();
-      memory = memory < MIN_MEMORY ? MIN_MEMORY: memory;
+      memory = Math.max(memory, MIN_MEMORY);
       long vcores = task.max_vcores.getLong();
-      vcores = vcores < MIN_VCORES ? MIN_VCORES  : vcores;
+      vcores = Math.max(vcores, MIN_VCORES);
       int priority = task.priority;
       ExecutionType executionType = task.executionType == null
           ? ExecutionType.GUARANTEED

@@ -22,44 +22,47 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.net.HttpURLConnection;
-import java.util.Set;
-import java.util.HashSet;
-import java.util.Enumeration;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Map;
+import java.util.Enumeration;
 import java.util.HashMap;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-
-import javax.servlet.FilterConfig;
-import javax.servlet.FilterChain;
+import java.util.function.Supplier;
 import javax.servlet.Filter;
+import javax.servlet.FilterChain;
+import javax.servlet.FilterConfig;
 import javax.servlet.ServletContext;
-import javax.servlet.ServletResponse;
-import javax.servlet.ServletRequest;
 import javax.servlet.ServletException;
+import javax.servlet.ServletOutputStream;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
-
-import org.apache.hadoop.http.TestHttpServer;
-import org.apache.hadoop.yarn.server.webproxy.ProxyUtils;
-import org.apache.hadoop.yarn.server.webproxy.WebAppProxyServlet;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
-import org.glassfish.grizzly.servlet.HttpServletResponseImpl;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
+
+import org.apache.hadoop.http.TestHttpServer;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.yarn.server.webproxy.ProxyUtils;
+import org.apache.hadoop.yarn.server.webproxy.WebAppProxyServlet;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test AmIpFilter. Requests to a no declared hosts should has way through
@@ -114,9 +117,10 @@ public class TestAmFilter {
     }
   }
 
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(5000)
   @SuppressWarnings("deprecation")
-  public void filterNullCookies() throws Exception {
+  void filterNullCookies() throws Exception {
     HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
 
     Mockito.when(request.getCookies()).thenReturn(null);
@@ -145,7 +149,7 @@ public class TestAmFilter {
   }
 
   @Test
-  public void testFindRedirectUrl() throws Exception {
+  void testFindRedirectUrl() throws Exception {
     final String rm1 = "rm1";
     final String rm2 = "rm2";
     // generate a valid URL
@@ -159,14 +163,14 @@ public class TestAmFilter {
     spy.proxyUriBases = new HashMap<>();
     spy.proxyUriBases.put(rm1, rm1Url);
     spy.proxyUriBases.put(rm2, rm2Url);
-    spy.rmUrls = new String[] { rm1, rm2 };
+    spy.rmUrls = new String[]{rm1, rm2};
 
-    assertEquals(spy.findRedirectUrl(), rm1Url);
+    assertThat(spy.findRedirectUrl()).isEqualTo(rm1Url);
   }
 
   private String startHttpServer() throws Exception {
     Server server = new Server(0);
-    ((QueuedThreadPool)server.getThreadPool()).setMaxThreads(10);
+    ((QueuedThreadPool)server.getThreadPool()).setMaxThreads(20);
     ServletContextHandler context = new ServletContextHandler();
     context.setContextPath("/foo");
     server.setHandler(context);
@@ -179,12 +183,52 @@ public class TestAmFilter {
     return server.getURI().toString() + servletPath;
   }
 
+  @Test
+  @Timeout(2000)
+  void testProxyUpdate() throws Exception {
+    Map<String, String> params = new HashMap<>();
+    params.put(AmIpFilter.PROXY_HOSTS, proxyHost);
+    params.put(AmIpFilter.PROXY_URI_BASES, proxyUri);
+
+    FilterConfig conf = new DummyFilterConfig(params);
+    AmIpFilter filter = new AmIpFilter();
+    int updateInterval = 1000;
+    AmIpFilter.setUpdateInterval(updateInterval);
+    filter.init(conf);
+    filter.getProxyAddresses();
+
+    // check that the configuration was applied
+    assertTrue(filter.getProxyAddresses().contains("127.0.0.1"));
+
+    // change proxy configurations
+    params = new HashMap<>();
+    params.put(AmIpFilter.PROXY_HOSTS, "unknownhostaf79d34c");
+    params.put(AmIpFilter.PROXY_URI_BASES, proxyUri);
+    conf = new DummyFilterConfig(params);
+    filter.init(conf);
+
+    // configurations shouldn't be updated now
+    assertFalse(filter.getProxyAddresses().isEmpty());
+    // waiting for configuration update
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        try {
+          return filter.getProxyAddresses().isEmpty();
+        } catch (ServletException e) {
+          return true;
+        }
+      }
+    }, 500, updateInterval);
+  }
+
   /**
    * Test AmIpFilter
    */
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(10000)
   @SuppressWarnings("deprecation")
-  public void testFilter() throws Exception {
+  void testFilter() throws Exception {
     Map<String, String> params = new HashMap<String, String>();
     params.put(AmIpFilter.PROXY_HOST, proxyHost);
     params.put(AmIpFilter.PROXY_URI_BASE, proxyUri);
@@ -245,11 +289,10 @@ public class TestAmFilter {
     // "127.0.0.1" contains in host list. Without cookie
     Mockito.when(request.getRemoteAddr()).thenReturn("127.0.0.1");
     testFilter.doFilter(request, response, chain);
-    assertTrue(doFilterRequest
-        .contains("javax.servlet.http.HttpServletRequest"));
+    assertTrue(doFilterRequest.contains("HttpServletRequest"));
 
     // cookie added
-    Cookie[] cookies = new Cookie[] {
+    Cookie[] cookies = new Cookie[]{
         new Cookie(WebAppProxyServlet.PROXY_USER_COOKIE_NAME, "user")
     };
 
@@ -266,7 +309,47 @@ public class TestAmFilter {
 
   }
 
-  private class HttpServletResponseForTest extends HttpServletResponseImpl {
+  @Test
+  @Timeout(5000)
+  void testTraceAndTrackBlocked() throws Exception {
+    Map<String, String> params = new HashMap<String, String>();
+    params.put(AmIpFilter.PROXY_HOST, proxyHost);
+    params.put(AmIpFilter.PROXY_URI_BASE, proxyUri);
+    FilterConfig config = new DummyFilterConfig(params);
+
+    AmIpFilter testFilter = new AmIpFilter();
+    testFilter.init(config);
+
+    final AtomicBoolean chainCalled = new AtomicBoolean(false);
+    FilterChain chain = new FilterChain() {
+      @Override
+      public void doFilter(ServletRequest servletRequest,
+          ServletResponse servletResponse) throws IOException, ServletException {
+        chainCalled.set(true);
+      }
+    };
+
+    HttpServletResponseForTest response = new HttpServletResponseForTest();
+
+    HttpServletRequest traceRequest = Mockito.mock(HttpServletRequest.class);
+    Mockito.when(traceRequest.getMethod()).thenReturn("TRACE");
+    Mockito.when(traceRequest.getRemoteAddr()).thenReturn("127.0.0.1");
+    testFilter.doFilter(traceRequest, response, chain);
+    assertEquals(HttpServletResponse.SC_METHOD_NOT_ALLOWED, response.status);
+    assertFalse(chainCalled.get());
+
+    response.status = 0;
+    chainCalled.set(false);
+
+    HttpServletRequest trackRequest = Mockito.mock(HttpServletRequest.class);
+    Mockito.when(trackRequest.getMethod()).thenReturn("TRACK");
+    Mockito.when(trackRequest.getRemoteAddr()).thenReturn("127.0.0.1");
+    testFilter.doFilter(trackRequest, response, chain);
+    assertEquals(HttpServletResponse.SC_METHOD_NOT_ALLOWED, response.status);
+    assertFalse(chainCalled.get());
+  }
+
+  private class HttpServletResponseForTest implements HttpServletResponse {
     String redirectLocation = "";
     int status;
     private String contentType;
@@ -284,8 +367,53 @@ public class TestAmFilter {
     }
 
     @Override
+    public void setDateHeader(String name, long date) {
+
+    }
+
+    @Override
+    public void addDateHeader(String name, long date) {
+
+    }
+
+    @Override
+    public void addCookie(Cookie cookie) {
+
+    }
+
+    @Override
+    public boolean containsHeader(String name) {
+      return false;
+    }
+
+    @Override
+    public String encodeURL(String url) {
+      return null;
+    }
+
+    @Override
     public String encodeRedirectURL(String url) {
       return url;
+    }
+
+    @Override
+    public String encodeUrl(String url) {
+      return null;
+    }
+
+    @Override
+    public String encodeRedirectUrl(String url) {
+      return null;
+    }
+
+    @Override
+    public void sendError(int sc, String msg) throws IOException {
+      this.status = sc;
+    }
+
+    @Override
+    public void sendError(int sc) throws IOException {
+      this.status = sc;
     }
 
     @Override
@@ -294,8 +422,58 @@ public class TestAmFilter {
     }
 
     @Override
+    public void setStatus(int sc, String sm) {
+
+    }
+
+    @Override
+    public int getStatus() {
+      return 0;
+    }
+
+    @Override
     public void setContentType(String type) {
       this.contentType = type;
+    }
+
+    @Override
+    public void setBufferSize(int size) {
+
+    }
+
+    @Override
+    public int getBufferSize() {
+      return 0;
+    }
+
+    @Override
+    public void flushBuffer() throws IOException {
+
+    }
+
+    @Override
+    public void resetBuffer() {
+
+    }
+
+    @Override
+    public boolean isCommitted() {
+      return false;
+    }
+
+    @Override
+    public void reset() {
+
+    }
+
+    @Override
+    public void setLocale(Locale loc) {
+
+    }
+
+    @Override
+    public Locale getLocale() {
+      return null;
     }
 
     @Override
@@ -303,14 +481,69 @@ public class TestAmFilter {
       headers.put(name, value);
     }
 
+    @Override
+    public void addHeader(String name, String value) {
+
+    }
+
+    @Override
+    public void setIntHeader(String name, int value) {
+
+    }
+
+    @Override
+    public void addIntHeader(String name, int value) {
+
+    }
+
     public String getHeader(String name) {
       return headers.get(name);
+    }
+
+    @Override
+    public Collection<String> getHeaders(String name) {
+      return null;
+    }
+
+    @Override
+    public Collection<String> getHeaderNames() {
+      return null;
+    }
+
+    @Override
+    public String getCharacterEncoding() {
+      return null;
+    }
+
+    @Override
+    public String getContentType() {
+      return null;
+    }
+
+    @Override
+    public ServletOutputStream getOutputStream() throws IOException {
+      return null;
     }
 
     @Override
     public PrintWriter getWriter() throws IOException {
       body = new StringWriter();
       return new PrintWriter(body);
+    }
+
+    @Override
+    public void setCharacterEncoding(String charset) {
+
+    }
+
+    @Override
+    public void setContentLength(int len) {
+
+    }
+
+    @Override
+    public void setContentLengthLong(long len) {
+
     }
   }
 

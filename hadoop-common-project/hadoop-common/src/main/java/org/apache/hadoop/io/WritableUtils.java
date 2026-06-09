@@ -25,6 +25,7 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.ReflectionUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -86,12 +87,12 @@ public final class WritableUtils  {
   public static String readCompressedString(DataInput in) throws IOException {
     byte[] bytes = readCompressedByteArray(in);
     if (bytes == null) return null;
-    return new String(bytes, "UTF-8");
+    return new String(bytes, StandardCharsets.UTF_8);
   }
 
 
   public static int  writeCompressedString(DataOutput out, String s) throws IOException {
-    return writeCompressedByteArray(out, (s != null) ? s.getBytes("UTF-8") : null);
+    return writeCompressedByteArray(out, (s != null) ? s.getBytes(StandardCharsets.UTF_8) : null);
   }
 
   /*
@@ -103,7 +104,7 @@ public final class WritableUtils  {
    */
   public static void writeString(DataOutput out, String s) throws IOException {
     if (s != null) {
-      byte[] buffer = s.getBytes("UTF-8");
+      byte[] buffer = s.getBytes(StandardCharsets.UTF_8);
       int len = buffer.length;
       out.writeInt(len);
       out.write(buffer, 0, len);
@@ -208,7 +209,10 @@ public final class WritableUtils  {
 
   /**
    * Make a copy of a writable object using serialization to a buffer.
+   *
+   * @param <T> Generics Type T.
    * @param orig The object to copy
+   * @param conf input Configuration.
    * @return The copied object
    */
   public static <T extends Writable> T clone(T orig, Configuration conf) {
@@ -223,10 +227,10 @@ public final class WritableUtils  {
   }
 
   /**
-   * Make a copy of the writable object using serialization to a buffer
+   * Make a copy of the writable object using serialization to a buffer.
    * @param dst the object to copy from
    * @param src the object to copy into, which is destroyed
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    * @deprecated use ReflectionUtils.cloneInto instead.
    */
   @Deprecated
@@ -236,7 +240,8 @@ public final class WritableUtils  {
 
   /**
    * Serializes an integer to a binary stream with zero-compressed encoding.
-   * For -112 <= i <= 127, only one byte is used with the actual value.
+   * For -112 {@literal <=} i {@literal <=} 127, only one byte is used with the
+   * actual value.
    * For other values of i, the first byte value indicates whether the
    * integer is positive or negative, and the number of bytes that follow.
    * If the first byte value v is between -113 and -116, the following integer
@@ -247,7 +252,7 @@ public final class WritableUtils  {
    *
    * @param stream Binary output stream
    * @param i Integer to be serialized
-   * @throws java.io.IOException 
+   * @throws IOException raised on errors performing I/O.
    */
   public static void writeVInt(DataOutput stream, int i) throws IOException {
     writeVLong(stream, i);
@@ -255,7 +260,8 @@ public final class WritableUtils  {
   
   /**
    * Serializes a long to a binary stream with zero-compressed encoding.
-   * For -112 <= i <= 127, only one byte is used with the actual value.
+   * For -112 {@literal <=} i {@literal <=} 127, only one byte is used with the
+   * actual value.
    * For other values of i, the first byte value indicates whether the
    * long is positive or negative, and the number of bytes that follow.
    * If the first byte value v is between -113 and -120, the following long
@@ -266,7 +272,7 @@ public final class WritableUtils  {
    * 
    * @param stream Binary output stream
    * @param i Long to be serialized
-   * @throws java.io.IOException 
+   * @throws IOException raised on errors performing I/O.
    */
   public static void writeVLong(DataOutput stream, long i) throws IOException {
     if (i >= -112 && i <= 127) {
@@ -301,7 +307,7 @@ public final class WritableUtils  {
   /**
    * Reads a zero-compressed encoded long from input stream and returns it.
    * @param stream Binary input stream
-   * @throws java.io.IOException 
+   * @throws IOException raised on errors performing I/O.
    * @return deserialized long from stream.
    */
   public static long readVLong(DataInput stream) throws IOException {
@@ -322,7 +328,7 @@ public final class WritableUtils  {
   /**
    * Reads a zero-compressed encoded integer from input stream and returns it.
    * @param stream Binary input stream
-   * @throws java.io.IOException 
+   * @throws IOException raised on errors performing I/O.
    * @return deserialized integer from stream.
    */
   public static int readVInt(DataInput stream) throws IOException {
@@ -340,8 +346,10 @@ public final class WritableUtils  {
    * inclusive.
    *
    * @param stream Binary input stream
-   * @throws java.io.IOException
-   * @return deserialized integer from stream
+   * @param lower input lower.
+   * @param upper input upper.
+   * @throws IOException raised on errors performing I/O.
+   * @return deserialized integer from stream.
    */
   public static int readVIntInRange(DataInput stream, int lower, int upper)
       throws IOException {
@@ -385,7 +393,8 @@ public final class WritableUtils  {
   }
 
   /**
-   * Get the encoded length if an integer is stored in a variable-length format
+   * Get the encoded length if an integer is stored in a variable-length format.
+   * @param i input i.
    * @return the encoded length 
    */
   public static int getVIntSize(long i) {
@@ -408,7 +417,7 @@ public final class WritableUtils  {
    * @param in DataInput to read from 
    * @param enumType Class type of Enum
    * @return Enum represented by String read from DataInput
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public static <T extends Enum<T>> T readEnum(DataInput in, Class<T> enumType)
     throws IOException{
@@ -418,7 +427,7 @@ public final class WritableUtils  {
    * writes String value of enum to DataOutput. 
    * @param out Dataoutput stream
    * @param enumVal enum value
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public static void writeEnum(DataOutput out,  Enum<?> enumVal) 
     throws IOException{
@@ -444,7 +453,11 @@ public final class WritableUtils  {
     }
   }
 
-  /** Convert writables to a byte array */
+  /**
+   * Convert writables to a byte array.
+   * @param writables input writables.
+   * @return ByteArray.
+   */
   public static byte[] toByteArray(Writable... writables) {
     final DataOutputBuffer out = new DataOutputBuffer();
     try {

@@ -36,7 +36,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.webapp.AppBlock;
 import org.apache.hadoop.yarn.webapp.YarnWebParams;
 import org.apache.hadoop.yarn.webapp.test.WebAppTests;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import com.google.inject.Binder;
 import com.google.inject.Injector;
@@ -66,7 +66,7 @@ public class TestAppPage {
 
     RMAppMetrics appMetrics =
         new RMAppMetrics(Resource.newInstance(0, 0), 0, 0, new HashMap<>(),
-            new HashMap<>());
+            new HashMap<>(), 0);
     when(app.getRMAppMetrics()).thenReturn(appMetrics);
     
     // initialize RM Context, and create RMApp, without creating RMAppAttempt

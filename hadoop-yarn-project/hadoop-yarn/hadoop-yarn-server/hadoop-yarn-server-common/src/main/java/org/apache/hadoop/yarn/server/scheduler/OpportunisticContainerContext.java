@@ -18,9 +18,12 @@
 
 package org.apache.hadoop.yarn.server.scheduler;
 
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RemoteNode;
+import org.apache.hadoop.yarn.server.metrics.OpportunisticSchedulerMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.Objects;
 
 import static org.apache.hadoop.yarn.server.scheduler.OpportunisticContainerAllocator.Allocation;
 import static org.apache.hadoop.yarn.server.scheduler.OpportunisticContainerAllocator.AllocationParams;
@@ -129,10 +133,25 @@ public class OpportunisticContainerContext {
       SchedulerRequestKey schedulerKey = SchedulerRequestKey.create(request);
 
       Map<Resource, EnrichedResourceRequest> reqMap =
-          outstandingOpReqs.get(schedulerKey);
+          getOutstandingOpReqs().get(schedulerKey);
+
+      if (request.getNumContainers() == 0) {
+        if (Objects.nonNull(reqMap) &&
+                ResourceRequest.isAnyLocation(request.getResourceName())) {
+          reqMap.remove(request.getCapability());
+          if (reqMap.isEmpty()) {
+            outstandingOpReqs.remove(schedulerKey);
+          }
+          continue;
+        } else if (Objects.isNull(reqMap) || Objects.isNull(
+                reqMap.get(request.getCapability()))) {
+          continue;
+        }
+      }
+
       if (reqMap == null) {
         reqMap = new HashMap<>();
-        outstandingOpReqs.put(schedulerKey, reqMap);
+        getOutstandingOpReqs().put(schedulerKey, reqMap);
       }
 
       EnrichedResourceRequest eReq = reqMap.get(request.getCapability());
@@ -191,7 +210,14 @@ public class OpportunisticContainerContext {
             err.removeLocation(allocation.getResourceName());
           }
         }
+        getOppSchedulerMetrics().addAllocateOLatencyEntry(
+            Time.monotonicNow() - err.getTimestamp());
       }
     }
+  }
+
+  @VisibleForTesting
+  public OpportunisticSchedulerMetrics getOppSchedulerMetrics() {
+    return OpportunisticSchedulerMetrics.getMetrics();
   }
 }

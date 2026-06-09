@@ -29,12 +29,10 @@ import org.apache.hadoop.service.launcher.testservices.RunningService;
 import org.apache.hadoop.service.launcher.testservices.StoppingInStartLaunchableService;
 import org.apache.hadoop.service.launcher.testservices.StringConstructorOnlyService;
 
-import static org.apache.hadoop.service.launcher.LauncherArguments.*;
-
 import static org.apache.hadoop.test.GenericTestUtils.*;
 import static org.apache.hadoop.service.launcher.testservices.ExceptionInExecuteLaunchableService.*;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestServiceLauncher extends AbstractServiceLauncherTestBase {
 

@@ -17,13 +17,13 @@
  */
 package org.apache.hadoop.hdfs.protocol;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedListEntries;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ReencryptionInfoProto;
 import org.apache.hadoop.hdfs.protocol.ZoneReencryptionStatus.State;
+import org.apache.hadoop.util.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -200,12 +200,12 @@ public final class ReencryptionStatus {
     StringBuilder sb = new StringBuilder();
     for (Map.Entry<Long, ZoneReencryptionStatus> entry : zoneStatuses
         .entrySet()) {
-      sb.append("[zone:" + entry.getKey());
-      sb.append(" state:" + entry.getValue().getState());
-      sb.append(" lastProcessed:" + entry.getValue().getLastCheckpointFile());
-      sb.append(" filesReencrypted:" + entry.getValue().getFilesReencrypted());
-      sb.append(" fileReencryptionFailures:" + entry.getValue()
-          .getNumReencryptionFailures() + "]");
+      sb.append("[zone:" + entry.getKey())
+          .append(" state:" + entry.getValue().getState())
+          .append(" lastProcessed:" + entry.getValue().getLastCheckpointFile())
+          .append(" filesReencrypted:" + entry.getValue().getFilesReencrypted())
+          .append(" fileReencryptionFailures:" + entry.getValue()
+              .getNumReencryptionFailures() + "]");
     }
     return sb.toString();
   }

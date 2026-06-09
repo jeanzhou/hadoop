@@ -20,9 +20,8 @@ package org.apache.hadoop.tools.mapred.lib;
 
 import org.apache.hadoop.tools.DistCpConstants;
 import org.apache.hadoop.tools.DistCpContext;
-import org.junit.Assert;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -36,17 +35,20 @@ import org.apache.hadoop.tools.CopyListingFileStatus;
 import org.apache.hadoop.tools.DistCpOptions;
 import org.apache.hadoop.tools.StubContext;
 import org.apache.hadoop.security.Credentials;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 public class TestDynamicInputFormat {
-  private static final Log LOG = LogFactory.getLog(TestDynamicInputFormat.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestDynamicInputFormat.class);
   private static MiniDFSCluster cluster;
   private static final int N_FILES = 1000;
   private static final int NUM_SPLITS = 7;
@@ -55,7 +57,7 @@ public class TestDynamicInputFormat {
 
   private static List<String> expectedFilePaths = new ArrayList<String>(N_FILES);
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     cluster = new MiniDFSCluster.Builder(getConfigurationForCluster())
                   .numDataNodes(1).format(true).build();
@@ -100,11 +102,11 @@ public class TestDynamicInputFormat {
                                     new Path(path))[0].getPath().toString());
     }
     finally {
-      IOUtils.cleanup(null, fileSystem, outputStream);
+      IOUtils.cleanupWithLogger(null, fileSystem, outputStream);
     }
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     cluster.shutdown();
   }
@@ -142,28 +144,28 @@ public class TestDynamicInputFormat {
         CopyListingFileStatus fileStatus = recordReader.getCurrentValue();
         String source = fileStatus.getPath().toString();
         System.out.println(source);
-        Assert.assertTrue(expectedFilePaths.contains(source));
+        assertTrue(expectedFilePaths.contains(source));
         final float progress = recordReader.getProgress();
-        Assert.assertTrue(progress >= previousProgressValue);
-        Assert.assertTrue(progress >= 0.0f);
-        Assert.assertTrue(progress <= 1.0f);
+        assertTrue(progress >= previousProgressValue);
+        assertTrue(progress >= 0.0f);
+        assertTrue(progress <= 1.0f);
         previousProgressValue = progress;
         ++nFiles;
       }
-      Assert.assertTrue(recordReader.getProgress() == 1.0f);
+      assertTrue(recordReader.getProgress() == 1.0f);
 
       ++taskId;
     }
 
-    Assert.assertEquals(expectedFilePaths.size(), nFiles);
+    assertEquals(expectedFilePaths.size(), nFiles);
   }
 
   @Test
   public void testGetSplitRatio() throws Exception {
-    Assert.assertEquals(1, DynamicInputFormat.getSplitRatio(1, 1000000000));
-    Assert.assertEquals(2, DynamicInputFormat.getSplitRatio(11000000, 10));
-    Assert.assertEquals(4, DynamicInputFormat.getSplitRatio(30, 700));
-    Assert.assertEquals(2, DynamicInputFormat.getSplitRatio(30, 200));
+    assertEquals(1, DynamicInputFormat.getSplitRatio(1, 1000000000));
+    assertEquals(2, DynamicInputFormat.getSplitRatio(11000000, 10));
+    assertEquals(4, DynamicInputFormat.getSplitRatio(30, 700));
+    assertEquals(2, DynamicInputFormat.getSplitRatio(30, 200));
 
     // Tests with negative value configuration
     Configuration conf = new Configuration();
@@ -171,19 +173,19 @@ public class TestDynamicInputFormat {
     conf.setInt(DistCpConstants.CONF_LABEL_MAX_CHUNKS_IDEAL, -1);
     conf.setInt(DistCpConstants.CONF_LABEL_MIN_RECORDS_PER_CHUNK, -1);
     conf.setInt(DistCpConstants.CONF_LABEL_SPLIT_RATIO, -1);
-    Assert.assertEquals(1,
+    assertEquals(1,
         DynamicInputFormat.getSplitRatio(1, 1000000000, conf));
-    Assert.assertEquals(2,
+    assertEquals(2,
         DynamicInputFormat.getSplitRatio(11000000, 10, conf));
-    Assert.assertEquals(4, DynamicInputFormat.getSplitRatio(30, 700, conf));
-    Assert.assertEquals(2, DynamicInputFormat.getSplitRatio(30, 200, conf));
+    assertEquals(4, DynamicInputFormat.getSplitRatio(30, 700, conf));
+    assertEquals(2, DynamicInputFormat.getSplitRatio(30, 200, conf));
 
     // Tests with valid configuration
     conf.setInt(DistCpConstants.CONF_LABEL_MAX_CHUNKS_TOLERABLE, 100);
     conf.setInt(DistCpConstants.CONF_LABEL_MAX_CHUNKS_IDEAL, 30);
     conf.setInt(DistCpConstants.CONF_LABEL_MIN_RECORDS_PER_CHUNK, 10);
     conf.setInt(DistCpConstants.CONF_LABEL_SPLIT_RATIO, 53);
-    Assert.assertEquals(53, DynamicInputFormat.getSplitRatio(3, 200, conf));
+    assertEquals(53, DynamicInputFormat.getSplitRatio(3, 200, conf));
   }
 
   @Test
@@ -201,11 +203,14 @@ public class TestDynamicInputFormat {
         secondInputFormat.getChunkContext(configuration);
     DynamicInputChunkContext fourthContext =
         secondInputFormat.getChunkContext(configuration);
-    Assert.assertTrue("Chunk contexts from the same DynamicInputFormat " +
-        "object should be the same.",firstContext.equals(secondContext));
-    Assert.assertTrue("Chunk contexts from the same DynamicInputFormat " +
-        "object should be the same.",thirdContext.equals(fourthContext));
-    Assert.assertTrue("Contexts from different DynamicInputFormat " +
-        "objects should be different.",!firstContext.equals(thirdContext));
+    assertTrue(firstContext.equals(secondContext),
+        "Chunk contexts from the same DynamicInputFormat " +
+        "object should be the same.");
+    assertTrue(thirdContext.equals(fourthContext),
+        "Chunk contexts from the same DynamicInputFormat " +
+        "object should be the same.");
+    assertTrue(!firstContext.equals(thirdContext),
+        "Contexts from different DynamicInputFormat " +
+        "objects should be different.");
   }
 }

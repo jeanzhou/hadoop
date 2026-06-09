@@ -22,6 +22,7 @@ import org.apache.hadoop.metrics2.annotation.Metric;
 import org.apache.hadoop.metrics2.annotation.Metrics;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.MutableCounterInt;
+import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import org.apache.hadoop.metrics2.lib.MutableGaugeInt;
 import org.apache.hadoop.metrics2.lib.MutableGaugeLong;
 import org.apache.hadoop.metrics2.lib.MutableGaugeFloat;
@@ -29,7 +30,7 @@ import org.apache.hadoop.metrics2.lib.MutableRate;
 import org.apache.hadoop.metrics2.source.JvmMetrics;
 import org.apache.hadoop.yarn.api.records.Resource;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 @Metrics(about="Metrics for node manager", context="yarn")
 public class NodeManagerMetrics {
@@ -44,6 +45,7 @@ public class NodeManagerMetrics {
   @Metric("# of initializing containers")
       MutableGaugeInt containersIniting;
   @Metric MutableGaugeInt containersRunning;
+  @Metric("# of paused containers") MutableGaugeInt containersPaused;
   @Metric("Current allocated memory in GB")
       MutableGaugeInt allocatedGB;
   @Metric("Current # of allocated containers")
@@ -54,6 +56,12 @@ public class NodeManagerMetrics {
   @Metric MutableGaugeInt availableVCores;
   @Metric("Container launch duration")
       MutableRate containerLaunchDuration;
+
+  @Metric("Containers queued (Guaranteed)")
+  MutableGaugeInt containersGuaranteedQueued;
+  @Metric("Containers queued (Opportunistic)")
+  MutableGaugeInt containersOpportunisticQueued;
+
   @Metric("# of bad local dirs")
       MutableGaugeInt badLocalDirs;
   @Metric("# of bad log dirs")
@@ -90,6 +98,28 @@ public class NodeManagerMetrics {
   MutableGaugeInt nodeUsedVMemGB;
   @Metric("Current CPU utilization")
   MutableGaugeFloat nodeCpuUtilization;
+  @Metric("Current GPU utilization")
+  MutableGaugeFloat nodeGpuUtilization;
+  @Metric("Current running apps")
+  MutableGaugeInt applicationsRunning;
+
+  @Metric("Missed localization requests in bytes")
+      MutableCounterLong localizedCacheMissBytes;
+  @Metric("Cached localization requests in bytes")
+      MutableCounterLong localizedCacheHitBytes;
+  @Metric("Localization cache hit ratio (bytes)")
+      MutableGaugeInt localizedCacheHitBytesRatio;
+  @Metric("Missed localization requests (files)")
+      MutableCounterLong localizedCacheMissFiles;
+  @Metric("Cached localization requests (files)")
+      MutableCounterLong localizedCacheHitFiles;
+  @Metric("Localization cache hit ratio (files)")
+      MutableGaugeInt localizedCacheHitFilesRatio;
+  @Metric("Container localization time in milliseconds")
+      MutableRate localizationDurationMillis;
+
+  @Metric("ContainerMonitor time cost in milliseconds")
+  MutableGaugeLong containersMonitorCostTime;
 
   // CHECKSTYLE:ON:VisibilityModifier
 
@@ -162,6 +192,22 @@ public class NodeManagerMetrics {
     containersReIniting.decr();
   }
 
+  public void runningApplication() {
+    applicationsRunning.incr();
+  }
+
+  public void endRunningApplication() {
+    applicationsRunning.decr();
+  }
+
+  public void pausedContainer() {
+    containersPaused.incr();
+  }
+
+  public void endPausedContainer() {
+    containersPaused.decr();
+  }
+
   public void allocateContainer(Resource res) {
     allocatedContainers.incr();
     allocatedMB = allocatedMB + res.getMemorySize();
@@ -207,6 +253,11 @@ public class NodeManagerMetrics {
     allocatedOpportunisticGB
         .set((int) Math.ceil(allocatedOpportunisticMB / 1024d));
     allocatedOpportunisticVCores.decr(res.getVirtualCores());
+  }
+
+  public void setQueuedContainers(int opportunisticCount, int guaranteedCount) {
+    containersOpportunisticQueued.set(opportunisticCount);
+    containersGuaranteedQueued.set(guaranteedCount);
   }
 
   public void addResource(Resource res) {
@@ -255,6 +306,10 @@ public class NodeManagerMetrics {
 
   public int getRunningContainers() {
     return containersRunning.value();
+  }
+
+  public int getPausedContainers() {
+    return containersPaused.value();
   }
 
   @VisibleForTesting
@@ -312,6 +367,16 @@ public class NodeManagerMetrics {
 
   public int getRunningOpportunisticContainers() {
     return runningOpportunisticContainers.value();
+  }
+
+  @VisibleForTesting
+  public int getQueuedOpportunisticContainers() {
+    return containersOpportunisticQueued.value();
+  }
+
+  @VisibleForTesting
+  public int getQueuedGuaranteedContainers() {
+    return containersGuaranteedQueued.value();
   }
 
   public long getCacheSizeBeforeClean() {
@@ -377,4 +442,51 @@ public class NodeManagerMetrics {
   public void setNodeCpuUtilization(float cpuUtilization) {
     this.nodeCpuUtilization.set(cpuUtilization);
   }
+
+  public void setNodeGpuUtilization(float nodeGpuUtilization) {
+    this.nodeGpuUtilization.set(nodeGpuUtilization);
+  }
+
+  public float getNodeGpuUtilization() {
+    return nodeGpuUtilization.value();
+  }
+
+  private void updateLocalizationHitRatios() {
+    updateLocalizationHitRatio(localizedCacheHitBytes, localizedCacheMissBytes,
+        localizedCacheHitBytesRatio);
+    updateLocalizationHitRatio(localizedCacheHitFiles, localizedCacheMissFiles,
+        localizedCacheHitFilesRatio);
+  }
+
+  private static void updateLocalizationHitRatio(MutableCounterLong hitCounter,
+      MutableCounterLong missedCounter, MutableGaugeInt ratioGauge) {
+    final long hits = hitCounter.value();
+    final long misses = missedCounter.value();
+    final long total = hits + misses;
+    if (total > 0) {
+      ratioGauge.set((int)(100 * hits / total));
+    }
+  }
+
+  public void localizationCacheHitMiss(long size) {
+    if (size > 0) {
+      localizedCacheMissBytes.incr(size);
+      localizedCacheMissFiles.incr();
+      updateLocalizationHitRatios();
+    } else if (size < 0) {
+      // cached: recorded negative, restore the sign
+      localizedCacheHitBytes.incr(-size);
+      localizedCacheHitFiles.incr();
+      updateLocalizationHitRatios();
+    }
+  }
+
+  public void localizationComplete(long downloadMillis) {
+    localizationDurationMillis.add(downloadMillis);
+  }
+
+  public void addContainerMonitorCostTime(long duration) {
+    containersMonitorCostTime.incr(duration);
+  }
+
 }

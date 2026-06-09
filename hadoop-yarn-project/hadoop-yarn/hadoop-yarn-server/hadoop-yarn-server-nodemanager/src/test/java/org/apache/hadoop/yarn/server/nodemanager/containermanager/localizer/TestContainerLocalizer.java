@@ -17,16 +17,17 @@
 */
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer;
 
-import static junit.framework.TestCase.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.argThat;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Matchers.isA;
-import static org.mockito.Matchers.same;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isA;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
@@ -37,6 +38,8 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,12 +71,15 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.DiskChecker.DiskErrorException;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.Shell.ShellCommandExecutor;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.records.LocalResource;
 import org.apache.hadoop.yarn.api.records.LocalResourceType;
 import org.apache.hadoop.yarn.api.records.LocalResourceVisibility;
 import org.apache.hadoop.yarn.api.records.URL;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
@@ -82,15 +88,15 @@ import org.apache.hadoop.yarn.server.nodemanager.api.ResourceLocalizationSpec;
 import org.apache.hadoop.yarn.server.nodemanager.api.protocolrecords.LocalResourceStatus;
 import org.apache.hadoop.yarn.server.nodemanager.api.protocolrecords.LocalizerAction;
 import org.apache.hadoop.yarn.server.nodemanager.api.protocolrecords.LocalizerStatus;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.ArgumentMatcher;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 public class TestContainerLocalizer {
 
@@ -107,7 +113,7 @@ public class TestContainerLocalizer {
   static final InetSocketAddress nmAddr =
       new InetSocketAddress("foobar", 8040);
 
-  @After
+  @AfterEach
   public void cleanUp() throws IOException {
     FileUtils.deleteDirectory(new File(basedir.toUri().getRawPath()));
   }
@@ -210,16 +216,11 @@ public class TestContainerLocalizer {
 
     // verify all HB use localizerID provided
     verify(nmProxy, never()).heartbeat(argThat(
-        new ArgumentMatcher<LocalizerStatus>() {
-          @Override
-          public boolean matches(Object o) {
-            LocalizerStatus status = (LocalizerStatus) o;
-            return !containerId.equals(status.getLocalizerId());
-          }
-        }));
+        status -> !containerId.equals(status.getLocalizerId())));
   }
 
-  @Test(timeout = 15000)
+  @Test
+  @Timeout(value = 15)
   public void testMainFailure() throws Exception {
     ContainerLocalizerWrapper wrapper = new ContainerLocalizerWrapper();
     ContainerLocalizer localizer = wrapper.setupContainerLocalizerForTest();
@@ -233,9 +234,36 @@ public class TestContainerLocalizer {
     // run localization, it should fail
     try {
       localizer.runLocalization(nmAddr);
-      Assert.fail("Localization succeeded unexpectedly!");
+      fail("Localization succeeded unexpectedly!");
     } catch (IOException e) {
-      Assert.assertTrue(e.getMessage().contains("Sigh, no token!"));
+      assertTrue(e.getMessage().contains("Sigh, no token!"));
+    }
+  }
+
+  @Test
+  public void testDiskCheckFailure() throws Exception {
+    Configuration conf = new Configuration();
+    conf.set(YarnConfiguration.DISK_VALIDATOR, "read-write");
+    FileContext lfs = FileContext.getLocalFSFileContext(conf);
+    Path fileCacheDir = lfs.makeQualified(new Path(basedir, "filecache"));
+    lfs.mkdir(fileCacheDir, FsPermission.getDefault(), true);
+    RecordFactory recordFactory = mock(RecordFactory.class);
+    ContainerLocalizer localizer = new ContainerLocalizer(lfs,
+        UserGroupInformation.getCurrentUser().getUserName(), "application_01",
+        "container_01", String.format(ContainerExecutor.TOKEN_FILE_NAME_FMT,
+        "container_01"), new ArrayList<>(), recordFactory){
+      @Override
+      Configuration initConfiguration() {
+        return conf;
+      }
+    };
+    LocalResource rsrc = mock(LocalResource.class);
+    Path destDirPath = new Path(fileCacheDir, "11");
+    try {
+      localizer.download(destDirPath, rsrc,
+          UserGroupInformation.getCurrentUser());
+    } catch (DiskErrorException ex) {
+      fail(ex.getCause().toString());
     }
   }
 
@@ -279,7 +307,7 @@ public class TestContainerLocalizer {
         any(UserGroupInformation.class));
     try {
       localizer.runLocalization(nmAddr);
-      Assert.fail("Localization succeeded unexpectedly!");
+      fail("Localization succeeded unexpectedly!");
     } catch (IOException e) {
       verify(localizer).closeFileSystems(any(UserGroupInformation.class));
     }
@@ -294,9 +322,9 @@ public class TestContainerLocalizer {
     FakeContainerLocalizer localizerB = testB.init();
 
     // run localization
-    Thread threadA = new Thread() {
+    SubjectInheritingThread threadA = new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         try {
           localizerA.runLocalization(nmAddr);
         } catch (Exception e) {
@@ -304,9 +332,9 @@ public class TestContainerLocalizer {
         }
       }
     };
-    Thread threadB = new Thread() {
+    SubjectInheritingThread threadB = new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         try {
           localizerB.runLocalization(nmAddr);
         } catch (Exception e) {
@@ -343,10 +371,10 @@ public class TestContainerLocalizer {
       shexcA = localizerA.getDownloader().getShexc();
       shexcB = localizerB.getDownloader().getShexc();
 
-      assertTrue("Localizer A process not running, but should be",
-          shexcA.getProcess().isAlive());
-      assertTrue("Localizer B process not running, but should be",
-          shexcB.getProcess().isAlive());
+      assertTrue(shexcA.getProcess().isAlive(),
+          "Localizer A process not running, but should be");
+      assertTrue(shexcB.getProcess().isAlive(),
+          "Localizer B process not running, but should be");
 
       // Stop heartbeat from giving anymore resources to download
       testA.heartbeatResponse++;
@@ -358,10 +386,10 @@ public class TestContainerLocalizer {
       threadA.join();
       shexcA.getProcess().waitFor(10000, TimeUnit.MILLISECONDS);
 
-      assertFalse("Localizer A process is still running, but shouldn't be",
-          shexcA.getProcess().isAlive());
-      assertTrue("Localizer B process not running, but should be",
-          shexcB.getProcess().isAlive());
+      assertFalse(shexcA.getProcess().isAlive(),
+          "Localizer A process is still running, but shouldn't be");
+      assertTrue(shexcB.getProcess().isAlive(),
+          "Localizer B process not running, but should be");
 
     } finally {
       // Make sure everything gets cleaned up
@@ -400,14 +428,13 @@ public class TestContainerLocalizer {
     doReturn(cs).when(localizer).createCompletionService(syncExec);
   }
 
-  static class HBMatches extends ArgumentMatcher<LocalizerStatus> {
+  static class HBMatches implements ArgumentMatcher<LocalizerStatus> {
     final LocalResource rsrc;
     HBMatches(LocalResource rsrc) {
       this.rsrc = rsrc;
     }
     @Override
-    public boolean matches(Object o) {
-      LocalizerStatus status = (LocalizerStatus) o;
+    public boolean matches(LocalizerStatus status) {
       for (LocalResourceStatus localized : status.getResources()) {
         switch (localized.getStatus()) {
         case FETCH_SUCCESS:
@@ -447,7 +474,9 @@ public class TestContainerLocalizer {
     FakeContainerLocalizer(FileContext lfs, String user, String appId,
         String localizerId, List<Path> localDirs,
         RecordFactory recordFactory) throws IOException {
-      super(lfs, user, appId, localizerId, localDirs, recordFactory);
+      super(lfs, user, appId, localizerId,
+          String.format(ContainerExecutor.TOKEN_FILE_NAME_FMT, containerId),
+          localDirs, recordFactory);
     }
 
     FakeLongDownload getDownloader() {
@@ -523,7 +552,7 @@ public class TestContainerLocalizer {
       DataInputBuffer appTokens = createFakeCredentials(random, 10);
       tokenPath =
         lfs.makeQualified(new Path(
-              String.format(ContainerLocalizer.TOKEN_FILE_NAME_FMT,
+            String.format(ContainerExecutor.TOKEN_FILE_NAME_FMT,
                   containerId)));
       doReturn(new FSDataInputStream(new FakeFSDataInputStream(appTokens))
           ).when(spylfs).open(tokenPath);
@@ -645,7 +674,8 @@ static DataInputBuffer createFakeCredentials(Random r, int nTok)
     return ret;
   }
 
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testUserCacheDirPermission() throws Exception {
     Configuration conf = new Configuration();
     conf.set(CommonConfigurationKeys.FS_PERMISSIONS_UMASK_KEY, "077");
@@ -655,7 +685,8 @@ static DataInputBuffer createFakeCredentials(Random r, int nTok)
     RecordFactory recordFactory = mock(RecordFactory.class);
     ContainerLocalizer localizer = new ContainerLocalizer(lfs,
         UserGroupInformation.getCurrentUser().getUserName(), "application_01",
-        "container_01", new ArrayList<Path>(), recordFactory);
+        "container_01", String.format(ContainerExecutor.TOKEN_FILE_NAME_FMT,
+        "container_01"), new ArrayList<>(), recordFactory);
     LocalResource rsrc = mock(LocalResource.class);
     when(rsrc.getVisibility()).thenReturn(LocalResourceVisibility.PRIVATE);
     Path destDirPath = new Path(fileCacheDir, "0/0/85");
@@ -666,13 +697,130 @@ static DataInputBuffer createFakeCredentials(Random r, int nTok)
     //Localize and check the directory permission are correct.
     localizer
         .download(destDirPath, rsrc, UserGroupInformation.getCurrentUser());
-    Assert
-        .assertEquals("Cache directory permissions filecache/0/0 is incorrect",
-            USERCACHE_DIR_PERM,
-            lfs.getFileStatus(destDirPath.getParent()).getPermission());
-    Assert.assertEquals("Cache directory permissions filecache/0 is incorrect",
-        USERCACHE_DIR_PERM,
-        lfs.getFileStatus(destDirPath.getParent().getParent()).getPermission());
+    assertEquals(USERCACHE_DIR_PERM, lfs.getFileStatus(destDirPath.getParent()).getPermission(),
+        "Cache directory permissions filecache/0/0 is incorrect");
+    assertEquals(USERCACHE_DIR_PERM,
+        lfs.getFileStatus(destDirPath.getParent().getParent()).getPermission(),
+        "Cache directory permissions filecache/0 is incorrect");
   }
 
+  @Test
+  public void testDefaultJavaOptionsWhenExtraJDK17OptionsAreConfigured() throws Exception {
+    ContainerLocalizerWrapper wrapper = new ContainerLocalizerWrapper();
+    ContainerLocalizer localizer = wrapper.setupContainerLocalizerForTest();
+
+    Configuration conf = new Configuration();
+    conf.setBoolean(YarnConfiguration.NM_CONTAINER_LOCALIZER_JAVA_OPTS_ADD_EXPORTS_KEY,
+        true);
+
+    List<String> javaOpts = localizer.getJavaOpts(conf);
+
+    if (Shell.isJavaVersionAtLeast(17)) {
+      // Added by ContainerLocalizer for JDK17+ (MAPREDUCE-7456)
+      assertTrue(javaOpts.contains("--add-exports=java.base/sun.net.dns=ALL-UNNAMED"));
+      assertTrue(javaOpts.contains("--add-exports=java.base/sun.net.util=ALL-UNNAMED"));
+    }
+    assertTrue(javaOpts.contains("-Xmx256m"));
+  }
+
+  @Test
+  public void testDefaultJavaOptionsWhenExtraJDK17OptionsAreNotConfigured() throws Exception {
+    ContainerLocalizerWrapper wrapper = new ContainerLocalizerWrapper();
+    ContainerLocalizer localizer = wrapper.setupContainerLocalizerForTest();
+
+    Configuration conf = new Configuration();
+    conf.setBoolean(YarnConfiguration.NM_CONTAINER_LOCALIZER_JAVA_OPTS_ADD_EXPORTS_KEY,
+        false);
+
+    List<String> javaOpts = localizer.getJavaOpts(conf);
+
+    if (Shell.isJavaVersionAtLeast(17)) {
+      // Added by ContainerLocalizer for JDK17+ (MAPREDUCE-7456)
+      assertFalse(javaOpts.contains("--add-exports=java.base/sun.net.dns=ALL-UNNAMED"));
+      assertFalse(javaOpts.contains("--add-exports=java.base/sun.net.util=ALL-UNNAMED"));
+    }
+    assertTrue(javaOpts.contains("-Xmx256m"));
+  }
+
+  @Test
+  public void testAdminOptionsPrecedeUserDefinedJavaOptions() throws Exception {
+    ContainerLocalizerWrapper wrapper = new ContainerLocalizerWrapper();
+    ContainerLocalizer localizer = wrapper.setupContainerLocalizerForTest();
+
+    Configuration conf = new Configuration();
+    conf.setStrings(YarnConfiguration.NM_CONTAINER_LOCALIZER_ADMIN_JAVA_OPTS_KEY,
+        "adminOption1 adminOption2");
+    conf.setStrings(YarnConfiguration.NM_CONTAINER_LOCALIZER_JAVA_OPTS_KEY,
+        " userOption1 userOption2");
+    List<String> javaOpts = localizer.getJavaOpts(conf);
+
+    if (Shell.isJavaVersionAtLeast(17)) {
+      // Added by ContainerLocalizer for JDK17+ (MAPREDUCE-7456)
+      assertTrue(javaOpts.remove("--add-exports=java.base/sun.net.dns=ALL-UNNAMED"));
+      assertTrue(javaOpts.remove("--add-exports=java.base/sun.net.util=ALL-UNNAMED"));
+    }
+    assertEquals(4, javaOpts.size());
+    assertTrue(javaOpts.get(0).equals("adminOption1"));
+    assertTrue(javaOpts.get(1).equals("adminOption2"));
+    assertTrue(javaOpts.get(2).equals("userOption1"));
+    assertTrue(javaOpts.get(3).equals("userOption2"));
+  }
+
+  @Test
+  public void testAdminOptionsPrecedeDefaultUserOptions() throws Exception {
+    ContainerLocalizerWrapper wrapper = new ContainerLocalizerWrapper();
+    ContainerLocalizer localizer = wrapper.setupContainerLocalizerForTest();
+
+    Configuration conf = new Configuration();
+    conf.setStrings(YarnConfiguration.NM_CONTAINER_LOCALIZER_ADMIN_JAVA_OPTS_KEY,
+        "adminOption1 adminOption2");
+    List<String> javaOpts = localizer.getJavaOpts(conf);
+
+    if (Shell.isJavaVersionAtLeast(17)) {
+      // Added by ContainerLocalizer for JDK17+ (MAPREDUCE-7456)
+      assertTrue(javaOpts.remove("--add-exports=java.base/sun.net.dns=ALL-UNNAMED"));
+      assertTrue(javaOpts.remove("--add-exports=java.base/sun.net.util=ALL-UNNAMED"));
+    }
+    assertEquals(3, javaOpts.size());
+    assertTrue(javaOpts.get(0).equals("adminOption1"));
+    assertTrue(javaOpts.get(1).equals("adminOption2"));
+    assertTrue(javaOpts.get(2).equals("-Xmx256m"));
+  }
+
+  @Test
+  public void testUserOptionsWhenAdminOptionsAreNotDefined() throws Exception {
+    ContainerLocalizerWrapper wrapper = new ContainerLocalizerWrapper();
+    ContainerLocalizer localizer = wrapper.setupContainerLocalizerForTest();
+
+    Configuration conf = new Configuration();
+    conf.setStrings(YarnConfiguration.NM_CONTAINER_LOCALIZER_JAVA_OPTS_KEY,
+        "userOption1 userOption2");
+    List<String> javaOpts = localizer.getJavaOpts(conf);
+
+    if (Shell.isJavaVersionAtLeast(17)) {
+      // Added by ContainerLocalizer for JDK17+ (MAPREDUCE-7456)
+      assertTrue(javaOpts.remove("--add-exports=java.base/sun.net.dns=ALL-UNNAMED"));
+      assertTrue(javaOpts.remove("--add-exports=java.base/sun.net.util=ALL-UNNAMED"));
+    }
+    assertEquals(2, javaOpts.size());
+    assertTrue(javaOpts.get(0).equals("userOption1"));
+    assertTrue(javaOpts.get(1).equals("userOption2"));
+  }
+
+  @Test
+  public void testJavaOptionsWithoutDefinedAdminOrUserOptions() throws Exception {
+    ContainerLocalizerWrapper wrapper = new ContainerLocalizerWrapper();
+    ContainerLocalizer localizer = wrapper.setupContainerLocalizerForTest();
+
+    Configuration conf = new Configuration();
+    List<String> javaOpts = localizer.getJavaOpts(conf);
+
+    if (Shell.isJavaVersionAtLeast(17)) {
+      // Added by ContainerLocalizer for JDK17+ (MAPREDUCE-7456)
+      assertTrue(javaOpts.remove("--add-exports=java.base/sun.net.dns=ALL-UNNAMED"));
+      assertTrue(javaOpts.remove("--add-exports=java.base/sun.net.util=ALL-UNNAMED"));
+    }
+    assertEquals(1, javaOpts.size());
+    assertTrue(javaOpts.get(0).equals("-Xmx256m"));
+  }
 }

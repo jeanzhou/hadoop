@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -18,18 +18,37 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.apache.hadoop.yarn.server.resourcemanager.webapp.TestWebServiceUtil.toJson;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
-import java.io.StringWriter;
+import java.security.Principal;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.Application;
+import javax.ws.rs.core.MultivaluedMap;
+import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import javax.ws.rs.core.UriBuilder;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.Lists;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -41,33 +60,48 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntry;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntryList;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.jsonprovider.ExcludeRootJSONProvider;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.jsonprovider.IncludeRootJSONProvider;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.jsonprovider.JsonProviderFeature;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
-import org.apache.hadoop.yarn.webapp.GuiceServletConfig;
 import org.apache.hadoop.yarn.webapp.JerseyTestBase;
 import org.apache.hadoop.yarn.webapp.WebServicesTestUtils;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import com.google.inject.Guice;
-import com.google.inject.servlet.ServletModule;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.UniformInterfaceException;
-import com.sun.jersey.api.client.WebResource;
-import com.sun.jersey.api.json.JSONJAXBContext;
-import com.sun.jersey.api.json.JSONMarshaller;
-import com.sun.jersey.core.util.MultivaluedMapImpl;
-import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
-import com.sun.jersey.test.framework.WebAppDescriptor;
-
+import org.glassfish.jersey.internal.inject.AbstractBinder;
+import org.glassfish.jersey.server.ResourceConfig;
+import org.glassfish.jersey.test.TestProperties;
 public class TestRMWebServicesNodeLabels extends JerseyTestBase {
 
   private static final int BAD_REQUEST_CODE = 400;
 
-  private static final Log LOG = LogFactory
-      .getLog(TestRMWebServicesNodeLabels.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestRMWebServicesNodeLabels.class);
+  private static final String NODE_0 = "nid:0";
+  private static final String NODE_1 = "nid1:0";
+  private static final String NODE_2 = "nid2:0";
+  private static final String LABEL_A = "a";
+  private static final String LABEL_B = "b";
+  private static final String LABEL_X = "x";
+  private static final String LABEL_Y = "y";
+  private static final String LABEL_Z = "z";
+  public static final boolean DEFAULT_NL_EXCLUSIVITY = true;
+  private static final String PATH_WS = "ws";
+  private static final String PATH_V1 = "v1";
+  private static final String PATH_NODES = "nodes";
+  private static final String PATH_CLUSTER = "cluster";
+  private static final String PATH_REPLACE_NODE_TO_LABELS = "replace-node-to-labels";
+  private static final String PATH_LABEL_MAPPINGS = "label-mappings";
+  private static final String PATH_GET_LABELS = "get-labels";
+  private static final String PATH_REPLACE_LABELS = "replace-labels";
+  private static final String PATH_REMOVE_LABELS = "remove-node-labels";
+  private static final String PATH_GET_NODE_LABELS = "get-node-labels";
+  private static final String PATH_GET_NODE_TO_LABELS = "get-node-to-labels";
+  private static final String QUERY_USER_NAME = "user.name";
+  private static final String PATH_ADD_NODE_LABELS = "add-node-labels";
 
   private static MockRM rm;
   private static YarnConfiguration conf;
@@ -76,11 +110,26 @@ public class TestRMWebServicesNodeLabels extends JerseyTestBase {
   private static String notUserName;
   private static RMWebServices rmWebService;
 
-  private static class WebServletModule extends ServletModule {
+  private HttpServletRequest request;
+  private ResourceConfig config;
+
+  @Override
+  protected Application configure() {
+    config = new ResourceConfig();
+    config.register(RMWebServices.class);
+    config.register(new JerseyBinder());
+    config.register(GenericExceptionHandler.class);
+    config.register(JsonProviderFeature.class);
+    config.register(JAXBContextResolver.class);
+    forceSet(TestProperties.CONTAINER_PORT, JERSEY_RANDOM_PORT);
+    return config;
+  }
+
+  private class JerseyBinder extends AbstractBinder {
+    private Configuration conf = new YarnConfiguration();
 
     @Override
-    protected void configureServlets() {
-      bind(JAXBContextResolver.class);
+    protected void configure() {
       try {
         userName = UserGroupInformation.getCurrentUser().getShortUserName();
       } catch (IOException ioe) {
@@ -91,558 +140,492 @@ public class TestRMWebServicesNodeLabels extends JerseyTestBase {
       conf = new YarnConfiguration();
       conf.set(YarnConfiguration.YARN_ADMIN_ACL, userName);
       rm = new MockRM(conf);
-      rmWebService = new RMWebServices(rm,conf);
-      bind(RMWebServices.class).toInstance(rmWebService);
-      bind(GenericExceptionHandler.class);
-      bind(ResourceManager.class).toInstance(rm);
-      filter("/*").through(
-          TestRMWebServicesAppsModification.TestRMCustomAuthFilter.class);
-      serve("/*").with(GuiceContainer.class);
+      bind(rm).to(ResourceManager.class).named("rm");
+      bind(conf).to(Configuration.class).named("conf");
+      rmWebService = new RMWebServices(rm, conf);
+      bind(rmWebService).to(RMWebServices.class);
+      request = mock(HttpServletRequest.class);
+      bind(request).to(HttpServletRequest.class);
+      Principal principal = () -> userName;
+      when(request.getUserPrincipal()).thenReturn(principal);
+      HttpServletResponse response = mock(HttpServletResponse.class);
+      bind(response).to(HttpServletResponse.class);
+      rmWebService.setResponse(response);
     }
-  };
+  }
 
   @Override
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     super.setUp();
-    GuiceServletConfig.setInjector(
-        Guice.createInjector(new WebServletModule()));
   }
 
   public TestRMWebServicesNodeLabels() {
-    super(new WebAppDescriptor.Builder(
-        "org.apache.hadoop.yarn.server.resourcemanager.webapp")
-        .contextListenerClass(GuiceServletConfig.class)
-        .filterClass(com.google.inject.servlet.GuiceFilter.class)
-        .contextPath("jersey-guice-filter").servletPath("/").build());
+  }
+
+  private WebTarget getClusterWebResource() {
+    return targetWithJsonObject()
+        .register(new IncludeRootJSONProvider())
+        .register(new ExcludeRootJSONProvider())
+        .path(PATH_WS).path(PATH_V1).path(PATH_CLUSTER);
+  }
+
+  private Response get(String path) {
+    return getClusterWebResource()
+        .path(path)
+        .queryParam(QUERY_USER_NAME, userName)
+        .request(MediaType.APPLICATION_JSON).get(Response.class);
+  }
+
+  private Response get(String path, MultivaluedMap<String, String> queryParams) {
+
+    WebTarget webTarget = getClusterWebResource()
+        .path(path).queryParam(QUERY_USER_NAME, userName);
+
+    for(Map.Entry<String, List<String>> param : queryParams.entrySet()) {
+      for (String item : param.getValue()) {
+        webTarget = webTarget.queryParam(param.getKey(), item);
+      }
+    }
+
+    return webTarget.request(MediaType.APPLICATION_JSON).get(Response.class);
+  }
+
+  private Response post(String path, String queryUserName, Object payload,
+      Class<?> payloadClass) throws Exception {
+    return getClusterWebResource()
+        .path(path)
+        .queryParam(QUERY_USER_NAME, queryUserName)
+        .request(MediaType.APPLICATION_JSON)
+        .post(Entity.json(toJson(payload, payloadClass)), Response.class);
+  }
+
+  private Response post(String path, String queryUserName, Object payload,
+      Class<?> payloadClass, MultivaluedMap<String, String> queryParams) throws Exception {
+
+    WebTarget webTarget = getClusterWebResource()
+        .path(path).queryParam(QUERY_USER_NAME, queryUserName);
+
+    for(Map.Entry<String, List<String>> param : queryParams.entrySet()) {
+      List<String> values = param.getValue();
+      for (String value : values) {
+        webTarget = webTarget.queryParam(param.getKey(), value);
+      }
+    }
+    Entity<String> entity = payload == null
+        ? null
+        : Entity.entity(toJson(payload, payloadClass), MediaType.APPLICATION_JSON);
+
+    return webTarget.request(MediaType.APPLICATION_JSON).post(entity, Response.class);
   }
 
   @Test
-  public void testNodeLabels() throws JSONException, Exception {
-    WebResource r = resource();
-
-    ClientResponse response;
+  public void testNodeLabels() throws Exception {
+    Response response;
 
     // Add a label
-    NodeLabelsInfo nlsifo = new NodeLabelsInfo();
-    nlsifo.getNodeLabelsInfo().add(new NodeLabelInfo("a"));
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("add-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON)
-            .entity(toJson(nlsifo, NodeLabelsInfo.class), MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
+    response = addNodeLabels(Lists.newArrayList(Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY)));
+    assertHttp200(response);
 
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertEquals(1, nlsifo.getNodeLabels().size());
-    for (NodeLabelInfo nl : nlsifo.getNodeLabelsInfo()) {
-      assertEquals("a", nl.getName());
-      assertTrue(nl.getExclusivity());
-    }
-    
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsInfo(response.readEntity(NodeLabelsInfo.class), Lists.newArrayList(
+        Pair.of(LABEL_A, true)));
+
     // Add another
-    nlsifo = new NodeLabelsInfo();
-    nlsifo.getNodeLabelsInfo().add(new NodeLabelInfo("b", false));
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("add-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON)
-            .entity(toJson(nlsifo, NodeLabelsInfo.class), MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
+    response = addNodeLabels(Lists.newArrayList(Pair.of(LABEL_B, false)));
+    assertHttp200(response);
 
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertEquals(2, nlsifo.getNodeLabels().size());
-    // Verify exclusivity for 'y' as false
-    for (NodeLabelInfo nl : nlsifo.getNodeLabelsInfo()) {
-      if (nl.getName().equals("b")) {
-        assertFalse(nl.getExclusivity());
-      }
-    }
-    
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    // Verify exclusivity for 'b' as false
+    assertNodeLabelsInfo(response.readEntity(NodeLabelsInfo.class),
+        Lists.newArrayList(
+            Pair.of(LABEL_A, true),
+            Pair.of(LABEL_B, false)));
+
     // Add labels to a node
-    MultivaluedMapImpl params = new MultivaluedMapImpl();
-    params.add("labels", "a");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("replace-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-    LOG.info("posted node nodelabel");
+    response = replaceLabelsOnNode(NODE_0, LABEL_A);
+    assertHttp200(response);
 
     // Add labels to another node
-    params = new MultivaluedMapImpl();
-    params.add("labels", "b");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid1:0")
-            .path("replace-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-    LOG.info("posted node nodelabel");
+    response = replaceLabelsOnNode(NODE_1, LABEL_B);
+    assertHttp200(response);
 
     // Add labels to another node
-    params = new MultivaluedMapImpl();
-    params.add("labels", "b");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid2:0")
-            .path("replace-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-    LOG.info("posted node nodelabel");
+    response = replaceLabelsOnNode(NODE_2, LABEL_B);
+    assertHttp200(response);
 
-    // Verify, using get-labels-to-Nodes
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("label-mappings").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    LabelsToNodesInfo ltni = response.getEntity(LabelsToNodesInfo.class);
-    assertEquals(2, ltni.getLabelsToNodes().size());
-    NodeIDsInfo nodes = ltni.getLabelsToNodes().get(
-        new NodeLabelInfo("b", false));
-    assertTrue(nodes.getNodeIDs().contains("nid2:0"));
-    assertTrue(nodes.getNodeIDs().contains("nid1:0"));
-    nodes = ltni.getLabelsToNodes().get(new NodeLabelInfo("a"));
-    assertTrue(nodes.getNodeIDs().contains("nid:0"));
+    // Verify all, using get-labels-to-Nodes
+    response = getNodeLabelMappings();
+    assertApplicationJsonUtf8Response(response);
+    LabelsToNodesInfo labelsToNodesInfo = response.readEntity(LabelsToNodesInfo.class);
+    assertLabelsToNodesInfo(labelsToNodesInfo, 2, Lists.newArrayList(
+        Pair.of(Pair.of(LABEL_B, false), Lists.newArrayList(NODE_1, NODE_2)),
+        Pair.of(Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY), Lists.newArrayList(NODE_0))
+    ));
 
     // Verify, using get-labels-to-Nodes for specified set of labels
-    params = new MultivaluedMapImpl();
-    params.add("labels", "a");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("label-mappings").queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    ltni = response.getEntity(LabelsToNodesInfo.class);
-    assertEquals(1, ltni.getLabelsToNodes().size());
-    nodes = ltni.getLabelsToNodes().get(new NodeLabelInfo("a"));
-    assertTrue(nodes.getNodeIDs().contains("nid:0"));
+    response = getNodeLabelMappingsByLabels(LABEL_A);
+    assertApplicationJsonUtf8Response(response);
+    labelsToNodesInfo = response.readEntity(LabelsToNodesInfo.class);
+    assertLabelsToNodesInfo(labelsToNodesInfo, 1, Lists.newArrayList(
+        Pair.of(Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY), Lists.newArrayList(NODE_0))
+    ));
 
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("get-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertTrue(nlsifo.getNodeLabelsInfo().contains(new NodeLabelInfo("a")));
+    response = getLabelsOfNode(NODE_0);
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsInfoContains(response.readEntity(NodeLabelsInfo.class),
+        Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY));
 
-    
     // Replace
-    params = new MultivaluedMapImpl();
-    params.add("labels", "b");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("replace-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-    LOG.info("posted node nodelabel");
+    response = replaceLabelsOnNode(NODE_0, LABEL_B);
+    assertHttp200(response);
 
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("get-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertTrue(nlsifo.getNodeLabelsInfo().contains(
-        new NodeLabelInfo("b", false)));
-            
+    response = getLabelsOfNode(NODE_0);
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsInfoContains(response.readEntity(NodeLabelsInfo.class),
+        Pair.of(LABEL_B, false));
+
     // Replace labels using node-to-labels
-    NodeToLabelsEntryList ntli = new NodeToLabelsEntryList();
-    ArrayList<String> labels = new ArrayList<String>();
-    labels.add("a");
-    NodeToLabelsEntry nli = new NodeToLabelsEntry("nid:0", labels);
-    ntli.getNodeToLabels().add(nli);
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("replace-node-to-labels")
-            .queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON)
-            .entity(toJson(ntli, NodeToLabelsEntryList.class),
-              MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-        
+    response = replaceNodeToLabels(Lists.newArrayList(Pair.of(NODE_0,
+        Lists.newArrayList(LABEL_A))));
+    assertHttp200(response);
+
     // Verify, using node-to-labels
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-to-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    NodeToLabelsInfo ntlinfo = response.getEntity(NodeToLabelsInfo.class);
-    NodeLabelsInfo nlinfo = ntlinfo.getNodeToLabels().get("nid:0");
-    assertEquals(1, nlinfo.getNodeLabels().size());
-    assertTrue(nlinfo.getNodeLabelsInfo().contains(new NodeLabelInfo("a")));
-    
+    response = getNodeToLabels();
+    assertApplicationJsonUtf8Response(response);
+    NodeToLabelsInfo nodeToLabelsInfo = response.readEntity(NodeToLabelsInfo.class);
+    NodeLabelsInfo nodeLabelsInfo = nodeToLabelsInfo.getNodeToLabels().get(NODE_0);
+    assertNodeLabelsSize(nodeLabelsInfo, 1);
+    assertNodeLabelsInfoContains(nodeLabelsInfo, Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY));
+
     // Remove all
-    params = new MultivaluedMapImpl();
-    params.add("labels", "");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("replace-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-    LOG.info("posted node nodelabel");
+    response = replaceLabelsOnNode(NODE_0, "");
+    assertHttp200(response);
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("get-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertTrue(nlsifo.getNodeLabelsInfo().isEmpty());
-    
+    response = getLabelsOfNode(NODE_0);
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsSize(response.readEntity(NodeLabelsInfo.class), 0);
+
     // Add a label back for auth tests
-    params = new MultivaluedMapImpl();
-    params.add("labels", "a");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("replace-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-    LOG.info("posted node nodelabel");
+    response = replaceLabelsOnNode(NODE_0, LABEL_A);
+    assertHttp200(response);
 
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("get-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertTrue(nlsifo.getNodeLabelsInfo().contains(new NodeLabelInfo("a")));
-    
+    response = getLabelsOfNode(NODE_0);
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsInfoContains(response.readEntity(NodeLabelsInfo.class),
+        Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY));
+
     // Auth fail replace labels on node
-    params = new MultivaluedMapImpl();
-    params.add("labels", "b");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("replace-labels")
-            .queryParam("user.name", notUserName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
+    Principal principal2 = () -> notUserName;
+    when(request.getUserPrincipal()).thenReturn(principal2);
+    response = replaceLabelsOnNodeWithUserName(NODE_0, notUserName, LABEL_B);
+    assertHttp401(response);
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("nodes").path("nid:0")
-            .path("get-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertTrue(nlsifo.getNodeLabelsInfo().contains(new NodeLabelInfo("a")));
-    
-    // Fail to add a label with post
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("add-node-labels").queryParam("user.name", notUserName)
-            .accept(MediaType.APPLICATION_JSON)
-            .entity("{\"nodeLabels\":\"c\"}", MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
+    response = getLabelsOfNode(NODE_0);
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsInfoContains(response.readEntity(NodeLabelsInfo.class),
+        Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY));
+
+    // Fail to add a label with wrong user
+    response = addNodeLabelsWithUser(Lists.newArrayList(Pair.of("c", DEFAULT_NL_EXCLUSIVITY)),
+        notUserName);
+    assertHttp401(response);
 
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertEquals(2, nlsifo.getNodeLabels().size());
-    
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsSize(response.readEntity(NodeLabelsInfo.class), 2);
+
     // Remove cluster label (succeed, we no longer need it)
-    params = new MultivaluedMapImpl();
-    params.add("labels", "b");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("remove-node-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
+    Principal principal3 = () -> userName;
+    when(request.getUserPrincipal()).thenReturn(principal3);
+    response = removeNodeLabel(LABEL_B);
+    assertHttp200(response);
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertEquals(1, nlsifo.getNodeLabels().size());
-    for (NodeLabelInfo nl : nlsifo.getNodeLabelsInfo()) {
-      assertEquals("a", nl.getName());
-      assertTrue(nl.getExclusivity());
-    }
-    
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsInfo(response.readEntity(NodeLabelsInfo.class),
+        Lists.newArrayList(Pair.of(LABEL_A, true)));
+
     // Remove cluster label with post
-    params = new MultivaluedMapImpl();
-    params.add("labels", "a");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("remove-node-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
+    response = removeNodeLabel(LABEL_A);
+    assertHttp200(response);
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertEquals(0, nlsifo.getNodeLabels().size());
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    nodeLabelsInfo = response.readEntity(NodeLabelsInfo.class);
+    assertEquals(0, nodeLabelsInfo.getNodeLabels().size());
 
     // Following test cases are to test replace when distributed node label
     // configuration is on
     // Reset for testing : add cluster labels
-    nlsifo = new NodeLabelsInfo();
-    nlsifo.getNodeLabelsInfo().add(new NodeLabelInfo("x", false));
-    nlsifo.getNodeLabelsInfo().add(new NodeLabelInfo("y", false));
-    response =
-        r.path("ws")
-            .path("v1")
-            .path("cluster")
-            .path("add-node-labels")
-            .queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON)
-            .entity(toJson(nlsifo, NodeLabelsInfo.class),
-                MediaType.APPLICATION_JSON).post(ClientResponse.class);
+    response = addNodeLabels(Lists.newArrayList(
+        Pair.of(LABEL_X, false), Pair.of(LABEL_Y, false)));
+    assertHttp200(response);
     // Reset for testing : Add labels to a node
-    params = new MultivaluedMapImpl();
-    params.add("labels", "y");
-    response =
-        r.path("ws").path("v1").path("cluster").path("nodes").path("nid:0")
-            .path("replace-labels").queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-    LOG.info("posted node nodelabel");
+    response = replaceLabelsOnNode(NODE_0, LABEL_Y);
+    assertHttp200(response);
 
-    //setting rmWebService for non Centralized NodeLabel Configuration
+    //setting rmWebService for non-centralized NodeLabel Configuration
     rmWebService.isCentralizedNodeLabelConfiguration = false;
 
     // Case1 : Replace labels using node-to-labels
-    ntli = new NodeToLabelsEntryList();
-    labels = new ArrayList<String>();
-    labels.add("x");
-    nli = new NodeToLabelsEntry("nid:0", labels);
-    ntli.getNodeToLabels().add(nli);
-    response =
-        r.path("ws")
-            .path("v1")
-            .path("cluster")
-            .path("replace-node-to-labels")
-            .queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON)
-            .entity(toJson(ntli, NodeToLabelsEntryList.class),
-                MediaType.APPLICATION_JSON).post(ClientResponse.class);
+    response = replaceNodeToLabels(Lists.newArrayList(Pair.of(NODE_0,
+        Lists.newArrayList(LABEL_X))));
+    assertHttp404(response);
 
     // Verify, using node-to-labels that previous operation has failed
-    response =
-        r.path("ws").path("v1").path("cluster").path("get-node-to-labels")
-            .queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    ntlinfo = response.getEntity(NodeToLabelsInfo.class);
-    nlinfo = ntlinfo.getNodeToLabels().get("nid:0");
-    assertEquals(1, nlinfo.getNodeLabels().size());
-    assertFalse(nlinfo.getNodeLabelsInfo().contains(
-        new NodeLabelInfo("x", false)));
+    response = getNodeToLabels();
+    assertApplicationJsonUtf8Response(response);
+    nodeToLabelsInfo = response.readEntity(NodeToLabelsInfo.class);
+    nodeLabelsInfo = nodeToLabelsInfo.getNodeToLabels().get(NODE_0);
+    assertNodeLabelsSize(nodeLabelsInfo, 1);
+    assertNodeLabelsInfoDoesNotContain(nodeLabelsInfo, Pair.of(LABEL_X, false));
 
     // Case2 : failure to Replace labels using replace-labels
-    response =
-        r.path("ws").path("v1").path("cluster").path("nodes").path("nid:0")
-            .path("replace-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON)
-            .entity("{\"nodeLabelName\": [\"x\"]}", MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
-    LOG.info("posted node nodelabel");
+    response = replaceLabelsOnNode(NODE_0, LABEL_X);
+    assertHttp404(response);
 
     // Verify, using node-to-labels that previous operation has failed
-    response =
-        r.path("ws").path("v1").path("cluster").path("get-node-to-labels")
-            .queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    ntlinfo = response.getEntity(NodeToLabelsInfo.class);
-    nlinfo = ntlinfo.getNodeToLabels().get("nid:0");
-    assertEquals(1, nlinfo.getNodeLabels().size());
-    assertFalse(nlinfo.getNodeLabelsInfo().contains(
-        new NodeLabelInfo("x", false)));
+    response = getNodeToLabels();
+    assertApplicationJsonUtf8Response(response);
+    nodeToLabelsInfo = response.readEntity(NodeToLabelsInfo.class);
+    nodeLabelsInfo = nodeToLabelsInfo.getNodeToLabels().get(NODE_0);
+    assertNodeLabelsSize(nodeLabelsInfo, 1);
+    assertNodeLabelsInfoDoesNotContain(nodeLabelsInfo, Pair.of(LABEL_X, false));
 
     //  Case3 : Remove cluster label should be successful
-    params = new MultivaluedMapImpl();
-    params.add("labels", "x");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("remove-node-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
+    response = removeNodeLabel(LABEL_X);
+    assertHttp200(response);
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertEquals(new NodeLabelInfo("y", false),
-        nlsifo.getNodeLabelsInfo().get(0));
-    assertEquals("y", nlsifo.getNodeLabelsInfo().get(0).getName());
-    assertFalse(nlsifo.getNodeLabelsInfo().get(0).getExclusivity());
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsInfoAtPosition(response.readEntity(NodeLabelsInfo.class), Pair.of(LABEL_Y,
+        false), 0);
 
     // Remove y
-    params = new MultivaluedMapImpl();
-    params.add("labels", "y");
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("remove-node-labels")
-            .queryParam("user.name", userName)
-            .queryParams(params)
-            .accept(MediaType.APPLICATION_JSON)
-            .post(ClientResponse.class);
+    response = removeNodeLabel(LABEL_Y);
+    assertHttp200(response);
 
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertTrue(nlsifo.getNodeLabelsInfo().isEmpty());
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsSize(response.readEntity(NodeLabelsInfo.class), 0);
 
-    // add a new nodelabel with exclusity
-    nlsifo = new NodeLabelsInfo();
-    nlsifo.getNodeLabelsInfo().add(new NodeLabelInfo("z", false));
-    response =
-        r.path("ws")
-            .path("v1")
-            .path("cluster")
-            .path("add-node-labels")
-            .queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON)
-            .entity(toJson(nlsifo, NodeLabelsInfo.class),
-                MediaType.APPLICATION_JSON).post(ClientResponse.class);
-
+    // add a new nodelabel with exclusivity=false
+    response = addNodeLabels(Lists.newArrayList(Pair.of(LABEL_Z, false)));
+    assertHttp200(response);
     // Verify
-    response =
-        r.path("ws").path("v1").path("cluster")
-            .path("get-node-labels").queryParam("user.name", userName)
-            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
-        response.getType().toString());
-    nlsifo = response.getEntity(NodeLabelsInfo.class);
-    assertEquals("z", nlsifo.getNodeLabelsInfo().get(0).getName());
-    assertFalse(nlsifo.getNodeLabelsInfo().get(0).getExclusivity());
-    assertEquals(1, nlsifo.getNodeLabels().size());
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    assertNodeLabelsInfoAtPosition(response.readEntity(NodeLabelsInfo.class),
+        Pair.of(LABEL_Z, false), 0);
+    assertNodeLabelsSize(nodeLabelsInfo, 1);
+  }
+
+  private void assertLabelsToNodesInfo(LabelsToNodesInfo labelsToNodesInfo, int size,
+      List<Pair<Pair<String, Boolean>, List<String>>> nodeLabelsToNodesList) {
+    Map<NodeLabelInfo, NodeIDsInfo> labelsToNodes = labelsToNodesInfo.getLabelsToNodes();
+    assertNotNull(labelsToNodes, "Labels to nodes mapping should not be null.");
+    assertEquals(size, labelsToNodes.size(), "Size of label to nodes mapping is not the expected.");
+
+    for (Pair<Pair<String, Boolean>, List<String>> nodeLabelToNodes : nodeLabelsToNodesList) {
+      Pair<String, Boolean> expectedNLData = nodeLabelToNodes.getLeft();
+      List<String> expectedNodes = nodeLabelToNodes.getRight();
+      NodeLabelInfo expectedNLInfo = new NodeLabelInfo(expectedNLData.getLeft(),
+          expectedNLData.getRight());
+      NodeIDsInfo actualNodes = labelsToNodes.get(expectedNLInfo);
+      assertNotNull(actualNodes, String.format("Node info not found. Expected NodeLabel data: %s",
+          expectedNLData));
+      for (String expectedNode : expectedNodes) {
+        assertTrue(actualNodes.getNodeIDs().contains(expectedNode),
+            String.format("Can't find node ID in actual Node IDs list: %s",
+            actualNodes.getNodeIDs()));
+      }
+    }
+  }
+
+  private void assertNodeLabelsInfo(NodeLabelsInfo nodeLabelsInfo,
+      List<Pair<String, Boolean>> nlInfos) {
+    assertEquals(nlInfos.size(), nodeLabelsInfo.getNodeLabels().size());
+
+    for (int i = 0; i < nodeLabelsInfo.getNodeLabelsInfo().size(); i++) {
+      Pair<String, Boolean> expected = nlInfos.get(i);
+      NodeLabelInfo actual = nodeLabelsInfo.getNodeLabelsInfo().get(i);
+      LOG.debug("Checking NodeLabelInfo: {}", actual);
+      assertEquals(expected.getLeft(), actual.getName());
+      assertEquals(expected.getRight(), actual.getExclusivity());
+    }
+  }
+
+  private void assertNodeLabelsInfoAtPosition(NodeLabelsInfo nodeLabelsInfo, Pair<String,
+      Boolean> nlInfo, int pos) {
+    NodeLabelInfo actual = nodeLabelsInfo.getNodeLabelsInfo().get(pos);
+    LOG.debug("Checking NodeLabelInfo: {}", actual);
+    assertEquals(nlInfo.getLeft(), actual.getName());
+    assertEquals(nlInfo.getRight(), actual.getExclusivity());
+  }
+
+  private void assertNodeLabelsInfoContains(NodeLabelsInfo nodeLabelsInfo,
+      Pair<String, Boolean> nlInfo) {
+    NodeLabelInfo nodeLabelInfo = new NodeLabelInfo(nlInfo.getLeft(), nlInfo.getRight());
+    assertTrue(nodeLabelsInfo.getNodeLabelsInfo().contains(nodeLabelInfo),
+        String.format("Cannot find nodeLabelInfo '%s' among items of node label info list:" +
+        " %s", nodeLabelInfo, nodeLabelsInfo.getNodeLabelsInfo()));
+  }
+
+  private void assertNodeLabelsInfoDoesNotContain(NodeLabelsInfo nodeLabelsInfo, Pair<String,
+      Boolean> nlInfo) {
+    NodeLabelInfo nodeLabelInfo = new NodeLabelInfo(nlInfo.getLeft(), nlInfo.getRight());
+    assertFalse(nodeLabelsInfo.getNodeLabelsInfo().contains(nodeLabelInfo),
+        String.format("Should have not found nodeLabelInfo '%s' among " +
+        "items of node label info list: %s", nodeLabelInfo, nodeLabelsInfo.getNodeLabelsInfo()));
+  }
+
+  private void assertNodeLabelsSize(NodeLabelsInfo nodeLabelsInfo, int expectedSize) {
+    assertEquals(expectedSize, nodeLabelsInfo.getNodeLabelsInfo().size());
+  }
+
+  private Response replaceNodeToLabels(List<Pair<String, List<String>>> nodeToLabelInfos)
+      throws Exception {
+    NodeToLabelsEntryList nodeToLabelsEntries = new NodeToLabelsEntryList();
+
+    for (Pair<String, List<String>> nodeToLabelInfo : nodeToLabelInfos) {
+      ArrayList<String> labelList = new ArrayList<>(nodeToLabelInfo.getRight());
+      String nodeId = nodeToLabelInfo.getLeft();
+      NodeToLabelsEntry nli = new NodeToLabelsEntry(nodeId, labelList);
+      nodeToLabelsEntries.getNodeToLabels().add(nli);
+    }
+    return post(PATH_REPLACE_NODE_TO_LABELS, userName, nodeToLabelsEntries, NodeToLabelsEntryList.class);
+  }
+
+  private Response getNodeLabelMappings() {
+    return get(PATH_LABEL_MAPPINGS);
+  }
+
+  private Response getNodeLabelMappingsByLabels(String... labelNames) {
+    MultivaluedMap params = createMultiValuedMap(labelNames);
+    return get(PATH_LABEL_MAPPINGS, params);
+  }
+
+  private Response replaceLabelsOnNode(String node, String... labelNames) throws Exception {
+    return replaceLabelsOnNodeWithUserName(node, userName, labelNames);
+  }
+
+  private Response replaceLabelsOnNodeWithUserName(String node,
+      String userName, String... labelNames) throws Exception {
+    LOG.info("Replacing labels on node '{}', label(s): {}", node, labelNames);
+    MultivaluedMap params = createMultiValuedMap(labelNames);
+    String path = UriBuilder.fromPath(PATH_NODES).path(node)
+        .path(PATH_REPLACE_LABELS).build().toString();
+    return post(path, userName, null, null, params);
+  }
+
+  private static MultivaluedMap createMultiValuedMap(String[] labelNames) {
+    MultivaluedMap<String, String> params = new MultivaluedHashMap();
+    for (String labelName : labelNames) {
+      params.add("labels", labelName);
+    }
+    return params;
+  }
+
+  private Response removeNodeLabel(String... labelNames) throws Exception {
+    MultivaluedMap params = createMultiValuedMap(labelNames);
+    return post(PATH_REMOVE_LABELS, userName, null, null, params);
+  }
+
+  private Response getLabelsOfNode(String node) {
+    String path = UriBuilder.fromPath(PATH_NODES).path(node)
+        .path(PATH_GET_LABELS).build().toString();
+    return get(path);
+  }
+
+  private Response getNodeLabels() {
+    return get(PATH_GET_NODE_LABELS);
+  }
+
+  private Response getNodeToLabels() {
+    return get(PATH_GET_NODE_TO_LABELS);
+  }
+
+  private Response addNodeLabels(List<Pair<String, Boolean>> nlInfos) throws Exception {
+    return addNodeLabelsInternal(nlInfos, userName);
+  }
+
+  private Response addNodeLabelsWithUser(List<Pair<String, Boolean>> nlInfos,
+      String userName) throws Exception {
+    return addNodeLabelsInternal(nlInfos, userName);
+  }
+
+  private Response addNodeLabelsInternal(List<Pair<String, Boolean>> nlInfos,
+      String userName) throws Exception {
+    NodeLabelsInfo nodeLabelsInfo = new NodeLabelsInfo();
+    for (Pair<String, Boolean> nlInfo : nlInfos) {
+      NodeLabelInfo nodeLabelInfo = new NodeLabelInfo(nlInfo.getLeft(), nlInfo.getRight());
+      nodeLabelsInfo.getNodeLabelsInfo().add(nodeLabelInfo);
+    }
+    return post(PATH_ADD_NODE_LABELS, userName, nodeLabelsInfo, NodeLabelsInfo.class);
+  }
+
+  private void assertApplicationJsonUtf8Response(Response response) {
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + ";" + JettyUtils.UTF_8,
+        response.getMediaType().toString());
+  }
+
+  private void assertHttp200(Response response) {
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+  }
+
+  private void assertHttp401(Response response) {
+    assertEquals(Response.Status.UNAUTHORIZED.getStatusCode(), response.getStatus());
+  }
+
+  private void assertHttp404(Response response) {
+    assertEquals(Response.Status.NOT_FOUND.getStatusCode(), response.getStatus());
   }
 
   @Test
   public void testLabelInvalidAddition()
-      throws UniformInterfaceException, Exception {
-    WebResource r = resource();
-    ClientResponse response;
+      throws Exception {
     // Add a invalid label
-    NodeLabelsInfo nlsifo = new NodeLabelsInfo();
-    nlsifo.getNodeLabelsInfo().add(new NodeLabelInfo("a&"));
-    response = r.path("ws").path("v1").path("cluster").path("add-node-labels")
-        .queryParam("user.name", userName).accept(MediaType.APPLICATION_JSON)
-        .entity(toJson(nlsifo, NodeLabelsInfo.class),
-            MediaType.APPLICATION_JSON)
-        .post(ClientResponse.class);
-    String expectedmessage =
-        "java.io.IOException: label name should only contains"
+    Response response = addNodeLabels(Lists.newArrayList(Pair.of("a&",
+        DEFAULT_NL_EXCLUSIVITY)));
+    String expectedMessage =
+        "label name should only contains"
             + " {0-9, a-z, A-Z, -, _} and should not started with"
-            + " {-,_}, now it is=a&";
-    validateJsonExceptionContent(response, expectedmessage);
+            + " {-,_}, now it is= a&";
+    validateJsonExceptionContent(response, expectedMessage);
   }
 
   @Test
   public void testLabelChangeExclusivity()
-      throws Exception, JSONException {
-    WebResource r = resource();
-    ClientResponse response;
-    NodeLabelsInfo nlsifo = new NodeLabelsInfo();
-    nlsifo.getNodeLabelsInfo().add(new NodeLabelInfo("newlabel", true));
-    response = r.path("ws").path("v1").path("cluster").path("add-node-labels")
-        .queryParam("user.name", userName).accept(MediaType.APPLICATION_JSON)
-        .entity(toJson(nlsifo, NodeLabelsInfo.class),
-            MediaType.APPLICATION_JSON)
-        .post(ClientResponse.class);
+      throws Exception {
+    Response response;
+    response = addNodeLabels(Lists.newArrayList(Pair.of("newLabel", DEFAULT_NL_EXCLUSIVITY)));
+    assertHttp200(response);
     // new info and change exclusivity
-    NodeLabelsInfo nlsinfo2 = new NodeLabelsInfo();
-    nlsinfo2.getNodeLabelsInfo().add(new NodeLabelInfo("newlabel", false));
-    response = r.path("ws").path("v1").path("cluster").path("add-node-labels")
-        .queryParam("user.name", userName).accept(MediaType.APPLICATION_JSON)
-        .entity(toJson(nlsinfo2, NodeLabelsInfo.class),
-            MediaType.APPLICATION_JSON)
-        .post(ClientResponse.class);
-    String expectedmessage =
-        "java.io.IOException: Exclusivity cannot be modified for an existing"
-            + " label with : <newlabel:exclusivity=false>";
-    validateJsonExceptionContent(response, expectedmessage);
+    response = addNodeLabels(Lists.newArrayList(Pair.of("newLabel", false)));
+    String expectedMessage =
+        "Exclusivity cannot be modified for an existing"
+            + " label with : <newLabel:exclusivity=false>";
+    validateJsonExceptionContent(response, expectedMessage);
   }
 
-  private void validateJsonExceptionContent(ClientResponse response,
-      String expectedmessage)
+  private void validateJsonExceptionContent(Response response,
+      String expectedMessage)
       throws JSONException {
-    Assert.assertEquals(BAD_REQUEST_CODE, response.getStatus());
-    JSONObject msg = response.getEntity(JSONObject.class);
+    assertEquals(BAD_REQUEST_CODE, response.getStatus());
+    JSONObject msg = response.readEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     String message = exception.getString("message");
-    assertEquals("incorrect number of elements", 3, exception.length());
+    assertEquals(3, exception.length(), "incorrect number of elements");
     String type = exception.getString("exception");
     String classname = exception.getString("javaClassName");
     WebServicesTestUtils.checkStringMatch("exception type",
@@ -650,52 +633,67 @@ public class TestRMWebServicesNodeLabels extends JerseyTestBase {
     WebServicesTestUtils.checkStringMatch("exception classname",
         "org.apache.hadoop.yarn.webapp.BadRequestException", classname);
     WebServicesTestUtils.checkStringContains("exception message",
-        expectedmessage, message);
+        expectedMessage, message);
   }
 
   @Test
   public void testLabelInvalidReplace()
-      throws UniformInterfaceException, Exception {
-    WebResource r = resource();
-    ClientResponse response;
-    // replace label which doesnt exist
-    MultivaluedMapImpl params = new MultivaluedMapImpl();
-    params.add("labels", "idontexist");
-    response = r.path("ws").path("v1").path("cluster").path("nodes")
-        .path("nid:0").path("replace-labels").queryParam("user.name", userName)
-        .queryParams(params).accept(MediaType.APPLICATION_JSON)
-        .post(ClientResponse.class);
+      throws Exception {
+    Response response;
+    // replace label which doesn't exist
+    response = replaceLabelsOnNode(NODE_0, "idontexist");
 
-    String expectedmessage =
+    String expectedMessage =
         "Not all labels being replaced contained by known label"
             + " collections, please check, new labels=[idontexist]";
-    validateJsonExceptionContent(response, expectedmessage);
+    validateJsonExceptionContent(response, expectedMessage);
   }
 
   @Test
   public void testLabelInvalidRemove()
-      throws UniformInterfaceException, Exception {
-    WebResource r = resource();
-    ClientResponse response;
-    MultivaluedMapImpl params = new MultivaluedMapImpl();
-    params.add("labels", "irealldontexist");
-    response =
-        r.path("ws").path("v1").path("cluster").path("remove-node-labels")
-            .queryParam("user.name", userName).queryParams(params)
-            .accept(MediaType.APPLICATION_JSON).post(ClientResponse.class);
-    String expectedmessage =
-        "java.io.IOException: Node label=irealldontexist to be"
+      throws Exception {
+    Response response;
+    response = removeNodeLabel("ireallydontexist");
+    String expectedMessage =
+        "Node label=ireallydontexist to be"
             + " removed doesn't existed in cluster node labels"
             + " collection.";
-    validateJsonExceptionContent(response, expectedmessage);
+    validateJsonExceptionContent(response, expectedMessage);
   }
 
-  @SuppressWarnings("rawtypes")
-  private String toJson(Object nsli, Class klass) throws Exception {
-    StringWriter sw = new StringWriter();
-    JSONJAXBContext ctx = new JSONJAXBContext(klass);
-    JSONMarshaller jm = ctx.createJSONMarshaller();
-    jm.marshallToJSON(nsli, sw);
-    return sw.toString();
+  @Test
+  public void testNodeLabelPartitionInfo() throws Exception {
+    Response response;
+
+    // Add a node label
+    response = addNodeLabels(Lists.newArrayList(Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY)));
+    assertHttp200(response);
+
+    // Verify partition info in get-node-labels
+    response = getNodeLabels();
+    assertApplicationJsonUtf8Response(response);
+    NodeLabelsInfo nodeLabelsInfo = response.readEntity(NodeLabelsInfo.class);
+    assertNodeLabelsSize(nodeLabelsInfo, 1);
+    for (NodeLabelInfo nl : nodeLabelsInfo.getNodeLabelsInfo()) {
+      assertEquals(LABEL_A, nl.getName());
+      assertTrue(nl.getExclusivity());
+      assertNotNull(nl.getPartitionInfo());
+      assertNotNull(nl.getPartitionInfo().getResourceAvailable());
+    }
+
+    // Add node label to a node
+    response = replaceLabelsOnNode("nodeId:0", LABEL_A);
+    assertHttp200(response);
+
+    // Verify partition info in label-mappings
+    response = getNodeLabelMappings();
+    assertApplicationJsonUtf8Response(response);
+    LabelsToNodesInfo labelsToNodesInfo = response.readEntity(LabelsToNodesInfo.class);
+    assertLabelsToNodesInfo(labelsToNodesInfo, 1, Lists.newArrayList(
+        Pair.of(Pair.of(LABEL_A, DEFAULT_NL_EXCLUSIVITY), Lists.newArrayList("nodeId:0"))
+    ));
+    NodeIDsInfo nodes = labelsToNodesInfo.getLabelsToNodes().get(new NodeLabelInfo(LABEL_A));
+    assertNotNull(nodes.getPartitionInfo());
+    assertNotNull(nodes.getPartitionInfo().getResourceAvailable());
   }
 }

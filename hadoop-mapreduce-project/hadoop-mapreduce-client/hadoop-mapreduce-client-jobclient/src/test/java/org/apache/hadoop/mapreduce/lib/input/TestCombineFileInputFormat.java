@@ -55,17 +55,18 @@ import org.apache.hadoop.mapreduce.lib.input.CombineFileInputFormat.OneBlockInfo
 import org.apache.hadoop.mapreduce.lib.input.CombineFileInputFormat.OneFileInfo;
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import com.google.common.collect.HashMultiset;
+import org.apache.hadoop.thirdparty.com.google.common.collect.HashMultiset;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.reset;
@@ -105,7 +106,7 @@ public class TestCombineFileInputFormat {
   @Mock
   private List<String> mockList;
 
-  @Before
+  @BeforeEach
   public void initMocks() {
     MockitoAnnotations.initMocks(this);
   }
@@ -260,12 +261,12 @@ public class TestCombineFileInputFormat {
     CombineFileSplit split = new CombineFileSplit(files, lengths);
 
     RecordReader rr = inputFormat.createRecordReader(split, context1);
-    assertTrue("Unexpected RR type!", rr instanceof CombineFileRecordReader);
+    assertTrue(rr instanceof CombineFileRecordReader, "Unexpected RR type!");
 
     // Verify that the initial configuration is the one being used.
     // Right after construction the dummy key should have value "STATE1"
-    assertEquals("Invalid initial dummy key value", "STATE1",
-      rr.getCurrentKey().toString());
+    assertEquals("STATE1", rr.getCurrentKey().toString(),
+        "Invalid initial dummy key value");
 
     // Switch the active context for the RecordReader...
     Configuration conf2 = new Configuration();
@@ -274,8 +275,8 @@ public class TestCombineFileInputFormat {
     rr.initialize(split, context2);
 
     // And verify that the new context is updated into the child record reader.
-    assertEquals("Invalid secondary dummy key value", "STATE2",
-      rr.getCurrentKey().toString());
+    assertEquals("STATE2", rr.getCurrentKey().toString(),
+        "Invalid secondary dummy key value");
   }
 
   @Test
@@ -296,7 +297,7 @@ public class TestCombineFileInputFormat {
 
     CombineFileSplit split = new CombineFileSplit(files, lengths);
     RecordReader rr = inputFormat.createRecordReader(split, context);
-    assertTrue("Unexpected RR type!", rr instanceof CombineFileRecordReader);
+    assertTrue(rr instanceof CombineFileRecordReader, "Unexpected RR type!");
 
     // first initialize() call comes from MapTask. We'll do it here.
     rr.initialize(split, context);
@@ -1484,8 +1485,8 @@ public class TestCombineFileInputFormat {
        * {@link CombineFileInputFormat#createSplits},
        * create only one split on rack1. Otherwise create two splits.
        */
-      assertTrue("Split size should be 1 or 2.",
-          splits.size() == 1 || splits.size() == 2);
+      assertTrue(splits.size() == 1 || splits.size() == 2,
+          "Split size should be 1 or 2.");
       actual.clear();
       reset(mockList);
       for (InputSplit split : splits) {
@@ -1625,22 +1626,15 @@ public class TestCombineFileInputFormat {
    */
   @Test
   public void testMissingBlocks() throws Exception {
-    String namenode = null;
-    MiniDFSCluster dfs = null;
-    FileSystem fileSys = null;
-    String testName = "testMissingBlocks";
-    try {
-      Configuration conf = new Configuration();
-      conf.set("fs.hdfs.impl", MissingBlockFileSystem.class.getName());
-      conf.setBoolean("dfs.replication.considerLoad", false);
-      dfs = new MiniDFSCluster.Builder(conf).racks(rack1).hosts(hosts1)
-          .build();
+    final Configuration conf = new Configuration();
+    conf.set("fs.hdfs.impl", MissingBlockFileSystem.class.getName());
+    conf.setBoolean("dfs.replication.considerLoad", false);
+    try (MiniDFSCluster dfs = new MiniDFSCluster.Builder(conf)
+        .racks(rack1).hosts(hosts1).build()) {
       dfs.waitActive();
 
-      namenode = (dfs.getFileSystem()).getUri().getHost() + ":" +
-                 (dfs.getFileSystem()).getUri().getPort();
-
-      fileSys = dfs.getFileSystem();
+      final FileSystem fileSys =
+          MissingBlockFileSystem.newInstance(dfs.getURI(), conf);
       if (!fileSys.mkdirs(inDir)) {
         throw new IOException("Mkdirs failed to create " + inDir.toString());
       }
@@ -1661,7 +1655,7 @@ public class TestCombineFileInputFormat {
       for (InputSplit split : splits) {
         System.out.println("File split(Test0): " + split);
       }
-      assertEquals(splits.size(), 1);
+      assertThat(splits.size()).isEqualTo(1);
       CombineFileSplit fileSplit = (CombineFileSplit) splits.get(0);
       assertEquals(2, fileSplit.getNumPaths());
       assertEquals(1, fileSplit.getLocations().length);
@@ -1672,11 +1666,6 @@ public class TestCombineFileInputFormat {
       assertEquals(0, fileSplit.getOffset(1));
       assertEquals(BLOCKSIZE, fileSplit.getLength(1));
       assertEquals(hosts1[0], fileSplit.getLocations()[0]);
-
-    } finally {
-      if (dfs != null) {
-        dfs.shutdown();
-      }
     }
   }
   
@@ -1788,7 +1777,7 @@ public class TestCombineFileInputFormat {
     for (InputSplit s : splits) {
       CombineFileSplit cfs = (CombineFileSplit)s;
       for (Path p : cfs.getPaths()) {
-        assertEquals(p.toUri().getScheme(), "file");
+        assertThat(p.toUri().getScheme()).isEqualTo("file");
       }
     }
   }

@@ -21,8 +21,7 @@ package org.apache.hadoop.io.file.tfile;
 import java.io.IOException;
 import java.util.Random;
 
-import org.junit.After;
-import org.junit.Assert;
+import org.junit.jupiter.api.AfterEach;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -30,8 +29,11 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestVLong {
   private static String ROOT = GenericTestUtils.getTestDir().getAbsolutePath();
@@ -40,7 +42,7 @@ public class TestVLong {
   private Path path;
   private String outputFile = "TestVLong";
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     conf = new Configuration();
     path = new Path(ROOT, outputFile);
@@ -50,7 +52,7 @@ public class TestVLong {
     }
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (fs.exists(path)) {
       fs.delete(path, false);
@@ -64,14 +66,13 @@ public class TestVLong {
       Utils.writeVLong(out, i);
     }
     out.close();
-    Assert.assertEquals("Incorrect encoded size", (1 << Byte.SIZE) + 96, fs
+    assertEquals((1 << Byte.SIZE) + 96, fs
         .getFileStatus(
-        path).getLen());
+        path).getLen(), "Incorrect encoded size");
 
     FSDataInputStream in = fs.open(path);
     for (int i = Byte.MIN_VALUE; i <= Byte.MAX_VALUE; ++i) {
-      long n = Utils.readVLong(in);
-      Assert.assertEquals(n, i);
+      assertThat(Utils.readVLong(in)).isEqualTo(i);
     }
     in.close();
     fs.delete(path, false);
@@ -85,8 +86,7 @@ public class TestVLong {
     out.close();
     FSDataInputStream in = fs.open(path);
     for (int i = Short.MIN_VALUE; i <= Short.MAX_VALUE; ++i) {
-      long n = Utils.readVLong(in);
-      Assert.assertEquals(n, ((long) i) << shift);
+      assertThat(Utils.readVLong(in)).isEqualTo(((long) i) << shift);
     }
     in.close();
     long ret = fs.getFileStatus(path).getLen();
@@ -97,36 +97,35 @@ public class TestVLong {
   @Test
   public void testVLongShort() throws IOException {
     long size = writeAndVerify(0);
-    Assert.assertEquals("Incorrect encoded size", (1 << Short.SIZE) * 2
+    assertEquals((1 << Short.SIZE) * 2
         + ((1 << Byte.SIZE) - 40)
-        * (1 << Byte.SIZE) - 128 - 32, size);
+        * (1 << Byte.SIZE) - 128 - 32, size, "Incorrect encoded size");
   }
 
   @Test
   public void testVLong3Bytes() throws IOException {
     long size = writeAndVerify(Byte.SIZE);
-    Assert.assertEquals("Incorrect encoded size", (1 << Short.SIZE) * 3
-        + ((1 << Byte.SIZE) - 32) * (1 << Byte.SIZE) - 40 - 1, size);
+    assertEquals((1 << Short.SIZE) * 3
+        + ((1 << Byte.SIZE) - 32) * (1 << Byte.SIZE) - 40 - 1, size, "Incorrect encoded size");
   }
 
   @Test
   public void testVLong4Bytes() throws IOException {
     long size = writeAndVerify(Byte.SIZE * 2);
-    Assert.assertEquals("Incorrect encoded size", (1 << Short.SIZE) * 4
-        + ((1 << Byte.SIZE) - 16) * (1 << Byte.SIZE) - 32 - 2, size);
+    assertEquals((1 << Short.SIZE) * 4
+        + ((1 << Byte.SIZE) - 16) * (1 << Byte.SIZE) - 32 - 2, size, "Incorrect encoded size");
   }
 
   @Test
   public void testVLong5Bytes() throws IOException {
     long size = writeAndVerify(Byte.SIZE * 3);
-     Assert.assertEquals("Incorrect encoded size", (1 << Short.SIZE) * 6 - 256
-        - 16 - 3, size);
+    assertEquals((1 << Short.SIZE) * 6 - 256 - 16 - 3, size, "Incorrect encoded size");
   }
 
   private void verifySixOrMoreBytes(int bytes) throws IOException {
     long size = writeAndVerify(Byte.SIZE * (bytes - 2));
-    Assert.assertEquals("Incorrect encoded size", (1 << Short.SIZE)
-        * (bytes + 1) - 256 - bytes + 1, size);
+    assertEquals((1 << Short.SIZE)
+        * (bytes + 1) - 256 - bytes + 1, size, "Incorrect encoded size");
   }
 
   @Test
@@ -165,7 +164,7 @@ public class TestVLong {
 
     FSDataInputStream in = fs.open(path);
     for (int i = 0; i < data.length; ++i) {
-      Assert.assertEquals(Utils.readVLong(in), data[i]);
+      assertThat(Utils.readVLong(in)).isEqualTo(data[i]);
     }
     in.close();
     fs.delete(path, false);

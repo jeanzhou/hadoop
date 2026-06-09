@@ -17,36 +17,42 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.io.IOException;
+import org.apache.hadoop.ha.HAServiceProtocol;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.io.IOUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 import java.lang.management.ManagementFactory;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Make sure HA-related metrics are updated and reported appropriately.
  */
 public class TestHAMetrics {
   
-  private static final Log LOG = LogFactory.getLog(TestHAMetrics.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestHAMetrics.class);
 
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testHAMetrics() throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
@@ -73,7 +79,7 @@ public class TestHAMetrics {
           new ObjectName("Hadoop:service=NameNode,name=NameNodeStatus");
       final Long ltt1 =
           (Long) mbs.getAttribute(mxbeanName, "LastHATransitionTime");
-      assertTrue("lastHATransitionTime should be > 0", ltt1 > 0);
+      assertTrue(ltt1 > 0, "lastHATransitionTime should be > 0");
       
       assertEquals("active", nn0.getHAState());
       assertEquals(0, nn0.getMillisSinceLastLoadedEdits());
@@ -83,7 +89,7 @@ public class TestHAMetrics {
       cluster.transitionToStandby(0);
       final Long ltt2 =
           (Long) mbs.getAttribute(mxbeanName, "LastHATransitionTime");
-      assertTrue("lastHATransitionTime should be > " + ltt1, ltt2 > ltt1);
+      assertTrue(ltt2 > ltt1, "lastHATransitionTime should be > " + ltt1);
       cluster.transitionToActive(1);
       
       assertEquals("standby", nn0.getHAState());
@@ -113,11 +119,10 @@ public class TestHAMetrics {
       long newMillisSinceLastLoadedEdits = nn0.getMillisSinceLastLoadedEdits();
       // Since we just waited for the standby to catch up, the time since we
       // last loaded edits should be very low.
-      assertTrue("expected " + millisSinceLastLoadedEdits + " > " +
-          newMillisSinceLastLoadedEdits,
-          millisSinceLastLoadedEdits > newMillisSinceLastLoadedEdits);
+      assertTrue(millisSinceLastLoadedEdits > newMillisSinceLastLoadedEdits,
+          "expected " + millisSinceLastLoadedEdits + " > " + newMillisSinceLastLoadedEdits);
     } finally {
-      IOUtils.cleanup(LOG, fs);
+      IOUtils.cleanupWithLogger(LOG, fs);
       cluster.shutdown();
     }
   }
@@ -156,7 +161,7 @@ public class TestHAMetrics {
 
       // Save fsimage so that nn does not build up namesystem by replaying
       // edits, but load from the image.
-      ((DistributedFileSystem)fs).setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      ((DistributedFileSystem)fs).setSafeMode(SafeModeAction.ENTER);
       ((DistributedFileSystem)fs).saveNamespace();
 
       // Flip the two namenodes and restart the standby, which will load
@@ -170,9 +175,53 @@ public class TestHAMetrics {
       nn0 = cluster.getNamesystem(0);
       assertEquals(5, nn0.getFilesTotal());
     } finally {
-      IOUtils.cleanup(LOG, fs);
+      IOUtils.cleanupWithLogger(LOG, fs);
       cluster.shutdown();
     }
 
+  }
+
+  /**
+   * Test the getNameNodeState() API added to NameNode.java.
+   *
+   * @throws IOException
+   */
+  @Test
+  public void testGetNameNodeState() throws IOException {
+    Configuration conf = new Configuration();
+    conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_HA_LOGROLL_PERIOD_KEY, Integer.MAX_VALUE);
+
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).nnTopology(
+        MiniDFSNNTopology.simpleHATopology(3)).numDataNodes(1).build();
+
+    cluster.waitActive();
+
+    NameNode nn0 = cluster.getNameNode(0);
+    NameNode nn1 = cluster.getNameNode(1);
+    NameNode nn2 = cluster.getNameNode(2);
+
+    // All namenodes are in standby by default
+    assertEquals(HAServiceProtocol.HAServiceState.STANDBY.ordinal(), nn0.getNameNodeState());
+    assertEquals(HAServiceProtocol.HAServiceState.STANDBY.ordinal(), nn1.getNameNodeState());
+    assertEquals(HAServiceProtocol.HAServiceState.STANDBY.ordinal(), nn2.getNameNodeState());
+
+    // Transition nn0 to be active
+    cluster.transitionToActive(0);
+    assertEquals(HAServiceProtocol.HAServiceState.ACTIVE.ordinal(), nn0.getNameNodeState());
+
+    // Transition nn1 to be active
+    cluster.transitionToStandby(0);
+    cluster.transitionToActive(1);
+    assertEquals(HAServiceProtocol.HAServiceState.STANDBY.ordinal(), nn0.getNameNodeState());
+    assertEquals(HAServiceProtocol.HAServiceState.ACTIVE.ordinal(), nn1.getNameNodeState());
+
+    // Transition nn2 to observer
+    cluster.transitionToObserver(2);
+    assertEquals(HAServiceProtocol.HAServiceState.OBSERVER.ordinal(), nn2.getNameNodeState());
+
+    // Shutdown nn2. Now getNameNodeState should return the INITIALIZING state.
+    cluster.shutdownNameNode(2);
+    assertEquals(HAServiceProtocol.HAServiceState.INITIALIZING.ordinal(), nn2.getNameNodeState());
   }
 }

@@ -30,10 +30,9 @@ import java.util.Timer;
 import java.util.TimerTask;
 import javax.management.ObjectName;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.annotations.VisibleForTesting;
-import static com.google.common.base.Preconditions.*;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.classification.VisibleForTesting;
+import static org.apache.hadoop.util.Preconditions.*;
 
 import org.apache.commons.configuration2.PropertiesConfiguration;
 import org.apache.commons.math3.util.ArithmeticUtils;
@@ -58,6 +57,7 @@ import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MetricsSourceBuilder;
 import org.apache.hadoop.metrics2.lib.MutableStat;
 import org.apache.hadoop.metrics2.util.MBeans;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
@@ -155,7 +155,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
     ++refCount;
     if (monitoring) {
       // in mini cluster mode
-      LOG.info(this.prefix +" metrics system started (again)");
+      LOG.debug("{} metrics system started (again)", prefix);
       return this;
     }
     switch (initMode()) {
@@ -169,7 +169,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
         }
         break;
       case STANDBY:
-        LOG.info(prefix +" metrics system started in standby mode");
+        LOG.debug("{} metrics system started in standby mode", prefix);
     }
     initSystemMBean();
     return this;
@@ -188,7 +188,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
     configure(prefix);
     startTimer();
     monitoring = true;
-    LOG.info(prefix +" metrics system started");
+    LOG.debug("{} metrics system started", prefix);
     for (Callback cb : callbacks) cb.postStart();
     for (Callback cb : namedCallbacks.values()) cb.postStart();
   }
@@ -202,18 +202,18 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
     }
     if (!monitoring) {
       // in mini cluster mode
-      LOG.info(prefix +" metrics system stopped (again)");
+      LOG.debug("{} metrics system stopped (again)", prefix);
       return;
     }
     for (Callback cb : callbacks) cb.preStop();
     for (Callback cb : namedCallbacks.values()) cb.preStop();
-    LOG.info("Stopping "+ prefix +" metrics system...");
+    LOG.debug("Stopping {} metrics system...", prefix);
     stopTimer();
     stopSources();
     stopSinks();
     clearConfigs();
     monitoring = false;
-    LOG.info(prefix +" metrics system stopped.");
+    LOG.debug("{} metrics system stopped.", prefix);
     for (Callback cb : callbacks) cb.postStop();
     for (Callback cb : namedCallbacks.values()) cb.postStop();
   }
@@ -273,10 +273,13 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
   T register(final String name, final String description, final T sink) {
     LOG.debug(name +", "+ description);
     if (allSinks.containsKey(name)) {
-      LOG.warn("Sink "+ name +" already exists!");
+      if(sinks.get(name) == null) {
+        registerSink(name, description, sink);
+      } else {
+        LOG.warn("Sink "+ name +" already exists!");
+      }
       return sink;
     }
-    allSinks.put(name, sink);
     if (config != null) {
       registerSink(name, description, sink);
     }
@@ -297,8 +300,9 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
         ? newSink(name, desc, sink, conf)
         : newSink(name, desc, sink, config.subset(SINK_KEY));
     sinks.put(name, sa);
+    allSinks.put(name, sink);
     sa.start();
-    LOG.info("Registered sink "+ name);
+    LOG.debug("Registered sink {}", name);
   }
 
   @Override
@@ -371,8 +375,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
             }
           }
         }, millis, millis);
-    LOG.info("Scheduled Metric snapshot period at " + (period / 1000)
-        + " second(s).");
+    LOG.debug("Scheduled Metric snapshot period at {} second(s).", period / 1000);
   }
 
   synchronized void onTimerEvent() {
@@ -504,6 +507,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
             conf.getString(DESC_KEY, sinkName), conf);
         sa.start();
         sinks.put(sinkName, sa);
+        allSinks.put(sinkName, sa.sink());
       } catch (Exception e) {
         LOG.warn("Error creating sink '"+ sinkName +"'", e);
       }
@@ -604,7 +608,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
       MBeans.unregister(mbeanName);
       mbeanName = null;
     }
-    LOG.info(prefix +" metrics system shutdown complete.");
+    LOG.debug("{} metrics system shutdown complete.", prefix);
     return true;
   }
 

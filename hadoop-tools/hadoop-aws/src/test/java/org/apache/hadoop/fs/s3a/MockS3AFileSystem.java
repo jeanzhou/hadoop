@@ -21,10 +21,9 @@ package org.apache.hadoop.fs.s3a;
 import java.io.IOException;
 import java.net.URI;
 
-import com.amazonaws.AmazonClientException;
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.model.InitiateMultipartUploadRequest;
-import com.amazonaws.services.s3.model.UploadPartRequest;
+import software.amazon.awssdk.core.SdkRequest;
+import software.amazon.awssdk.core.exception.SdkException;
+import software.amazon.awssdk.services.s3.S3Client;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,8 +36,27 @@ import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.s3a.api.RequestFactory;
+import org.apache.hadoop.fs.s3a.audit.AuditTestSupport;
+import org.apache.hadoop.fs.s3a.auth.delegation.EncryptionSecrets;
 import org.apache.hadoop.fs.s3a.commit.staging.StagingTestBase;
+import org.apache.hadoop.fs.s3a.impl.ClientManager;
+import org.apache.hadoop.fs.s3a.impl.RequestFactoryImpl;
+import org.apache.hadoop.fs.s3a.impl.StoreContext;
+import org.apache.hadoop.fs.s3a.impl.StoreContextBuilder;
+import org.apache.hadoop.fs.s3a.impl.StubContextAccessor;
+import org.apache.hadoop.fs.s3a.statistics.CommitterStatistics;
+import org.apache.hadoop.fs.s3a.statistics.impl.EmptyS3AStatisticsContext;
+import org.apache.hadoop.fs.s3a.test.MinimalWriteOperationHelperCallbacks;
+import org.apache.hadoop.fs.statistics.DurationTrackerFactory;
+import org.apache.hadoop.fs.store.audit.AuditSpan;
 import org.apache.hadoop.util.Progressable;
+
+
+import static org.apache.hadoop.fs.s3a.Constants.DEFAULT_PART_UPLOAD_TIMEOUT;
+import static org.apache.hadoop.fs.s3a.audit.AuditTestSupport.noopAuditor;
+import static org.apache.hadoop.fs.statistics.IOStatisticsSupport.stubDurationTrackerFactory;
+import static org.apache.hadoop.util.Preconditions.checkNotNull;
 
 /**
  * Relays FS calls to the mocked FS, allows for some extra logging with
@@ -71,13 +89,24 @@ public class MockS3AFileSystem extends S3AFileSystem {
   /** Log the entire stack of where operations are called: {@value}.  */
   public static final int LOG_STACK = 2;
 
+  private final Path root;
+
+  /**
+   * This is a request factory whose preparation is a no-op.
+   */
+  public static final RequestFactory REQUEST_FACTORY =
+      RequestFactoryImpl.builder()
+      .withRequestPreparer(MockS3AFileSystem::prepareRequest)
+      .withBucket(BUCKET)
+      .withEncryptionSecrets(new EncryptionSecrets())
+      .withPartUploadTimeout(DEFAULT_PART_UPLOAD_TIMEOUT)
+      .build();
+
   /**
    * This can be edited to set the log level of events through the
    * mock FS.
    */
   private int logEvents = LOG_NAME;
-  private final S3AInstrumentation instrumentation =
-      new S3AInstrumentation(FS_URI);
   private Configuration conf;
   private WriteOperationHelper writeHelper;
 
@@ -85,8 +114,23 @@ public class MockS3AFileSystem extends S3AFileSystem {
       Pair<StagingTestBase.ClientResults, StagingTestBase.ClientErrors> outcome) {
     this.mock = mock;
     this.outcome = outcome;
-    setUri(FS_URI);
+    setUri(FS_URI, false);
     setBucket(BUCKET);
+    setEncryptionSecrets(new EncryptionSecrets());
+    root = new Path(FS_URI.toString());
+  }
+
+  private static void prepareRequest(SdkRequest.Builder t) {}
+
+  @Override
+  protected S3AStore createS3AStore(final ClientManager clientManager,
+      final int rateLimitCapacity) {
+    return super.createS3AStore(clientManager, rateLimitCapacity);
+  }
+
+  @Override
+  public RequestFactory getRequestFactory() {
+    return REQUEST_FACTORY;
   }
 
   public Pair<StagingTestBase.ClientResults, StagingTestBase.ClientErrors>
@@ -119,19 +163,43 @@ public class MockS3AFileSystem extends S3AFileSystem {
   }
 
   @Override
+  public URI getUri() {
+    return FS_URI;
+  }
+
+  @Override
   public Path getWorkingDirectory() {
-    return new Path("s3a://" + BUCKET + "/work");
+    return new Path(root, "work");
+  }
+
+  @Override
+  public Path qualify(final Path path) {
+    return path.makeQualified(FS_URI, getWorkingDirectory());
   }
 
   @Override
   public void initialize(URI name, Configuration originalConf)
       throws IOException {
     conf = originalConf;
-    writeHelper = new WriteOperationHelper(this, conf);
+    writeHelper = new WriteOperationHelper(this,
+        conf,
+        new EmptyS3AStatisticsContext(),
+        noopAuditor(conf),
+        AuditTestSupport.NOOP_SPAN,
+        new MinimalWriteOperationHelperCallbacks(this::getS3Client));
+  }
+
+  @Override
+  public void close() {
   }
 
   @Override
   public WriteOperationHelper getWriteOperationHelper() {
+    return writeHelper;
+  }
+
+  @Override
+  public WriteOperationHelper createWriteOperationHelper(final AuditSpan auditSpan) {
     return writeHelper;
   }
 
@@ -145,12 +213,17 @@ public class MockS3AFileSystem extends S3AFileSystem {
     return true;
   }
 
+  @Override
+  public boolean isMultipartUploadEnabled() {
+    return true;
+  }
+
   /**
    * Make operation to set the s3 client public.
    * @param client client.
    */
   @Override
-  public void setAmazonS3Client(AmazonS3 client) {
+  public void setAmazonS3Client(S3Client client) {
     LOG.debug("Setting S3 client to {}", client);
     super.setAmazonS3Client(client);
   }
@@ -159,11 +232,6 @@ public class MockS3AFileSystem extends S3AFileSystem {
   public boolean exists(Path f) throws IOException {
     event("exists(%s)", f);
     return mock.exists(f);
-  }
-
-  @Override
-  void finishedWrite(String key, long length) {
-
   }
 
   @Override
@@ -224,6 +292,12 @@ public class MockS3AFileSystem extends S3AFileSystem {
   }
 
   @Override
+  public boolean mkdirs(Path f) throws IOException {
+    event("mkdirs(%s)", f);
+    return mock.mkdirs(f);
+  }
+
+  @Override
   public boolean mkdirs(Path f, FsPermission permission) throws IOException {
     event("mkdirs(%s)", f);
     return mock.mkdirs(f, permission);
@@ -232,7 +306,8 @@ public class MockS3AFileSystem extends S3AFileSystem {
   @Override
   public FileStatus getFileStatus(Path f) throws IOException {
     event("getFileStatus(%s)", f);
-    return mock.getFileStatus(f);
+    return checkNotNull(mock.getFileStatus(f),
+        "Mock getFileStatus(%s) returned null", f);
   }
 
   @Override
@@ -273,31 +348,26 @@ public class MockS3AFileSystem extends S3AFileSystem {
   }
 
   @Override
-  protected void setOptionalMultipartUploadRequestParameters(
-      InitiateMultipartUploadRequest req) {
-// no-op
-  }
-
-  @Override
-  protected void setOptionalUploadPartRequestParameters(
-      UploadPartRequest request) {
-  }
-
-  @Override
   @SuppressWarnings("deprecation")
   public long getDefaultBlockSize() {
     return mock.getDefaultBlockSize();
   }
 
   @Override
-  void deleteObjectAtPath(Path f, String key, boolean isFile)
-      throws AmazonClientException, IOException {
-    deleteObject(key);
+  void deleteObjectAtPath(Path f,
+      String key,
+      boolean isFile)
+      throws SdkException, IOException {
+    mock.getS3AInternals()
+            .getAmazonS3Client("test")
+            .deleteObject(getRequestFactory()
+            .newDeleteObjectRequestBuilder(key)
+            .build());
   }
 
   @Override
-  void maybeCreateFakeParentDirectory(Path path)
-      throws IOException, AmazonClientException {
+  protected void maybeCreateFakeParentDirectory(Path path)
+      throws IOException, SdkException {
     // no-op
   }
 
@@ -324,12 +394,35 @@ public class MockS3AFileSystem extends S3AFileSystem {
   }
 
   @Override
-  public S3AInstrumentation.CommitterStatistics newCommitterStatistics() {
-    return instrumentation.newCommitterStatistics();
+  public CommitterStatistics newCommitterStatistics() {
+    return EmptyS3AStatisticsContext.EMPTY_COMMITTER_STATISTICS;
   }
 
   @Override
   public void operationRetried(Exception ex) {
-    /** no-op */
+    /* no-op */
   }
+
+  @Override
+  protected DurationTrackerFactory getDurationTrackerFactory() {
+    return stubDurationTrackerFactory();
+  }
+
+  /**
+   * Build an immutable store context.
+   * If called while the FS is being initialized,
+   * some of the context will be incomplete.
+   * new store context instances should be created as appropriate.
+   * @return the store context of this FS.
+   */
+  public StoreContext createStoreContext() {
+    return new StoreContextBuilder().setFsURI(getUri())
+        .setBucket(getBucket())
+        .setConfiguration(getConf())
+        .setUsername(getUsername())
+        .setAuditor(getAuditor())
+        .setContextAccessors(new StubContextAccessor(getBucket()))
+        .build();
+  }
+
 }

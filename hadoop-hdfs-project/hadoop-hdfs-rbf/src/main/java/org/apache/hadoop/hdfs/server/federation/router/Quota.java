@@ -17,12 +17,20 @@
  */
 package org.apache.hadoop.hdfs.server.federation.router;
 
+import static org.apache.hadoop.hdfs.DFSUtil.isParentEntry;
+
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.LinkedList;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.TreeMap;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.StorageType;
@@ -30,8 +38,12 @@ import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.federation.resolver.RemoteLocation;
 import org.apache.hadoop.hdfs.server.namenode.NameNode.OperationCategory;
+import org.apache.hadoop.security.AccessControlException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.thirdparty.com.google.common.collect.ArrayListMultimap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ListMultimap;
 
 /**
  * Module that implements the quota relevant RPC calls
@@ -62,14 +74,41 @@ public class Quota {
    * @param namespaceQuota Name space quota.
    * @param storagespaceQuota Storage space quota.
    * @param type StorageType that the space quota is intended to be set on.
-   * @throws IOException
+   * @param checkMountEntry whether to check the path is a mount entry.
+   * @throws IOException If the quota system is disabled or if
+   * checkMountEntry is true and the path is a mount entry.
    */
-  public void setQuota(String path, long namespaceQuota,
-      long storagespaceQuota, StorageType type) throws IOException {
+  public void setQuota(String path, long namespaceQuota, long storagespaceQuota,
+      StorageType type, boolean checkMountEntry) throws IOException {
+    if (!router.isQuotaEnabled()) {
+      throw new IOException("The quota system is disabled in Router.");
+    }
+    if (checkMountEntry && isMountEntry(path)) {
+      throw new AccessControlException(
+          "Permission denied: " + RouterRpcServer.getRemoteUser()
+              + " is not allowed to change quota of " + path);
+    }
+    setQuotaInternal(path, null, namespaceQuota, storagespaceQuota, type);
+  }
+
+  /**
+   * Set quota for the federation path.
+   * @param path Federation path.
+   * @param locations Locations of the Federation path.
+   * @param namespaceQuota Name space quota.
+   * @param storagespaceQuota Storage space quota.
+   * @param type StorageType that the space quota is intended to be set on.
+   * @throws IOException If the quota system is disabled.
+   */
+  void setQuotaInternal(String path, List<RemoteLocation> locations,
+      long namespaceQuota, long storagespaceQuota, StorageType type)
+      throws IOException {
     rpcServer.checkOperation(OperationCategory.WRITE);
 
     // Set quota for current path and its children mount table path.
-    final List<RemoteLocation> locations = getQuotaRemoteLocations(path);
+    if (locations == null) {
+      locations = getQuotaRemoteLocations(path);
+    }
     if (LOG.isDebugEnabled()) {
       for (RemoteLocation loc : locations) {
         LOG.debug("Set quota for path: nsId: {}, dest: {}.",
@@ -85,19 +124,87 @@ public class Quota {
   }
 
   /**
-   * Get quota usage for the federation path.
+   * Get aggregated quota usage for the federation path.
    * @param path Federation path.
    * @return Aggregated quota.
-   * @throws IOException
+   * @throws IOException If the quota system is disabled.
    */
   public QuotaUsage getQuotaUsage(String path) throws IOException {
+    return aggregateQuota(path, getEachQuotaUsage(path));
+  }
+
+  /**
+   * Get quota usage for the federation path.
+   * @param path Federation path.
+   * @return quota usage for each remote location.
+   * @throws IOException If the quota system is disabled.
+   */
+  protected Map<RemoteLocation, QuotaUsage> getEachQuotaUsage(String path)
+      throws IOException {
+    rpcServer.checkOperation(OperationCategory.READ);
+    if (!router.isQuotaEnabled()) {
+      throw new IOException("The quota system is disabled in Router.");
+    }
+
     final List<RemoteLocation> quotaLocs = getValidQuotaLocations(path);
     RemoteMethod method = new RemoteMethod("getQuotaUsage",
         new Class<?>[] {String.class}, new RemoteParam());
     Map<RemoteLocation, QuotaUsage> results = rpcClient.invokeConcurrent(
         quotaLocs, method, true, false, QuotaUsage.class);
 
-    return aggregateQuota(results);
+    return results;
+  }
+
+  /**
+   * Get global quota for the federation path.
+   * @param path Federation path.
+   * @return global quota for path.
+   * @throws IOException If the quota system is disabled.
+   */
+  QuotaUsage getGlobalQuota(String path) throws IOException {
+    if (!router.isQuotaEnabled()) {
+      throw new IOException("The quota system is disabled in Router.");
+    }
+
+    long nQuota = HdfsConstants.QUOTA_RESET;
+    long sQuota = HdfsConstants.QUOTA_RESET;
+    long[] typeQuota = new long[StorageType.values().length];
+    eachByStorageType(t -> typeQuota[t.ordinal()] = HdfsConstants.QUOTA_RESET);
+
+    RouterQuotaManager manager = this.router.getQuotaManager();
+    TreeMap<String, RouterQuotaUsage> pts =
+        manager.getParentsContainingQuota(path);
+    Entry<String, RouterQuotaUsage> entry = pts.lastEntry();
+    while (entry != null && (nQuota == HdfsConstants.QUOTA_RESET
+        || sQuota == HdfsConstants.QUOTA_RESET || orByStorageType(
+          t -> typeQuota[t.ordinal()] == HdfsConstants.QUOTA_RESET))) {
+      String ppath = entry.getKey();
+      QuotaUsage quota = entry.getValue();
+      if (nQuota == HdfsConstants.QUOTA_RESET) {
+        nQuota = quota.getQuota();
+      }
+      if (sQuota == HdfsConstants.QUOTA_RESET) {
+        sQuota = quota.getSpaceQuota();
+      }
+      eachByStorageType(t -> {
+        if (typeQuota[t.ordinal()] == HdfsConstants.QUOTA_RESET) {
+          typeQuota[t.ordinal()] = quota.getTypeQuota(t);
+        }
+      });
+      entry = pts.lowerEntry(ppath);
+    }
+    return new QuotaUsage.Builder().quota(nQuota).spaceQuota(sQuota)
+        .typeQuota(typeQuota).build();
+  }
+
+  /**
+   * Is the path a mount entry.
+   *
+   * @param path the path to be checked.
+   * @return {@code true} if path is a mount entry; {@code false} otherwise.
+   */
+  private boolean isMountEntry(String path) {
+    return router.getQuotaManager().isMountEntry(path);
   }
 
   /**
@@ -106,83 +213,146 @@ public class Quota {
    * method will do some additional filtering.
    * @param path Federation path.
    * @return List of valid quota remote locations.
-   * @throws IOException
+   * @throws IOException If the location for this path cannot be determined.
    */
-  private List<RemoteLocation> getValidQuotaLocations(String path)
+  protected List<RemoteLocation> getValidQuotaLocations(String path)
       throws IOException {
     final List<RemoteLocation> locations = getQuotaRemoteLocations(path);
 
     // NameService -> Locations
-    Map<String, List<RemoteLocation>> validLocations = new HashMap<>();
-    for (RemoteLocation loc : locations) {
-      String nsId = loc.getNameserviceId();
-      List<RemoteLocation> dests = validLocations.get(nsId);
-      if (dests == null) {
-        dests = new LinkedList<>();
-        dests.add(loc);
-        validLocations.put(nsId, dests);
-      } else {
-        // Ensure the paths in the same nameservice is different.
-        // Don't include parent-child paths.
-        boolean isChildPath = false;
-        for (RemoteLocation d : dests) {
-          if (loc.getDest().startsWith(d.getDest())) {
-            isChildPath = true;
-            break;
-          }
-        }
+    ListMultimap<String, RemoteLocation> validLocations =
+        ArrayListMultimap.create();
 
-        if (!isChildPath) {
-          dests.add(loc);
+    for (RemoteLocation loc : locations) {
+      final String nsId = loc.getNameserviceId();
+      final Collection<RemoteLocation> dests = validLocations.get(nsId);
+
+      // Ensure the paths in the same nameservice is different.
+      // Do not include parent-child paths.
+      boolean isChildPath = false;
+
+      for (RemoteLocation d : dests) {
+        if (isParentEntry(loc.getDest(), d.getDest())) {
+          isChildPath = true;
+          break;
         }
+      }
+
+      if (!isChildPath) {
+        validLocations.put(nsId, loc);
       }
     }
 
-    List<RemoteLocation> quotaLocs = new LinkedList<>();
-    for (List<RemoteLocation> locs : validLocations.values()) {
-      quotaLocs.addAll(locs);
-    }
-
-    return quotaLocs;
+    return Collections
+        .unmodifiableList(new ArrayList<>(validLocations.values()));
   }
 
   /**
    * Aggregate quota that queried from sub-clusters.
+   * @param path Federation path of the results.
    * @param results Quota query result.
    * @return Aggregated Quota.
+   * @throws IOException If the quota system is disabled.
    */
-  private QuotaUsage aggregateQuota(Map<RemoteLocation, QuotaUsage> results) {
+  protected QuotaUsage aggregateQuota(String path,
+      Map<RemoteLocation, QuotaUsage> results) throws IOException {
     long nsCount = 0;
     long ssCount = 0;
-    boolean hasQuotaUnSet = false;
+    long[] typeCount = new long[StorageType.values().length];
+    long nsQuota = HdfsConstants.QUOTA_RESET;
+    long ssQuota = HdfsConstants.QUOTA_RESET;
+    long[] typeQuota = new long[StorageType.values().length];
+    eachByStorageType(t -> typeQuota[t.ordinal()] = HdfsConstants.QUOTA_RESET);
+    boolean hasQuotaUnset = false;
+    boolean isMountEntry = isMountEntry(path);
 
     for (Map.Entry<RemoteLocation, QuotaUsage> entry : results.entrySet()) {
       RemoteLocation loc = entry.getKey();
       QuotaUsage usage = entry.getValue();
-      if (usage != null) {
+      if (isMountEntry) {
+        nsCount += usage.getFileAndDirectoryCount();
+        ssCount += usage.getSpaceConsumed();
+        eachByStorageType(
+            t -> typeCount[t.ordinal()] += usage.getTypeConsumed(t));
+      } else if (usage != null) {
         // If quota is not set in real FileSystem, the usage
         // value will return -1.
-        if (usage.getQuota() == -1 && usage.getSpaceQuota() == -1) {
-          hasQuotaUnSet = true;
+        if (!RouterQuotaManager.isQuotaSet(usage)) {
+          hasQuotaUnset = true;
         }
+        nsQuota = usage.getQuota();
+        ssQuota = usage.getSpaceQuota();
+        eachByStorageType(t -> typeQuota[t.ordinal()] = usage.getTypeQuota(t));
 
         nsCount += usage.getFileAndDirectoryCount();
         ssCount += usage.getSpaceConsumed();
-        LOG.debug(
-            "Get quota usage for path: nsId: {}, dest: {},"
-                + " nsCount: {}, ssCount: {}.",
+        eachByStorageType(
+            t -> typeCount[t.ordinal()] += usage.getTypeConsumed(t));
+        LOG.debug("Get quota usage for path: nsId: {}, dest: {},"
+                + " nsCount: {}, ssCount: {}, typeCount: {}.",
             loc.getNameserviceId(), loc.getDest(),
-            usage.getFileAndDirectoryCount(), usage.getSpaceConsumed());
+            usage.getFileAndDirectoryCount(), usage.getSpaceConsumed(),
+            usage.toString(false, true, Arrays.asList(StorageType.values())));
       }
     }
 
-    QuotaUsage.Builder builder = new QuotaUsage.Builder()
-        .fileAndDirectoryCount(nsCount).spaceConsumed(ssCount);
-    if (hasQuotaUnSet) {
-      builder.quota(HdfsConstants.QUOTA_DONT_SET);
+    if (isMountEntry) {
+      QuotaUsage quota = getGlobalQuota(path);
+      nsQuota = quota.getQuota();
+      ssQuota = quota.getSpaceQuota();
+      eachByStorageType(t -> typeQuota[t.ordinal()] = quota.getTypeQuota(t));
+    }
+    QuotaUsage.Builder builder =
+        new QuotaUsage.Builder().fileAndDirectoryCount(nsCount)
+            .spaceConsumed(ssCount).typeConsumed(typeCount);
+    if (hasQuotaUnset) {
+      builder.quota(HdfsConstants.QUOTA_RESET)
+          .spaceQuota(HdfsConstants.QUOTA_RESET);
+      eachByStorageType(t -> builder.typeQuota(t, HdfsConstants.QUOTA_RESET));
+    } else {
+      builder.quota(nsQuota).spaceQuota(ssQuota);
+      eachByStorageType(t -> builder.typeQuota(t, typeQuota[t.ordinal()]));
     }
 
     return builder.build();
+  }
+
+  /**
+   * Invoke consumer by each storage type.
+   * @param consumer the function consuming the storage type.
+   */
+  public static void eachByStorageType(Consumer<StorageType> consumer) {
+    for (StorageType type : StorageType.values()) {
+      consumer.accept(type);
+    }
+  }
+
+  /**
+   * Invoke predicate by each storage type and bitwise inclusive OR the results.
+   *
+   * @param predicate the function test the storage type.
+   * @return true if bitwise OR by all storage type returns true, false otherwise.
+   */
+  public static boolean orByStorageType(Predicate<StorageType> predicate) {
+    boolean res = false;
+    for (StorageType type : StorageType.values()) {
+      res |= predicate.test(type);
+    }
+    return res;
+  }
+
+  /**
+   * Invoke predicate by each storage type and bitwise AND the results.
+   *
+   * @param predicate the function test the storage type.
+   * @return true if bitwise AND by all storage type returns true, false otherwise.
+   */
+  public static boolean andByStorageType(Predicate<StorageType> predicate) {
+    boolean res = true;
+    for (StorageType type : StorageType.values()) {
+      res &= predicate.test(type);
+    }
+    return res;
   }
 
   /**
@@ -190,19 +360,24 @@ public class Quota {
    * federation path.
    * @param path Federation path.
    * @return List of quota remote locations.
-   * @throws IOException
+   * @throws IOException If the location for this path cannot be determined.
    */
   private List<RemoteLocation> getQuotaRemoteLocations(String path)
       throws IOException {
-    List<RemoteLocation> locations = new LinkedList<>();
+    List<RemoteLocation> locations = new ArrayList<>();
     RouterQuotaManager manager = this.router.getQuotaManager();
     if (manager != null) {
       Set<String> childrenPaths = manager.getPaths(path);
       for (String childPath : childrenPaths) {
-        locations.addAll(rpcServer.getLocationsForPath(childPath, true));
+        locations.addAll(
+            rpcServer.getLocationsForPath(childPath, false, false));
       }
     }
-
-    return locations;
+    if (locations.size() >= 1) {
+      return locations;
+    } else {
+      locations.addAll(rpcServer.getLocationsForPath(path, false, false));
+      return locations;
+    }
   }
 }

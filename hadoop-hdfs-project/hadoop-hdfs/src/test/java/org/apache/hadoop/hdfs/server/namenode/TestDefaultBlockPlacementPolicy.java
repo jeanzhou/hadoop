@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.util.EnumSet;
@@ -26,6 +26,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.PermissionStatus;
+import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -37,9 +38,9 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.net.StaticMapping;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestDefaultBlockPlacementPolicy {
 
@@ -50,7 +51,7 @@ public class TestDefaultBlockPlacementPolicy {
   private FSNamesystem namesystem = null;
   private PermissionStatus perm = null;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     StaticMapping.resetMap();
     Configuration conf = new HdfsConfiguration();
@@ -68,7 +69,7 @@ public class TestDefaultBlockPlacementPolicy {
         FsPermission.getDefault());
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -96,6 +97,26 @@ public class TestDefaultBlockPlacementPolicy {
   public void testLocalStoragePlacement() throws Exception {
     String clientMachine = "/host3";
     testPlacement(clientMachine, "/RACK3", true);
+  }
+
+  @Test
+  public void testNonLocalRackPlacement() throws Exception {
+    String clientMachine = "/host0";
+    EnumSet<CreateFlag> flags = EnumSet.of(CreateFlag.CREATE);
+    flags.add(CreateFlag.NO_LOCAL_RACK);
+    HdfsFileStatus fileStatus = namesystem.startFile("/file", perm,
+        clientMachine, clientMachine, flags, true, REPLICATION_FACTOR,
+        DEFAULT_BLOCK_SIZE, null, null, null, false);
+    LocatedBlock locatedBlock = nameNodeRpc.addBlock("/file", clientMachine,
+        null, null, fileStatus.getFileId(), null,
+        EnumSet.of(AddBlockFlag.NO_LOCAL_RACK));
+    assertTrue(locatedBlock.getLocations()[0].getNetworkLocation() != "/RACK0");
+    assertNotEquals("/RACK0",
+        locatedBlock.getLocations()[0].getNetworkLocation());
+    assertNotEquals("/RACK0",
+        locatedBlock.getLocations()[1].getNetworkLocation());
+    assertNotEquals("/RACK0",
+        locatedBlock.getLocations()[2].getNetworkLocation());
   }
 
   /**
@@ -131,14 +152,14 @@ public class TestDefaultBlockPlacementPolicy {
     // Create the file with client machine
     HdfsFileStatus fileStatus = namesystem.startFile(src, perm, clientMachine,
         clientMachine, EnumSet.of(CreateFlag.CREATE), true, REPLICATION_FACTOR,
-        DEFAULT_BLOCK_SIZE, null, null, false);
+        DEFAULT_BLOCK_SIZE, null, null, null, false);
     LocatedBlock locatedBlock = nameNodeRpc.addBlock(src, clientMachine, null,
         null, fileStatus.getFileId(), null, null);
 
-    assertEquals("Block should be allocated sufficient locations",
-        REPLICATION_FACTOR, locatedBlock.getLocations().length);
-    assertEquals("First datanode should be rack local", clientRack,
-        locatedBlock.getLocations()[0].getNetworkLocation());
+    assertEquals(REPLICATION_FACTOR, locatedBlock.getLocations().length,
+        "Block should be allocated sufficient locations");
+    assertEquals(clientRack, locatedBlock.getLocations()[0].getNetworkLocation(),
+        "First datanode should be rack local");
     nameNodeRpc.abandonBlock(locatedBlock.getBlock(), fileStatus.getFileId(),
         src, clientMachine);
   }
@@ -184,16 +205,16 @@ public class TestDefaultBlockPlacementPolicy {
       // Create the file with client machine
       HdfsFileStatus fileStatus = namesystem.startFile(src, perm,
           clientMachine, clientMachine, EnumSet.of(CreateFlag.CREATE), true,
-          REPLICATION_FACTOR, DEFAULT_BLOCK_SIZE, null, null, false);
+          REPLICATION_FACTOR, DEFAULT_BLOCK_SIZE, null, null, null, false);
       LocatedBlock locatedBlock = nameNodeRpc.addBlock(src, clientMachine,
           null, null, fileStatus.getFileId(), null, null);
 
-      assertEquals("Block should be allocated sufficient locations",
-          REPLICATION_FACTOR, locatedBlock.getLocations().length);
+      assertEquals(REPLICATION_FACTOR, locatedBlock.getLocations().length,
+          "Block should be allocated sufficient locations");
       if (clientRack != null) {
         if (hasBlockReplicaOnRack) {
-          assertEquals("First datanode should be rack local", clientRack,
-              locatedBlock.getLocations()[0].getNetworkLocation());
+          assertEquals(clientRack, locatedBlock.getLocations()[0].getNetworkLocation(),
+              "First datanode should be rack local");
         } else {
           for (DatanodeInfo dni : locatedBlock.getLocations()) {
             assertNotEquals(clientRack, dni.getNetworkLocation());

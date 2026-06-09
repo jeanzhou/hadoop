@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs.protocol;
 
-import com.google.common.base.Preconditions;
-import org.apache.commons.lang.builder.EqualsBuilder;
-import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.hadoop.classification.InterfaceAudience;
 
 import java.io.Serializable;

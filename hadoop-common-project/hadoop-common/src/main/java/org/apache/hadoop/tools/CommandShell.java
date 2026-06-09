@@ -36,6 +36,7 @@ public abstract class CommandShell extends Configured implements Tool {
 
   /**
    * Return usage string for the command including any summary of subcommands.
+   * @return command usage.
    */
   public abstract String getCommandUsage();
 
@@ -76,7 +77,7 @@ public abstract class CommandShell extends Configured implements Tool {
       }
     } catch (Exception e) {
       printShellUsage();
-      e.printStackTrace(err);
+      printException(e);
       return 1;
     }
     return exitCode;
@@ -84,8 +85,9 @@ public abstract class CommandShell extends Configured implements Tool {
 
   /**
    * Parse the command line arguments and initialize subcommand instance.
-   * @param args
+   * @param args arguments.
    * @return 0 if the argument(s) were recognized, 1 otherwise
+   * @throws Exception init exception.
    */
   protected abstract int init(String[] args) throws Exception;
 
@@ -96,6 +98,10 @@ public abstract class CommandShell extends Configured implements Tool {
       out.println(getCommandUsage());
     }
     out.flush();
+  }
+
+  protected void printException(Exception ex){
+    ex.printStackTrace(err);
   }
 
   /**

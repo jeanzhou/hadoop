@@ -27,17 +27,17 @@ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.conf.QueueAdminConfigurationMutationACLPolicy;
 import org.apache.hadoop.yarn.webapp.dao.QueueConfigInfo;
 import org.apache.hadoop.yarn.webapp.dao.SchedConfUpdateInfo;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Map;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.eq;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -54,28 +54,31 @@ public class TestConfigurationMutationACLPolicies {
   private static final Map<String, String> EMPTY_MAP =
       Collections.<String, String>emptyMap();
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     rmContext = mock(RMContext.class);
     scheduler = mock(MutableConfScheduler.class);
     when(rmContext.getScheduler()).thenReturn(scheduler);
-    mockQueue("a", scheduler);
-    mockQueue("b", scheduler);
-    mockQueue("b1", scheduler);
+    mockQueue("a", "root.a", scheduler);
+    mockQueue("b", "root.b", scheduler);
+    mockQueue("b1", "root.b1", scheduler);
   }
 
-  private void mockQueue(String queueName, MutableConfScheduler scheduler)
+  private void mockQueue(String queueName,
+      String queuePath, MutableConfScheduler confScheduler)
       throws IOException {
-    QueueInfo queueInfo = QueueInfo.newInstance(queueName, 0, 0, 0, null, null,
-        null, null, null, null, false, null, false);
-    when(scheduler.getQueueInfo(eq(queueName), anyBoolean(), anyBoolean()))
+    QueueInfo queueInfo = QueueInfo.
+        newInstance(queueName, queuePath, 0, 0,
+            0, null, null,
+        null, null, null, null, false, -1.0f, 10, null, false);
+    when(confScheduler.getQueueInfo(eq(queueName), anyBoolean(), anyBoolean()))
         .thenReturn(queueInfo);
     Queue queue = mock(Queue.class);
     when(queue.hasAccess(eq(QueueACL.ADMINISTER_QUEUE), eq(GOOD_USER)))
         .thenReturn(true);
     when(queue.hasAccess(eq(QueueACL.ADMINISTER_QUEUE), eq(BAD_USER)))
         .thenReturn(false);
-    when(scheduler.getQueue(eq(queueName))).thenReturn(queue);
+    when(confScheduler.getQueue(eq(queueName))).thenReturn(queue);
   }
 
   @Test

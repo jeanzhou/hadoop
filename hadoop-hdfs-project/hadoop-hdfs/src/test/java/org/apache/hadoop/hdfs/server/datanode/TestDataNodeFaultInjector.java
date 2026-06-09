@@ -17,12 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -33,14 +33,15 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * This class tests various cases where faults are injected to DataNode.
  */
 public class TestDataNodeFaultInjector {
-  private static final Log LOG = LogFactory
-      .getLog(TestDataNodeFaultInjector.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestDataNodeFaultInjector.class);
 
   private static class MetricsDataNodeFaultInjector
       extends DataNodeFaultInjector {
@@ -76,7 +77,8 @@ public class TestDataNodeFaultInjector {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testDelaySendingAckToUpstream() throws Exception {
     final MetricsDataNodeFaultInjector mdnFaultInjector =
         new MetricsDataNodeFaultInjector() {
@@ -95,7 +97,8 @@ public class TestDataNodeFaultInjector {
     verifyFaultInjectionDelayPipeline(mdnFaultInjector);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testDelaySendingPacketDownstream() throws Exception {
     final MetricsDataNodeFaultInjector mdnFaultInjector =
         new MetricsDataNodeFaultInjector() {
@@ -118,7 +121,7 @@ public class TestDataNodeFaultInjector {
       final MetricsDataNodeFaultInjector mdnFaultInjector) throws Exception {
 
     final Path baseDir = new Path(
-        PathUtils.getTestDir(getClass()).getAbsolutePath(),
+        PathUtils.getTestDir(getClass()).getPath(),
         GenericTestUtils.getMethodName());
     final DataNodeFaultInjector oldDnInjector = DataNodeFaultInjector.get();
     DataNodeFaultInjector.set(mdnFaultInjector);
@@ -161,8 +164,8 @@ public class TestDataNodeFaultInjector {
       }
       LOG.info("delay info: " + mdnFaultInjector.getDelayMs() + ":"
           + datanodeSlowLogThresholdMs);
-      assertTrue("Injected delay should be longer than the configured one",
-          mdnFaultInjector.getDelayMs() > datanodeSlowLogThresholdMs);
+      assertTrue(mdnFaultInjector.getDelayMs() > datanodeSlowLogThresholdMs,
+          "Injected delay should be longer than the configured one");
     } finally {
       if (cluster != null) {
         cluster.shutdown();

@@ -143,7 +143,7 @@ public class DatanodeInfo extends DatanodeID implements Node {
       final int xceiverCount, final String networkLocation,
       final AdminStates adminState, final String upgradeDomain,
       final long lastBlockReportTime, final long lastBlockReportMonotonic,
-                       final int blockCount) {
+      final int blockCount, final String softwareVersion) {
     super(ipAddr, hostName, datanodeUuid, xferPort, infoPort, infoSecurePort,
         ipcPort);
     this.capacity = capacity;
@@ -162,6 +162,7 @@ public class DatanodeInfo extends DatanodeID implements Node {
     this.lastBlockReportTime = lastBlockReportTime;
     this.lastBlockReportMonotonic = lastBlockReportMonotonic;
     this.numBlocks = blockCount;
+    this.softwareVersion =  softwareVersion;
   }
 
   /** Network location name. */
@@ -374,8 +375,8 @@ public class DatanodeInfo extends DatanodeID implements Node {
     if (lookupName != null) {
       buffer.append(" (").append(lookupName).append(")");
     }
-    buffer.append("\n");
-    buffer.append("Hostname: ").append(getHostName()).append("\n");
+    buffer.append("\n")
+        .append("Hostname: ").append(getHostName()).append("\n");
 
     if (!NetworkTopology.DEFAULT_RACK.equals(location)) {
       buffer.append("Rack: ").append(location).append("\n");
@@ -396,35 +397,34 @@ public class DatanodeInfo extends DatanodeID implements Node {
       buffer.append("Normal\n");
     }
     buffer.append("Configured Capacity: ").append(c).append(" (")
-        .append(StringUtils.byteDesc(c)).append(")").append("\n");
-    buffer.append("DFS Used: ").append(u).append(" (")
-        .append(StringUtils.byteDesc(u)).append(")").append("\n");
-    buffer.append("Non DFS Used: ").append(nonDFSUsed).append(" (")
-        .append(StringUtils.byteDesc(nonDFSUsed)).append(")").append("\n");
-    buffer.append("DFS Remaining: ").append(r).append(" (")
-        .append(StringUtils.byteDesc(r)).append(")").append("\n");
-    buffer.append("DFS Used%: ").append(percent2String(usedPercent))
-        .append("\n");
-    buffer.append("DFS Remaining%: ").append(percent2String(remainingPercent))
-        .append("\n");
-    buffer.append("Configured Cache Capacity: ").append(cc).append(" (")
-        .append(StringUtils.byteDesc(cc)).append(")").append("\n");
-    buffer.append("Cache Used: ").append(cu).append(" (")
-        .append(StringUtils.byteDesc(cu)).append(")").append("\n");
-    buffer.append("Cache Remaining: ").append(cr).append(" (")
-        .append(StringUtils.byteDesc(cr)).append(")").append("\n");
-    buffer.append("Cache Used%: ").append(percent2String(cacheUsedPercent))
-        .append("\n");
-    buffer.append("Cache Remaining%: ")
-        .append(percent2String(cacheRemainingPercent)).append("\n");
-    buffer.append("Xceivers: ").append(getXceiverCount()).append("\n");
-    buffer.append("Last contact: ").append(new Date(lastUpdate)).append("\n");
-    buffer
+        .append(StringUtils.byteDesc(c)).append(")").append("\n")
+        .append("DFS Used: ").append(u).append(" (")
+        .append(StringUtils.byteDesc(u)).append(")").append("\n")
+        .append("Non DFS Used: ").append(nonDFSUsed).append(" (")
+        .append(StringUtils.byteDesc(nonDFSUsed)).append(")").append("\n")
+        .append("DFS Remaining: ").append(r).append(" (")
+        .append(StringUtils.byteDesc(r)).append(")").append("\n")
+        .append("DFS Used%: ").append(percent2String(usedPercent))
+        .append("\n")
+        .append("DFS Remaining%: ").append(percent2String(remainingPercent))
+        .append("\n")
+        .append("Configured Cache Capacity: ").append(cc).append(" (")
+        .append(StringUtils.byteDesc(cc)).append(")").append("\n")
+        .append("Cache Used: ").append(cu).append(" (")
+        .append(StringUtils.byteDesc(cu)).append(")").append("\n")
+        .append("Cache Remaining: ").append(cr).append(" (")
+        .append(StringUtils.byteDesc(cr)).append(")").append("\n")
+        .append("Cache Used%: ").append(percent2String(cacheUsedPercent))
+        .append("\n")
+        .append("Cache Remaining%: ")
+        .append(percent2String(cacheRemainingPercent)).append("\n")
+        .append("Xceivers: ").append(getXceiverCount()).append("\n")
+        .append("Last contact: ").append(new Date(lastUpdate)).append("\n")
         .append("Last Block Report: ")
         .append(
             lastBlockReportTime != 0 ? new Date(lastBlockReportTime) : "Never")
-        .append("\n");
-    buffer.append("Num of Blocks: ").append(blockCount).append("\n");
+        .append("\n")
+        .append("Num of Blocks: ").append(blockCount).append("\n");
     return buffer.toString();
   }
 
@@ -458,20 +458,20 @@ public class DatanodeInfo extends DatanodeID implements Node {
       buffer.append(" IN");
     }
     buffer.append(" ").append(c).append("(").append(StringUtils.byteDesc(c))
-        .append(")");
-    buffer.append(" ").append(u).append("(").append(StringUtils.byteDesc(u))
-        .append(")");
-    buffer.append(" ").append(percent2String(usedPercent));
-    buffer.append(" ").append(r).append("(").append(StringUtils.byteDesc(r))
-        .append(")");
-    buffer.append(" ").append(cc).append("(").append(StringUtils.byteDesc(cc))
-        .append(")");
-    buffer.append(" ").append(cu).append("(").append(StringUtils.byteDesc(cu))
-        .append(")");
-    buffer.append(" ").append(percent2String(cacheUsedPercent));
-    buffer.append(" ").append(cr).append("(").append(StringUtils.byteDesc(cr))
-        .append(")");
-    buffer.append(" ").append(new Date(lastUpdate));
+        .append(")")
+        .append(" ").append(u).append("(").append(StringUtils.byteDesc(u))
+        .append(")")
+        .append(" ").append(percent2String(usedPercent))
+        .append(" ").append(r).append("(").append(StringUtils.byteDesc(r))
+        .append(")")
+        .append(" ").append(cc).append("(").append(StringUtils.byteDesc(cc))
+        .append(")")
+        .append(" ").append(cu).append("(").append(StringUtils.byteDesc(cu))
+        .append(")")
+        .append(" ").append(percent2String(cacheUsedPercent))
+        .append(" ").append(cr).append("(").append(StringUtils.byteDesc(cr))
+        .append(")")
+        .append(" ").append(new Date(lastUpdate));
     return buffer.toString();
   }
 
@@ -699,9 +699,11 @@ public class DatanodeInfo extends DatanodeID implements Node {
     private long nonDfsUsed = 0L;
     private long lastBlockReportTime = 0L;
     private long lastBlockReportMonotonic = 0L;
-    private int numBlocks;
+    private int numBlocks = 0;
+    private String softwareVersion;
 
-
+    // Please use setNumBlocks explicitly to set numBlocks as this method doesn't have
+    // sufficient info about numBlocks
     public DatanodeInfoBuilder setFrom(DatanodeInfo from) {
       this.capacity = from.getCapacity();
       this.dfsUsed = from.getDfsUsed();
@@ -718,7 +720,9 @@ public class DatanodeInfo extends DatanodeID implements Node {
       this.upgradeDomain = from.getUpgradeDomain();
       this.lastBlockReportTime = from.getLastBlockReportTime();
       this.lastBlockReportMonotonic = from.getLastBlockReportMonotonic();
-      this.numBlocks = from.getNumBlocks();
+      if (from.getSoftwareVersion() != null) {
+        this.softwareVersion = from.getSoftwareVersion();
+      }
       setNodeID(from);
       return this;
     }
@@ -845,8 +849,14 @@ public class DatanodeInfo extends DatanodeID implements Node {
       this.lastBlockReportMonotonic = time;
       return this;
     }
+
     public DatanodeInfoBuilder setNumBlocks(int blockCount) {
       this.numBlocks = blockCount;
+      return this;
+    }
+
+    public DatanodeInfoBuilder setSoftwareVersion(String dnVersion) {
+      this.softwareVersion = dnVersion;
       return this;
     }
 
@@ -856,7 +866,7 @@ public class DatanodeInfo extends DatanodeID implements Node {
           remaining, blockPoolUsed, cacheCapacity, cacheUsed, lastUpdate,
           lastUpdateMonotonic, xceiverCount, location, adminState,
           upgradeDomain, lastBlockReportTime, lastBlockReportMonotonic,
-          numBlocks);
+          numBlocks, softwareVersion);
     }
   }
 }

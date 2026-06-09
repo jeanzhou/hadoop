@@ -25,6 +25,9 @@ import java.io.InputStream;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.IOStatisticsSource;
+import org.apache.hadoop.fs.statistics.IOStatisticsSupport;
 import org.apache.hadoop.io.Text;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_KEY;
@@ -42,7 +45,7 @@ import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_
  */
 @InterfaceAudience.LimitedPrivate({"MapReduce"})
 @InterfaceStability.Unstable
-public class LineReader implements Closeable {
+public class LineReader implements Closeable, IOStatisticsSource {
   private static final int DEFAULT_BUFFER_SIZE = 64 * 1024;
   private int bufferSize = DEFAULT_BUFFER_SIZE;
   private InputStream in;
@@ -62,7 +65,6 @@ public class LineReader implements Closeable {
    * Create a line reader that reads from the given stream using the
    * default buffer-size (64k).
    * @param in The input stream
-   * @throws IOException
    */
   public LineReader(InputStream in) {
     this(in, DEFAULT_BUFFER_SIZE);
@@ -73,7 +75,6 @@ public class LineReader implements Closeable {
    * given buffer-size.
    * @param in The input stream
    * @param bufferSize Size of the read buffer
-   * @throws IOException
    */
   public LineReader(InputStream in, int bufferSize) {
     this.in = in;
@@ -88,7 +89,7 @@ public class LineReader implements Closeable {
    * <code>Configuration</code>.
    * @param in input stream
    * @param conf configuration
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public LineReader(InputStream in, Configuration conf) throws IOException {
     this(in, conf.getInt(IO_FILE_BUFFER_SIZE_KEY, DEFAULT_BUFFER_SIZE));
@@ -115,7 +116,6 @@ public class LineReader implements Closeable {
    * @param in The input stream
    * @param bufferSize Size of the read buffer
    * @param recordDelimiterBytes The delimiter
-   * @throws IOException
    */
   public LineReader(InputStream in, int bufferSize,
       byte[] recordDelimiterBytes) {
@@ -133,7 +133,7 @@ public class LineReader implements Closeable {
    * @param in input stream
    * @param conf configuration
    * @param recordDelimiterBytes The delimiter
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public LineReader(InputStream in, Configuration conf,
       byte[] recordDelimiterBytes) throws IOException {
@@ -146,12 +146,21 @@ public class LineReader implements Closeable {
 
   /**
    * Close the underlying stream.
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public void close() throws IOException {
     in.close();
   }
-  
+
+  /**
+   * Return any IOStatistics provided by the source.
+   * @return IO stats from the input stream.
+   */
+  @Override
+  public IOStatistics getIOStatistics() {
+    return IOStatisticsSupport.retrieveIOStatistics(in);
+  }
+
   /**
    * Read one line from the InputStream into the given Text.
    *

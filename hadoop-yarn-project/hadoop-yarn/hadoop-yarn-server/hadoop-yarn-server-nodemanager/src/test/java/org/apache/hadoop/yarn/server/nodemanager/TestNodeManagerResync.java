@@ -18,7 +18,9 @@
 
 package org.apache.hadoop.yarn.server.nodemanager;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import org.slf4j.Logger;
@@ -37,6 +39,7 @@ import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.Path;
@@ -45,6 +48,7 @@ import org.apache.hadoop.net.ServerSocketUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.util.Shell;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
@@ -64,7 +68,9 @@ import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.Token;
 import org.apache.hadoop.yarn.api.records.URL;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.event.Dispatcher;
+import org.apache.hadoop.yarn.event.DrainDispatcher;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
@@ -83,13 +89,14 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.ContainerManag
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.TestContainerManager;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.YarnServerBuilderUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestNodeManagerResync {
   static final File basedir =
@@ -107,6 +114,7 @@ public class TestNodeManagerResync {
   private FileContext localFS;
   private CyclicBarrier syncBarrier;
   private CyclicBarrier updateBarrier;
+  private AtomicInteger resyncThreadCount;
   private AtomicBoolean assertionFailedInThread = new AtomicBoolean(false);
   private AtomicBoolean isNMShutdownCalled = new AtomicBoolean(false);
   private final NodeManagerEvent resyncEvent =
@@ -116,7 +124,7 @@ public class TestNodeManagerResync {
   protected static final Logger LOG =
        LoggerFactory.getLogger(TestNodeManagerResync.class);
 
-  @Before
+  @BeforeEach
   public void setup() throws UnsupportedFileSystemException {
     localFS = FileContext.getLocalFSFileContext();
     tmpDir.mkdirs();
@@ -125,9 +133,10 @@ public class TestNodeManagerResync {
     nmLocalDir.mkdirs();
     syncBarrier = new CyclicBarrier(2);
     updateBarrier = new CyclicBarrier(2);
+    resyncThreadCount = new AtomicInteger(0);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException, InterruptedException {
     localFS.delete(new Path(basedir.getPath()), true);
     assertionFailedInThread.set(false);
@@ -150,7 +159,6 @@ public class TestNodeManagerResync {
     testContainerPreservationOnResyncImpl(nm, true);
   }
 
-  @SuppressWarnings("unchecked")
   protected void testContainerPreservationOnResyncImpl(TestNodeManager1 nm,
       boolean isWorkPreservingRestartEnabled)
       throws IOException, YarnException, InterruptedException {
@@ -167,80 +175,125 @@ public class TestNodeManagerResync {
           processStartFile, port);
 
       nm.setExistingContainerId(cId);
-      Assert.assertEquals(1, ((TestNodeManager1) nm).getNMRegistrationCount());
+      assertEquals(1, ((TestNodeManager1) nm).getNMRegistrationCount());
       nm.getNMDispatcher().getEventHandler().handle(resyncEvent);
       try {
         syncBarrier.await();
       } catch (BrokenBarrierException e) {
       }
-      Assert.assertEquals(2, ((TestNodeManager1) nm).getNMRegistrationCount());
+      assertEquals(2, ((TestNodeManager1) nm).getNMRegistrationCount());
       // Only containers should be killed on resync, apps should lie around.
       // That way local resources for apps can be used beyond resync without
       // relocalization
-      Assert.assertTrue(nm.getNMContext().getApplications()
+      assertTrue(nm.getNMContext().getApplications()
           .containsKey(cId.getApplicationAttemptId().getApplicationId()));
-      Assert.assertFalse(assertionFailedInThread.get());
+      assertFalse(assertionFailedInThread.get());
     }
     finally {
       nm.stop();
     }
   }
 
-  @SuppressWarnings("unchecked")
-  @Test(timeout=10000)
+  @SuppressWarnings("resource")
+  @Test
+  @Timeout(value = 30)
+  public void testNMMultipleResyncEvent()
+      throws IOException, InterruptedException {
+    TestNodeManager1 nm = new TestNodeManager1(false);
+    YarnConfiguration conf = createNMConfig();
+
+    int resyncEventCount = 4;
+    try {
+      nm.init(conf);
+      nm.start();
+      assertEquals(1, nm.getNMRegistrationCount());
+      for (int i = 0; i < resyncEventCount; i++) {
+        nm.getNMDispatcher().getEventHandler().handle(resyncEvent);
+      }
+
+      DrainDispatcher dispatcher = (DrainDispatcher) nm.getNMDispatcher();
+      dispatcher.await();
+      LOG.info("NM dispatcher drained");
+
+      // Wait for the resync thread to finish
+      try {
+        syncBarrier.await();
+      } catch (BrokenBarrierException e) {
+      }
+      LOG.info("Barrier wait done for the resync thread");
+
+      // Resync should only happen once
+      assertEquals(2, nm.getNMRegistrationCount());
+      assertFalse(isNMShutdownCalled.get(), "NM shutdown called.");
+    } finally {
+      nm.stop();
+    }
+  }
+
+  @SuppressWarnings("resource")
+  @Test
+  @Timeout(value = 10)
   public void testNMshutdownWhenResyncThrowException() throws IOException,
       InterruptedException, YarnException {
     NodeManager nm = new TestNodeManager3();
     YarnConfiguration conf = createNMConfig();
-    nm.init(conf);
-    nm.start();
-    Assert.assertEquals(1, ((TestNodeManager3) nm).getNMRegistrationCount());
-    nm.getNMDispatcher().getEventHandler()
-        .handle(new NodeManagerEvent(NodeManagerEventType.RESYNC));
+    try {
+      nm.init(conf);
+      nm.start();
+      assertEquals(1, ((TestNodeManager3) nm).getNMRegistrationCount());
+      nm.getNMDispatcher().getEventHandler()
+          .handle(new NodeManagerEvent(NodeManagerEventType.RESYNC));
 
-    synchronized (isNMShutdownCalled) {
-      while (isNMShutdownCalled.get() == false) {
-        try {
-          isNMShutdownCalled.wait();
-        } catch (InterruptedException e) {
+      synchronized (isNMShutdownCalled) {
+        while (!isNMShutdownCalled.get()) {
+          try {
+            isNMShutdownCalled.wait();
+          } catch (InterruptedException e) {
+          }
         }
       }
-    }
 
-    Assert.assertTrue("NM shutdown not called.",isNMShutdownCalled.get());
-    nm.stop();
+      assertTrue(isNMShutdownCalled.get(), "NM shutdown not called.");
+    } finally {
+      nm.stop();
+    }
   }
 
-  @SuppressWarnings("unchecked")
-  @Test(timeout=60000)
+  @SuppressWarnings("resource")
+  @Test
+  @Timeout(value = 60)
   public void testContainerResourceIncreaseIsSynchronizedWithRMResync()
       throws IOException, InterruptedException, YarnException {
     NodeManager nm = new TestNodeManager4();
     YarnConfiguration conf = createNMConfig();
     conf.setBoolean(
         YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_ENABLED, true);
-    nm.init(conf);
-    nm.start();
-    // Start a container and make sure it is in RUNNING state
-    ((TestNodeManager4)nm).startContainer();
-    // Simulate a container resource increase in a separate thread
-    ((TestNodeManager4)nm).updateContainerResource();
-    // Simulate RM restart by sending a RESYNC event
-    LOG.info("Sending out RESYNC event");
-    nm.getNMDispatcher().getEventHandler().handle(
-        new NodeManagerEvent(NodeManagerEventType.RESYNC));
     try {
-      syncBarrier.await();
-    } catch (BrokenBarrierException e) {
-      e.printStackTrace();
+      nm.init(conf);
+      nm.start();
+      // Start a container and make sure it is in RUNNING state
+      ((TestNodeManager4) nm).startContainer();
+      // Simulate a container resource increase in a separate thread
+      ((TestNodeManager4) nm).updateContainerResource();
+      // Simulate RM restart by sending a RESYNC event
+      LOG.info("Sending out RESYNC event");
+      nm.getNMDispatcher().getEventHandler()
+          .handle(new NodeManagerEvent(NodeManagerEventType.RESYNC));
+      try {
+        syncBarrier.await();
+      } catch (BrokenBarrierException e) {
+        e.printStackTrace();
+      }
+      assertFalse(assertionFailedInThread.get());
+    } finally {
+      nm.stop();
     }
-    Assert.assertFalse(assertionFailedInThread.get());
-    nm.stop();
   }
 
   // This is to test when NM gets the resync response from last heart beat, it
   // should be able to send the already-sent-via-last-heart-beat container
   // statuses again when it re-register with RM.
+  @SuppressWarnings("resource")
   @Test
   public void testNMSentContainerStatusOnResync() throws Exception {
     final ContainerStatus testCompleteContainer =
@@ -268,7 +321,7 @@ public class TestNodeManagerResync {
                 if (registerCount == 0) {
                   // first register, no containers info.
                   try {
-                    Assert.assertEquals(0, request.getNMContainerStatuses()
+                    assertEquals(0, request.getNMContainerStatuses()
                       .size());
                   } catch (AssertionError error) {
                     error.printStackTrace();
@@ -286,8 +339,8 @@ public class TestNodeManagerResync {
                   List<NMContainerStatus> statuses =
                       request.getNMContainerStatuses();
                   try {
-                    Assert.assertEquals(1, statuses.size());
-                    Assert.assertEquals(testCompleteContainer.getContainerId(),
+                    assertEquals(1, statuses.size());
+                    assertEquals(testCompleteContainer.getContainerId(),
                       statuses.get(0).getContainerId());
                   } catch (AssertionError error) {
                     error.printStackTrace();
@@ -305,8 +358,8 @@ public class TestNodeManagerResync {
                 List<ContainerStatus> statuses =
                     request.getNodeStatus().getContainersStatuses();
                 try {
-                  Assert.assertEquals(1, statuses.size());
-                  Assert.assertEquals(testCompleteContainer.getContainerId(),
+                  assertEquals(1, statuses.size());
+                  assertEquals(testCompleteContainer.getContainerId(),
                     statuses.get(0).getContainerId());
                 } catch (AssertionError error) {
                   error.printStackTrace();
@@ -323,15 +376,18 @@ public class TestNodeManagerResync {
       }
     };
     YarnConfiguration conf = createNMConfig();
-    nm.init(conf);
-    nm.start();
-
     try {
-      syncBarrier.await();
-    } catch (BrokenBarrierException e) {
+      nm.init(conf);
+      nm.start();
+
+      try {
+        syncBarrier.await();
+      } catch (BrokenBarrierException e) {
+      }
+      assertFalse(assertionFailedInThread.get());
+    } finally {
+      nm.stop();
     }
-    Assert.assertFalse(assertionFailedInThread.get());
-    nm.stop();
   }
 
   // This can be used as a common base class for testing NM resync behavior.
@@ -391,6 +447,11 @@ public class TestNodeManagerResync {
     }
 
     @Override
+    protected AsyncDispatcher createNMDispatcher() {
+      return new DrainDispatcher();
+    }
+
+    @Override
     protected NodeStatusUpdater createNodeStatusUpdater(Context context,
         Dispatcher dispatcher, NodeHealthCheckerService healthChecker) {
       return new TestNodeStatusUpdaterImpl1(context, dispatcher,
@@ -399,6 +460,14 @@ public class TestNodeManagerResync {
 
     public int getNMRegistrationCount() {
       return registrationCount;
+    }
+
+    @Override
+    protected void shutDown(int exitCode) {
+      synchronized (isNMShutdownCalled) {
+        isNMShutdownCalled.set(true);
+        isNMShutdownCalled.notify();
+      }
     }
 
     class TestNodeStatusUpdaterImpl1 extends MockNodeStatusUpdater {
@@ -419,11 +488,14 @@ public class TestNodeManagerResync {
         ConcurrentMap<ContainerId, org.apache.hadoop.yarn.server.nodemanager
         .containermanager.container.Container> containers =
             getNMContext().getContainers();
+        if (resyncThreadCount.incrementAndGet() > 1) {
+          throw new YarnRuntimeException("Multiple resync thread created!");
+        }
         try {
           try {
             if (containersShouldBePreserved) {
-              Assert.assertFalse(containers.isEmpty());
-              Assert.assertTrue(containers.containsKey(existingCid));
+              assertFalse(containers.isEmpty());
+              assertTrue(containers.containsKey(existingCid));
               ContainerState state = containers.get(existingCid)
                   .cloneAndGetContainerStatus().getState();
               // Wait till RUNNING state...
@@ -432,14 +504,14 @@ public class TestNodeManagerResync {
                 Thread.sleep(100);
                 counter--;
               }
-              Assert.assertEquals(ContainerState.RUNNING,
+              assertEquals(ContainerState.RUNNING,
                   containers.get(existingCid)
                   .cloneAndGetContainerStatus().getState());
             } else {
               // ensure that containers are empty or are completed before
               // restart nodeStatusUpdater
               if (!containers.isEmpty()) {
-                Assert.assertEquals(ContainerState.COMPLETE,
+                assertEquals(ContainerState.COMPLETE,
                     containers.get(existingCid)
                         .cloneAndGetContainerStatus().getState());
               }
@@ -526,7 +598,8 @@ public class TestNodeManagerResync {
         @Override
         protected void authorizeGetAndStopContainerRequest(
             ContainerId containerId, Container container,
-            boolean stopRequest, NMTokenIdentifier identifier)
+            boolean stopRequest, NMTokenIdentifier identifier,
+            String remoteUser)
             throws YarnException {
           // do nothing
         }
@@ -672,9 +745,9 @@ public class TestNodeManagerResync {
       }
     }
 
-    class ContainerUpdateResourceThread extends Thread {
+    class ContainerUpdateResourceThread extends SubjectInheritingThread {
       @Override
-      public void run() {
+      public void work() {
         // Construct container resource increase request
         List<Token> increaseTokens = new ArrayList<Token>();
         // Add increase request.
@@ -688,10 +761,9 @@ public class TestNodeManagerResync {
             ContainerUpdateResponse updateResponse =
                 getContainerManager()
                     .updateContainer(updateRequest);
-            Assert.assertEquals(
-                1, updateResponse.getSuccessfullyUpdatedContainers()
-                    .size());
-            Assert.assertTrue(updateResponse.getFailedRequests().isEmpty());
+            assertEquals(1,
+                updateResponse.getSuccessfullyUpdatedContainers().size());
+            assertTrue(updateResponse.getFailedRequests().isEmpty());
           } catch (Exception e) {
             e.printStackTrace();
           } finally {

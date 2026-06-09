@@ -21,7 +21,13 @@ import static org.apache.hadoop.hdfs.server.namenode.startupprogress.Phase.*;
 import static org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgressTestHelper.*;
 import static org.apache.hadoop.hdfs.server.namenode.startupprogress.Status.*;
 import static org.apache.hadoop.hdfs.server.namenode.startupprogress.StepType.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -33,19 +39,22 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress.Counter;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestStartupProgress {
 
   private StartupProgress startupProgress;
 
-  @Before
+  @BeforeEach
   public void setUp() {
     startupProgress = new StartupProgress();
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testCounter() {
     startupProgress.beginPhase(LOADING_FSIMAGE);
     Step loadingFsImageInodes = new Step(INODES);
@@ -69,10 +78,10 @@ public class TestStartupProgress {
     assertNotNull(view);
     assertEquals(100L, view.getCount(LOADING_FSIMAGE, loadingFsImageInodes));
     assertEquals(200L, view.getCount(LOADING_FSIMAGE,
-      loadingFsImageDelegationKeys));
+        loadingFsImageDelegationKeys));
     assertEquals(5000L, view.getCount(LOADING_EDITS, loadingEditsFile));
     assertEquals(0L, view.getCount(SAVING_CHECKPOINT,
-      new Step(INODES)));
+        new Step(INODES)));
 
     // Increment a counter again and check that the existing view was not
     // modified, but a new view shows the updated value.
@@ -86,7 +95,8 @@ public class TestStartupProgress {
     assertEquals(6000L, view.getCount(LOADING_EDITS, loadingEditsFile));
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testElapsedTime() throws Exception {
     startupProgress.beginPhase(LOADING_FSIMAGE);
     Step loadingFsImageInodes = new Step(INODES);
@@ -139,14 +149,15 @@ public class TestStartupProgress {
 
     assertTrue(totalTime < view.getElapsedTime());
     assertEquals(loadingFsImageTime, view.getElapsedTime(LOADING_FSIMAGE));
-    assertEquals(loadingFsImageInodesTime, view.getElapsedTime(LOADING_FSIMAGE,
-      loadingFsImageInodes));
+    assertEquals(loadingFsImageInodesTime,
+        view.getElapsedTime(LOADING_FSIMAGE, loadingFsImageInodes));
     assertTrue(loadingEditsTime < view.getElapsedTime(LOADING_EDITS));
     assertTrue(loadingEditsFileTime < view.getElapsedTime(LOADING_EDITS,
       loadingEditsFile));
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testFrozenAfterStartupCompletes() {
     // Do some updates and counter increments.
     startupProgress.beginPhase(LOADING_FSIMAGE);
@@ -158,6 +169,14 @@ public class TestStartupProgress {
     incrementCounter(startupProgress, LOADING_FSIMAGE, step, 100L);
     startupProgress.endStep(LOADING_FSIMAGE, step);
     startupProgress.endPhase(LOADING_FSIMAGE);
+
+    StartupProgressView beforePhaseUpdate = startupProgress.createView();
+
+    // LOADING_FSIMAGE phase has been completed, but attempt more updates to it
+    Step fsimageStep2 = new Step(INODES);
+    startupProgress.beginStep(LOADING_FSIMAGE, fsimageStep2);
+    incrementCounter(startupProgress, LOADING_FSIMAGE, fsimageStep2, 1000000L);
+    startupProgress.endStep(LOADING_FSIMAGE, fsimageStep2);
 
     // Force completion of phases, so that entire startup process is completed.
     for (Phase phase: EnumSet.allOf(Phase.class)) {
@@ -191,27 +210,41 @@ public class TestStartupProgress {
 
     // Expect that data was frozen after completion of entire startup process, so
     // second set of updates and counter increments should have had no effect.
-    assertEquals(before.getCount(LOADING_FSIMAGE),
-      after.getCount(LOADING_FSIMAGE));
-    assertEquals(before.getCount(LOADING_FSIMAGE, step),
-      after.getCount(LOADING_FSIMAGE, step));
+    assertViewEquals(before, after, LOADING_FSIMAGE, step, fsimageStep2);
     assertEquals(before.getElapsedTime(), after.getElapsedTime());
-    assertEquals(before.getElapsedTime(LOADING_FSIMAGE),
-      after.getElapsedTime(LOADING_FSIMAGE));
-    assertEquals(before.getElapsedTime(LOADING_FSIMAGE, step),
-      after.getElapsedTime(LOADING_FSIMAGE, step));
-    assertEquals(before.getFile(LOADING_FSIMAGE),
-      after.getFile(LOADING_FSIMAGE));
-    assertEquals(before.getSize(LOADING_FSIMAGE),
-      after.getSize(LOADING_FSIMAGE));
-    assertEquals(before.getTotal(LOADING_FSIMAGE),
-      after.getTotal(LOADING_FSIMAGE));
-    assertEquals(before.getTotal(LOADING_FSIMAGE, step),
-      after.getTotal(LOADING_FSIMAGE, step));
+
+    // After the phase was completed but before startup was completed,
+    // everything should be equal, except for the total elapsed time
+    assertViewEquals(beforePhaseUpdate, after, LOADING_FSIMAGE,
+        step, fsimageStep2);
+
     assertFalse(after.getSteps(LOADING_EDITS).iterator().hasNext());
   }
 
-  @Test(timeout=10000)
+  private void assertViewEquals(StartupProgressView view1,
+      StartupProgressView view2, Phase phaseToVerify, Step... stepsToVerify) {
+    assertEquals(view1.getCount(phaseToVerify),
+        view2.getCount(phaseToVerify));
+    assertEquals(view1.getElapsedTime(phaseToVerify),
+        view2.getElapsedTime(phaseToVerify));
+    assertEquals(view1.getFile(phaseToVerify),
+        view2.getFile(phaseToVerify));
+    assertEquals(view1.getSize(phaseToVerify),
+        view2.getSize(phaseToVerify));
+    assertEquals(view1.getTotal(phaseToVerify),
+        view2.getTotal(phaseToVerify));
+    for (Step step : stepsToVerify) {
+      assertEquals(view1.getCount(phaseToVerify, step),
+          view2.getCount(phaseToVerify, step));
+      assertEquals(view1.getElapsedTime(phaseToVerify, step),
+          view2.getElapsedTime(phaseToVerify, step));
+      assertEquals(view1.getTotal(phaseToVerify, step),
+          view2.getTotal(phaseToVerify, step));
+    }
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testInitialState() {
     StartupProgressView view = startupProgress.createView();
     assertNotNull(view);
@@ -237,7 +270,8 @@ public class TestStartupProgress {
     assertArrayEquals(EnumSet.allOf(Phase.class).toArray(), phases.toArray());
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testPercentComplete() {
     startupProgress.beginPhase(LOADING_FSIMAGE);
     Step loadingFsImageInodes = new Step(INODES);
@@ -263,15 +297,16 @@ public class TestStartupProgress {
     assertEquals(0.167f, view.getPercentComplete(), 0.001f);
     assertEquals(0.167f, view.getPercentComplete(LOADING_FSIMAGE), 0.001f);
     assertEquals(0.10f, view.getPercentComplete(LOADING_FSIMAGE,
-      loadingFsImageInodes), 0.001f);
+        loadingFsImageInodes), 0.001f);
     assertEquals(0.25f, view.getPercentComplete(LOADING_FSIMAGE,
-      loadingFsImageDelegationKeys), 0.001f);
+            loadingFsImageDelegationKeys),
+        0.001f);
     assertEquals(0.5f, view.getPercentComplete(LOADING_EDITS), 0.001f);
     assertEquals(0.5f, view.getPercentComplete(LOADING_EDITS, loadingEditsFile),
-      0.001f);
+        0.001f);
     assertEquals(0.0f, view.getPercentComplete(SAVING_CHECKPOINT), 0.001f);
     assertEquals(0.0f, view.getPercentComplete(SAVING_CHECKPOINT,
-      new Step(INODES)), 0.001f);
+        new Step(INODES)), 0.001f);
 
     // End steps/phases, and confirm that they jump to 100% completion.
     startupProgress.endStep(LOADING_FSIMAGE, loadingFsImageInodes);
@@ -285,18 +320,18 @@ public class TestStartupProgress {
     assertEquals(0.5f, view.getPercentComplete(), 0.001f);
     assertEquals(1.0f, view.getPercentComplete(LOADING_FSIMAGE), 0.001f);
     assertEquals(1.0f, view.getPercentComplete(LOADING_FSIMAGE,
-      loadingFsImageInodes), 0.001f);
-    assertEquals(1.0f, view.getPercentComplete(LOADING_FSIMAGE,
-      loadingFsImageDelegationKeys), 0.001f);
+        loadingFsImageInodes), 0.001f);
+    assertEquals(1.0f, view.getPercentComplete(LOADING_FSIMAGE, loadingFsImageDelegationKeys),
+        0.001f);
     assertEquals(1.0f, view.getPercentComplete(LOADING_EDITS), 0.001f);
     assertEquals(1.0f, view.getPercentComplete(LOADING_EDITS, loadingEditsFile),
-      0.001f);
+        0.001f);
     assertEquals(0.0f, view.getPercentComplete(SAVING_CHECKPOINT), 0.001f);
-    assertEquals(0.0f, view.getPercentComplete(SAVING_CHECKPOINT,
-      new Step(INODES)), 0.001f);
+    assertEquals(0.0f, view.getPercentComplete(SAVING_CHECKPOINT, new Step(INODES)), 0.001f);
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testStatus() {
     startupProgress.beginPhase(LOADING_FSIMAGE);
     startupProgress.endPhase(LOADING_FSIMAGE);
@@ -308,7 +343,8 @@ public class TestStartupProgress {
     assertEquals(PENDING, view.getStatus(SAVING_CHECKPOINT));
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testStepSequence() {
     // Test that steps are returned in the correct sort order (by file and then
     // sequence number) by starting a few steps in a randomly shuffled order and
@@ -340,7 +376,8 @@ public class TestStartupProgress {
     assertArrayEquals(expectedSteps, actualSteps.toArray());
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testThreadSafety() throws Exception {
     // Test for thread safety by starting multiple threads that mutate the same
     // StartupProgress instance in various ways.  We expect no internal
@@ -375,7 +412,6 @@ public class TestStartupProgress {
             startupProgress.setTotal(phase, step, total);
             incrementCounter(startupProgress, phase, step, 100L);
             startupProgress.endStep(phase, step);
-            startupProgress.endPhase(phase);
             return null;
           }
         });
@@ -383,6 +419,11 @@ public class TestStartupProgress {
     } finally {
       exec.shutdown();
       assertTrue(exec.awaitTermination(10000L, TimeUnit.MILLISECONDS));
+    }
+    // Once a phase ends, future modifications to the steps in that phase are
+    // ignored. Thus do not end the phases until after the other ops are done.
+    for (Phase phase : phases) {
+      startupProgress.endPhase(phase);
     }
 
     StartupProgressView view = startupProgress.createView();
@@ -392,20 +433,21 @@ public class TestStartupProgress {
     assertEquals(10000L, view.getTotal(LOADING_FSIMAGE, new Step(INODES)));
     assertEquals(2500L, view.getCount(LOADING_FSIMAGE, new Step(INODES)));
     assertEquals(20000L, view.getTotal(LOADING_FSIMAGE,
-      new Step(DELEGATION_KEYS)));
+        new Step(DELEGATION_KEYS)));
     assertEquals(2500L, view.getCount(LOADING_FSIMAGE,
-      new Step(DELEGATION_KEYS)));
+        new Step(DELEGATION_KEYS)));
 
     assertEquals("file2", view.getFile(LOADING_EDITS));
     assertEquals(2000L, view.getSize(LOADING_EDITS));
     assertEquals(30000L, view.getTotal(LOADING_EDITS, new Step(INODES)));
     assertEquals(2500L, view.getCount(LOADING_EDITS, new Step(INODES)));
     assertEquals(40000L, view.getTotal(LOADING_EDITS,
-      new Step(DELEGATION_KEYS)));
+        new Step(DELEGATION_KEYS)));
     assertEquals(2500L, view.getCount(LOADING_EDITS, new Step(DELEGATION_KEYS)));
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testTotal() {
     startupProgress.beginPhase(LOADING_FSIMAGE);
     Step loadingFsImageInodes = new Step(INODES);
@@ -430,7 +472,17 @@ public class TestStartupProgress {
     assertNotNull(view);
     assertEquals(1000L, view.getTotal(LOADING_FSIMAGE, loadingFsImageInodes));
     assertEquals(800L, view.getTotal(LOADING_FSIMAGE,
-      loadingFsImageDelegationKeys));
+        loadingFsImageDelegationKeys));
     assertEquals(10000L, view.getTotal(LOADING_EDITS, loadingEditsFile));
+
+    // Try adding another step to the completed phase
+    // Check the step is not added and the total is not updated
+    Step step2 = new Step("file_2", 7000L);
+    startupProgress.setTotal(LOADING_EDITS, step2, 2000L);
+    view = startupProgress.createView();
+    assertEquals(view.getTotal(LOADING_EDITS, step2), 0);
+    Counter counter = startupProgress.getCounter(Phase.LOADING_EDITS, step2);
+    counter.increment();
+    assertEquals(view.getCount(LOADING_EDITS, step2), 0);
   }
 }

@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs.qjournal.server;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -32,9 +32,9 @@ import javax.management.ObjectName;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.qjournal.MiniJournalCluster;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.eclipse.jetty.util.ajax.JSON;
 
 /**
@@ -44,11 +44,12 @@ public class TestJournalNodeMXBean {
   
   private static final String NAMESERVICE = "ns1";
   private static final int NUM_JN = 1;
+  private static final int NS_ID = 12345;
   
   private MiniJournalCluster jCluster;
   private JournalNode jn;
   
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     // start 1 journal node
     jCluster = new MiniJournalCluster.Builder(new Configuration()).format(true)
@@ -57,7 +58,7 @@ public class TestJournalNodeMXBean {
     jn = jCluster.getJournalNode(0);
   }
   
-  @After
+  @AfterEach
   public void cleanup() throws IOException {
     if (jCluster != null) {
       jCluster.shutdown();
@@ -80,9 +81,8 @@ public class TestJournalNodeMXBean {
     assertFalse(journalStatus.contains(NAMESERVICE));
 
     // format the journal ns1
-    final NamespaceInfo FAKE_NSINFO = new NamespaceInfo(12345, "mycluster",
-        "my-bp", 0L);
-    jn.getOrCreateJournal(NAMESERVICE).format(FAKE_NSINFO);
+    final NamespaceInfo fakeNsInfo = new NamespaceInfo(NS_ID, "mycluster", "my-bp", 0L);
+    jn.getOrCreateJournal(NAMESERVICE).format(fakeNsInfo, false);
 
     // check again after format
     // getJournalsStatus
@@ -96,7 +96,25 @@ public class TestJournalNodeMXBean {
     infoMap1.put("Formatted", "false");
     jMap.put(MiniJournalCluster.CLUSTER_WAITACTIVE_URI, infoMap1);
     assertEquals(JSON.toString(jMap), journalStatus);
-    
+
+    // check attributes
+    String hostAndPort = (String) mbs.getAttribute(mxbeanName, "HostAndPort");
+    assertEquals(jn.getHostAndPort(), hostAndPort);
+    assertTrue(hostAndPort.matches("localhost:\\d+"));
+    String[] clusterId = (String[]) mbs.getAttribute(mxbeanName, "ClusterIds");
+    assertEquals(jn.getClusterIds().size(), clusterId.length);
+    assertEquals("mycluster", clusterId[0]);
+    long startTime = (long) mbs.getAttribute(mxbeanName, "JNStartedTimeInMillis");
+    assertTrue(startTime > 0, "JournalNode start time should not be 0");
+    assertEquals(jn.getJNStartedTimeInMillis(), startTime);
+    String version = (String) mbs.getAttribute(mxbeanName, "Version");
+    assertEquals(jn.getVersion(), version);
+    String[] journalStorageInfos = (String[]) mbs.getAttribute(mxbeanName, "StorageInfos");
+    assertEquals(jn.getStorageInfos().size(), journalStorageInfos.length);
+    assertTrue(journalStorageInfos[1].contains("ClusterId=mycluster"));
+    assertTrue(journalStorageInfos[1].contains("CreationTime=0"));
+    assertTrue(journalStorageInfos[1].contains("NamespaceId=" + NS_ID));
+
     // restart journal node without formatting
     jCluster = new MiniJournalCluster.Builder(new Configuration()).format(false)
         .numJournalNodes(NUM_JN).build();

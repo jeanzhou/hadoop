@@ -18,14 +18,14 @@
 package org.apache.hadoop.fs;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.commons.codec.DecoderException;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.codec.binary.Hex;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * The value of <code>XAttr</code> is byte[], this class is to 
@@ -68,7 +68,7 @@ public enum XAttrCodec {
    * the given string is treated as text. 
    * @param value string representation of the value.
    * @return byte[] the value
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public static byte[] decodeValue(String value) throws IOException {
     byte[] result = null;
@@ -77,7 +77,7 @@ public enum XAttrCodec {
         String en = value.substring(0, 2);
         if (value.startsWith("\"") && value.endsWith("\"")) {
           value = value.substring(1, value.length()-1);
-          result = value.getBytes("utf-8");
+          result = value.getBytes(StandardCharsets.UTF_8);
         } else if (en.equalsIgnoreCase(HEX_PREFIX)) {
           value = value.substring(2, value.length());
           try {
@@ -91,7 +91,7 @@ public enum XAttrCodec {
         }
       }
       if (result == null) {
-        result = value.getBytes("utf-8");
+        result = value.getBytes(StandardCharsets.UTF_8);
       }
     }
     return result;
@@ -103,9 +103,9 @@ public enum XAttrCodec {
    * while strings encoded as hexadecimal and base64 are prefixed with 
    * 0x and 0s, respectively.
    * @param value byte[] value
-   * @param encoding
+   * @param encoding encoding.
    * @return String string representation of value
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public static String encodeValue(byte[] value, XAttrCodec encoding) 
       throws IOException {
@@ -115,7 +115,7 @@ public enum XAttrCodec {
     } else if (encoding == BASE64) {
       return BASE64_PREFIX + base64.encodeToString(value);
     } else {
-      return "\"" + new String(value, "utf-8") + "\"";
+      return "\"" + new String(value, StandardCharsets.UTF_8) + "\"";
     }
   }
 }

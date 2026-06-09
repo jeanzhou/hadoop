@@ -20,11 +20,13 @@ package org.apache.hadoop.hdfs.server.datanode.extdataset;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
 import org.apache.hadoop.hdfs.server.datanode.ChunkChecksum;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaInPipeline;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.ReplicaOutputStreams;
 import org.apache.hadoop.util.DataChecksum;
 
@@ -41,6 +43,10 @@ public class ExternalReplicaInPipeline implements ReplicaInPipeline {
 
   @Override
   public void setBytesAcked(long bytesAcked) {
+  }
+
+  @Override
+  public void releaseReplicaInfoBytesReserved() {
   }
 
   @Override
@@ -128,5 +134,15 @@ public class ExternalReplicaInPipeline implements ReplicaInPipeline {
 
   @Override
   public void interruptThread() {
+  }
+
+  @Override
+  public void waitForMinLength(long minLength, long time, TimeUnit unit)
+      throws IOException {
+  }
+
+  @Override
+  public FsVolumeSpi getVolume() {
+    return null;
   }
 }

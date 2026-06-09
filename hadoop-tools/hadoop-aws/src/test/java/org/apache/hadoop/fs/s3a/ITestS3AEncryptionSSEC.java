@@ -20,8 +20,15 @@ package org.apache.hadoop.fs.s3a;
 
 import java.io.IOException;
 import java.nio.file.AccessDeniedException;
+import java.util.Arrays;
+import java.util.Collection;
 
-import org.junit.Test;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -31,17 +38,34 @@ import org.apache.hadoop.fs.contract.s3a.S3AContract;
 import org.apache.hadoop.io.IOUtils;
 
 import static org.apache.hadoop.fs.contract.ContractTestUtils.dataset;
-import static org.apache.hadoop.fs.s3a.S3ATestUtils.*;
+import static org.apache.hadoop.fs.contract.ContractTestUtils.touch;
+import static org.apache.hadoop.fs.s3a.Constants.ETAG_CHECKSUM_ENABLED;
+import static org.apache.hadoop.fs.s3a.Constants.S3_ENCRYPTION_ALGORITHM;
+import static org.apache.hadoop.fs.s3a.Constants.S3_ENCRYPTION_KEY;
+import static org.apache.hadoop.fs.s3a.Constants.SERVER_SIDE_ENCRYPTION_ALGORITHM;
+import static org.apache.hadoop.fs.s3a.Constants.SERVER_SIDE_ENCRYPTION_KEY;
+
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.assumeStoreAwsHosted;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.enableAnalyticsAccelerator;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.getTestBucketName;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.maybeSkipRootTests;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.removeBaseAndBucketOverrides;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 
 /**
  * Concrete class that extends {@link AbstractTestS3AEncryption}
  * and tests SSE-C encryption.
+ * HEAD requests against SSE-C-encrypted data will fail if the wrong key
+ * is presented -this used to cause problems with S3Guard.
+ * Equally "vexing" has been the optimizations of getFileStatus(), wherein
+ * LIST comes before HEAD path + /
  */
+@ParameterizedClass(name="analytics-accelerator-enabled-{0}")
+@MethodSource("params")
 public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
 
   private static final String SERVICE_AMAZON_S3_STATUS_CODE_403
-      = "Service: Amazon S3; Status Code: 403;";
+      = "Service: S3, Status Code: 403";
   private static final String KEY_1
       = "4niV/jPK5VFRHY+KNb6wtqYd4xXyMgdJ9XQJpcQUVbs=";
   private static final String KEY_2
@@ -55,18 +79,58 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
   /**
    * Filesystem created with a different key.
    */
-  private FileSystem fsKeyB;
+  private S3AFileSystem fsKeyB;
 
+  private final boolean analyticsAcceleratorEnabled;
+
+  public static Collection<Object[]> params() {
+    return Arrays.asList(new Object[][]{
+            {true},
+            {false}
+    });
+  }
+
+  public ITestS3AEncryptionSSEC (final boolean analyticsAcceleratorEnabled) {
+    this.analyticsAcceleratorEnabled = analyticsAcceleratorEnabled;
+  }
+
+
+  @SuppressWarnings("deprecation")
   @Override
   protected Configuration createConfiguration() {
     Configuration conf = super.createConfiguration();
-    disableFilesystemCaching(conf);
-    conf.set(Constants.SERVER_SIDE_ENCRYPTION_ALGORITHM,
+    String bucketName = getTestBucketName(conf);
+    // directory marker options
+    removeBaseAndBucketOverrides(bucketName, conf,
+        ETAG_CHECKSUM_ENABLED,
+        S3_ENCRYPTION_ALGORITHM,
+        S3_ENCRYPTION_KEY,
+        SERVER_SIDE_ENCRYPTION_ALGORITHM,
+        SERVER_SIDE_ENCRYPTION_KEY);
+    conf.set(S3_ENCRYPTION_ALGORITHM,
         getSSEAlgorithm().getMethod());
-    conf.set(Constants.SERVER_SIDE_ENCRYPTION_KEY, KEY_1);
+    conf.set(S3_ENCRYPTION_KEY, KEY_1);
+    conf.setBoolean(ETAG_CHECKSUM_ENABLED, true);
+
+    if (analyticsAcceleratorEnabled) {
+      enableAnalyticsAccelerator(conf);
+    }
+
     return conf;
   }
 
+  @BeforeEach
+  @Override
+  public void setup() throws Exception {
+    super.setup();
+    assumeEnabled();
+    // although not a root dir test, this confuses paths enough it shouldn't be run in
+    // parallel with other jobs
+    maybeSkipRootTests(getConfiguration());
+    assumeStoreAwsHosted(getFileSystem());
+  }
+
+  @AfterEach
   @Override
   public void teardown() throws Exception {
     super.teardown();
@@ -85,15 +149,12 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
   @Test
   public void testCreateFileAndReadWithDifferentEncryptionKey() throws
       Exception {
-    assumeEnabled();
-    skipIfEncryptionTestsDisabled(getConfiguration());
-
     intercept(AccessDeniedException.class,
         SERVICE_AMAZON_S3_STATUS_CODE_403,
         () -> {
           int len = TEST_FILE_LEN;
           describe("Create an encrypted file of size " + len);
-          Path src = path("testCreateFileAndReadWithDifferentEncryptionKey");
+          Path src = methodPath();
           writeThenReadFile(src, len);
 
           //extract the test FS
@@ -106,33 +167,19 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
   }
 
   /**
-   * While each object has its own key and should be distinct, this verifies
-   * that hadoop treats object keys as a filesystem path.  So if a top level
-   * dir is encrypted with keyA, a sublevel dir cannot be accessed with a
-   * different keyB.
    *
-   * This is expected AWS S3 SSE-C behavior.
-   *
+   * You can use a different key under a sub directory, even if you
+   * do not have permissions to read the marker.
    * @throws Exception
    */
   @Test
   public void testCreateSubdirWithDifferentKey() throws Exception {
-    assumeEnabled();
-    skipIfEncryptionTestsDisabled(getConfiguration());
-    assumeS3GuardState(false, getConfiguration());
-
-    intercept(AccessDeniedException.class,
-        SERVICE_AMAZON_S3_STATUS_CODE_403,
-        () -> {
-          Path base = path("testCreateSubdirWithDifferentKey");
-          Path nestedDirectory = new Path(base, "nestedDir");
-          fsKeyB = createNewFileSystemWithSSECKey(
-              KEY_2);
-          getFileSystem().mkdirs(base);
-          fsKeyB.mkdirs(nestedDirectory);
-          // expected to fail
-          return fsKeyB.getFileStatus(nestedDirectory);
-        });
+    Path base = methodPath();
+    Path nestedDirectory = new Path(base, "nestedDir");
+    fsKeyB = createNewFileSystemWithSSECKey(
+        KEY_2);
+    getFileSystem().mkdirs(base);
+    fsKeyB.mkdirs(nestedDirectory);
   }
 
   /**
@@ -145,9 +192,6 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
    */
   @Test
   public void testCreateFileThenMoveWithDifferentSSECKey() throws Exception {
-    assumeEnabled();
-    skipIfEncryptionTestsDisabled(getConfiguration());
-
     intercept(AccessDeniedException.class,
         SERVICE_AMAZON_S3_STATUS_CODE_403,
         () -> {
@@ -169,51 +213,38 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
    */
   @Test
   public void testRenameFile() throws Exception {
-    assumeEnabled();
-    skipIfEncryptionTestsDisabled(getConfiguration());
-
-    Path src = path("original-path.txt");
+    final Path base = methodPath();
+    Path src = new Path(base, "original-path.txt");
     writeThenReadFile(src, TEST_FILE_LEN);
-    Path newPath = path("different-path.txt");
+    Path newPath = new Path(base, "different-path.txt");
     getFileSystem().rename(src, newPath);
     byte[] data = dataset(TEST_FILE_LEN, 'a', 'z');
     ContractTestUtils.verifyFileContents(getFileSystem(), newPath, data);
   }
 
   /**
-   * It is possible to list the contents of a directory up to the actual
-   * end of the nested directories.  This is due to how S3A mocks the
-   * directories and how prefixes work in S3.
+   * Directory listings always work.
    * @throws Exception
    */
   @Test
   public void testListEncryptedDir() throws Exception {
-    assumeEnabled();
-    skipIfEncryptionTestsDisabled(getConfiguration());
-    assumeS3GuardState(false, getConfiguration());
 
-    Path pathABC = path("testListEncryptedDir/a/b/c/");
+    Path pathABC = new Path(methodPath(), "a/b/c/");
     Path pathAB = pathABC.getParent();
     Path pathA = pathAB.getParent();
 
-    Path nestedDirectory = createTestPath(pathABC);
+    Path nestedDirectory = pathABC;
     assertTrue(getFileSystem().mkdirs(nestedDirectory));
 
     fsKeyB = createNewFileSystemWithSSECKey(KEY_4);
 
     fsKeyB.listFiles(pathA, true);
     fsKeyB.listFiles(pathAB, true);
-
-    //Until this point, no exception is thrown about access
-    intercept(AccessDeniedException.class,
-        SERVICE_AMAZON_S3_STATUS_CODE_403,
-        () -> {
-          fsKeyB.listFiles(pathABC, false);
-        });
+    fsKeyB.listFiles(pathABC, false);
 
     Configuration conf = this.createConfiguration();
-    conf.unset(Constants.SERVER_SIDE_ENCRYPTION_ALGORITHM);
-    conf.unset(Constants.SERVER_SIDE_ENCRYPTION_KEY);
+    conf.unset(S3_ENCRYPTION_ALGORITHM);
+    conf.unset(S3_ENCRYPTION_KEY);
 
     S3AContract contract = (S3AContract) createContract(conf);
     contract.init();
@@ -222,24 +253,16 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
     //unencrypted can access until the final directory
     unencryptedFileSystem.listFiles(pathA, true);
     unencryptedFileSystem.listFiles(pathAB, true);
-    AWSBadRequestException ex = intercept(AWSBadRequestException.class,
-        () -> {
-          unencryptedFileSystem.listFiles(pathABC, false);
-        });
+    unencryptedFileSystem.listFiles(pathABC, false);
   }
 
   /**
-   * Much like the above list encrypted directory test, you cannot get the
-   * metadata of an object without the correct encryption key.
-   * @throws Exception
+   * listStatus also works with encrypted directories and key mismatch.
    */
   @Test
   public void testListStatusEncryptedDir() throws Exception {
-    assumeEnabled();
-    skipIfEncryptionTestsDisabled(getConfiguration());
-    assumeS3GuardState(false, getConfiguration());
 
-    Path pathABC = path("testListStatusEncryptedDir/a/b/c/");
+    Path pathABC = new Path(methodPath(), "a/b/c/");
     Path pathAB = pathABC.getParent();
     Path pathA = pathAB.getParent();
     assertTrue(getFileSystem().mkdirs(pathABC));
@@ -249,17 +272,14 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
     fsKeyB.listStatus(pathA);
     fsKeyB.listStatus(pathAB);
 
-    //Until this point, no exception is thrown about access
-    intercept(AccessDeniedException.class,
-        SERVICE_AMAZON_S3_STATUS_CODE_403,
-        () -> {
-          fsKeyB.listStatus(pathABC);
-        });
+    // this used to raise 403, but with LIST before HEAD,
+    // no longer true.
+    fsKeyB.listStatus(pathABC);
 
     //Now try it with an unencrypted filesystem.
     Configuration conf = createConfiguration();
-    conf.unset(Constants.SERVER_SIDE_ENCRYPTION_ALGORITHM);
-    conf.unset(Constants.SERVER_SIDE_ENCRYPTION_KEY);
+    conf.unset(S3_ENCRYPTION_ALGORITHM);
+    conf.unset(S3_ENCRYPTION_KEY);
 
     S3AContract contract = (S3AContract) createContract(conf);
     contract.init();
@@ -268,25 +288,17 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
     //unencrypted can access until the final directory
     unencryptedFileSystem.listStatus(pathA);
     unencryptedFileSystem.listStatus(pathAB);
-
-    intercept(AWSBadRequestException.class,
-        () -> {
-          unencryptedFileSystem.listStatus(pathABC);
-        });
+    unencryptedFileSystem.listStatus(pathABC);
   }
 
   /**
-   * Much like trying to access a encrypted directory, an encrypted file cannot
-   * have its metadata read, since both are technically an object.
+   * An encrypted file cannot have its metadata read.
    * @throws Exception
    */
   @Test
   public void testListStatusEncryptedFile() throws Exception {
-    assumeEnabled();
-    skipIfEncryptionTestsDisabled(getConfiguration());
-    assumeS3GuardState(false, getConfiguration());
-    Path pathABC = path("testListStatusEncryptedFile/a/b/c/");
-    assertTrue(getFileSystem().mkdirs(pathABC));
+    Path pathABC = new Path(methodPath(), "a/b/c/");
+    assertTrue(getFileSystem().mkdirs(pathABC), "mkdirs failed");
 
     Path fileToStat = new Path(pathABC, "fileToStat.txt");
     writeThenReadFile(fileToStat, TEST_FILE_LEN);
@@ -296,11 +308,8 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
     //Until this point, no exception is thrown about access
     intercept(AccessDeniedException.class,
         SERVICE_AMAZON_S3_STATUS_CODE_403,
-        () -> {
-          fsKeyB.listStatus(fileToStat);
-        });
+        () -> fsKeyB.listStatus(fileToStat));
   }
-
 
   /**
    * It is possible to delete directories without the proper encryption key and
@@ -310,11 +319,8 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
    */
   @Test
   public void testDeleteEncryptedObjectWithDifferentKey() throws Exception {
-    assumeEnabled();
-    skipIfEncryptionTestsDisabled(getConfiguration());
-    assumeS3GuardState(false, getConfiguration());
-    Path pathABC = path("testDeleteEncryptedObjectWithDifferentKey/a/b/c/");
 
+    Path pathABC = new Path(methodPath(), "a/b/c/");
     Path pathAB = pathABC.getParent();
     Path pathA = pathAB.getParent();
     assertTrue(getFileSystem().mkdirs(pathABC));
@@ -323,10 +329,7 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
     fsKeyB = createNewFileSystemWithSSECKey(KEY_4);
     intercept(AccessDeniedException.class,
         SERVICE_AMAZON_S3_STATUS_CODE_403,
-        () -> {
-          fsKeyB.delete(fileToDelete, false);
-        });
-
+        () -> fsKeyB.delete(fileToDelete, false));
     //This is possible
     fsKeyB.delete(pathABC, true);
     fsKeyB.delete(pathAB, true);
@@ -334,15 +337,31 @@ public class ITestS3AEncryptionSSEC extends AbstractTestS3AEncryption {
     assertPathDoesNotExist("expected recursive delete", fileToDelete);
   }
 
-  private FileSystem createNewFileSystemWithSSECKey(String sseCKey) throws
+  /**
+   * getFileChecksum always goes to S3.
+   */
+  @Test
+  public void testChecksumRequiresReadAccess() throws Throwable {
+    Path path = methodPath();
+    S3AFileSystem fs = getFileSystem();
+    touch(fs, path);
+    Assertions.assertThat(fs.getFileChecksum(path))
+        .isNotNull();
+    fsKeyB = createNewFileSystemWithSSECKey(KEY_4);
+    intercept(AccessDeniedException.class,
+        SERVICE_AMAZON_S3_STATUS_CODE_403,
+        () -> fsKeyB.getFileChecksum(path));
+  }
+
+  private S3AFileSystem createNewFileSystemWithSSECKey(String sseCKey) throws
       IOException {
     Configuration conf = this.createConfiguration();
-    conf.set(Constants.SERVER_SIDE_ENCRYPTION_KEY, sseCKey);
+    conf.set(S3_ENCRYPTION_KEY, sseCKey);
 
     S3AContract contract = (S3AContract) createContract(conf);
     contract.init();
     FileSystem fileSystem = contract.getTestFileSystem();
-    return fileSystem;
+    return (S3AFileSystem) fileSystem;
   }
 
   @Override

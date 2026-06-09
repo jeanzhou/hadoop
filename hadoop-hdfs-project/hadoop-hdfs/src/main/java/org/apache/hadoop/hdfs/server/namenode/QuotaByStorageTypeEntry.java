@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.base.Objects;
+import org.apache.hadoop.thirdparty.com.google.common.base.Objects;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.util.StringUtils;
 
@@ -54,9 +54,9 @@ public class QuotaByStorageTypeEntry {
    public String toString() {
      StringBuilder sb = new StringBuilder();
      assert (type != null);
-     sb.append(StringUtils.toLowerCase(type.toString()));
-     sb.append(':');
-     sb.append(quota);
+    sb.append(StringUtils.toLowerCase(type.toString()))
+        .append(':')
+        .append(quota);
      return sb.toString();
    }
 

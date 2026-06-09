@@ -18,12 +18,14 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
@@ -36,11 +38,13 @@ import java.util.Map;
 
 import javax.crypto.SecretKey;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.CallerContext;
+import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -83,16 +87,18 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptS
 import org.apache.hadoop.yarn.server.resourcemanager.security.AMRMTokenSecretManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.security.MasterKeyData;
-import org.apache.hadoop.yarn.util.ConverterUtils;
+import org.apache.hadoop.yarn.server.webproxy.ProxyCA;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
-import org.junit.Assert;
 
 public class RMStateStoreTestBase {
 
-  public static final Log LOG = LogFactory.getLog(RMStateStoreTestBase.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(RMStateStoreTestBase.class);
 
   protected final long epoch = 10L;
+
+  private final long epochRange = 10L;
 
   static class TestDispatcher implements Dispatcher, EventHandler<Event> {
 
@@ -139,6 +145,10 @@ public class RMStateStoreTestBase {
     Version getCurrentVersion() throws Exception;
     boolean appExists(RMApp app) throws Exception;
     boolean attemptExists(RMAppAttempt attempt) throws Exception;
+  }
+
+  public long getEpochRange() {
+    return epochRange;
   }
 
   void waitNotify(TestDispatcher dispatcher) {
@@ -358,7 +368,7 @@ public class RMStateStoreTestBase {
         ApplicationStateData.newInstance(appState.getSubmitTime(),
             appState.getStartTime(), appState.getUser(),
             appState.getApplicationSubmissionContext(), RMAppState.FINISHED,
-            "appDiagnostics", 1234, appState.getCallerContext());
+            "appDiagnostics", 123, 1234, appState.getCallerContext());
     appState2.attempts.putAll(appState.attempts);
     store.updateApplicationState(appState2);
 
@@ -371,7 +381,8 @@ public class RMStateStoreTestBase {
             oldAttemptState.getStartTime(), RMAppAttemptState.FINISHED,
             "myTrackingUrl", "attemptDiagnostics",
             FinalApplicationStatus.SUCCEEDED, 100,
-            oldAttemptState.getFinishTime(), new HashMap<>(), new HashMap<>());
+            oldAttemptState.getFinishTime(), new HashMap<>(), new HashMap<>(),
+            0);
     store.updateApplicationAttemptState(newAttemptState);
 
     // test updating the state of an app/attempt whose initial state was not
@@ -384,7 +395,7 @@ public class RMStateStoreTestBase {
     ApplicationStateData dummyApp =
         ApplicationStateData.newInstance(appState.getSubmitTime(),
             appState.getStartTime(), appState.getUser(), dummyContext,
-            RMAppState.FINISHED, "appDiagnostics", 1234, null);
+            RMAppState.FINISHED, "appDiagnostics", 123, 1234, null);
     store.updateApplicationState(dummyApp);
 
     ApplicationAttemptId dummyAttemptId =
@@ -396,7 +407,8 @@ public class RMStateStoreTestBase {
             oldAttemptState.getStartTime(), RMAppAttemptState.FINISHED,
             "myTrackingUrl", "attemptDiagnostics",
             FinalApplicationStatus.SUCCEEDED, 111,
-            oldAttemptState.getFinishTime(), new HashMap<>(), new HashMap<>());
+            oldAttemptState.getFinishTime(), new HashMap<>(), new HashMap<>(),
+            0);
     store.updateApplicationAttemptState(dummyAttempt);
 
     // let things settle down
@@ -475,13 +487,13 @@ public class RMStateStoreTestBase {
 
     RMDTSecretManagerState secretManagerState =
         store.loadState().getRMDTSecretManagerState();
-    Assert.assertEquals(token1, secretManagerState.getTokenState());
-    Assert.assertEquals(keySet, secretManagerState.getMasterKeyState());
-    Assert.assertEquals(sequenceNumber,
+    assertEquals(token1, secretManagerState.getTokenState());
+    assertEquals(keySet, secretManagerState.getMasterKeyState());
+    assertEquals(sequenceNumber,
         secretManagerState.getDTSequenceNumber());
     RMDelegationTokenIdentifier tokenAfterStore =
         secretManagerState.getTokenState().keySet().iterator().next();
-    Assert.assertTrue(Arrays.equals(tokenBeforeStore,
+    assertTrue(Arrays.equals(tokenBeforeStore,
       tokenAfterStore.getBytes()));
 
     // update RM delegation token;
@@ -491,9 +503,9 @@ public class RMStateStoreTestBase {
 
     RMDTSecretManagerState updateSecretManagerState =
         store.loadState().getRMDTSecretManagerState();
-    Assert.assertEquals(token1, updateSecretManagerState.getTokenState());
-    Assert.assertEquals(keySet, updateSecretManagerState.getMasterKeyState());
-    Assert.assertEquals(sequenceNumber,
+    assertEquals(token1, updateSecretManagerState.getTokenState());
+    assertEquals(keySet, updateSecretManagerState.getMasterKeyState());
+    assertEquals(sequenceNumber,
         updateSecretManagerState.getDTSequenceNumber());
 
     // check to delete delegationKey
@@ -501,9 +513,9 @@ public class RMStateStoreTestBase {
     keySet.clear();
     RMDTSecretManagerState noKeySecretManagerState =
         store.loadState().getRMDTSecretManagerState();
-    Assert.assertEquals(token1, noKeySecretManagerState.getTokenState());
-    Assert.assertEquals(keySet, noKeySecretManagerState.getMasterKeyState());
-    Assert.assertEquals(sequenceNumber,
+    assertEquals(token1, noKeySecretManagerState.getTokenState());
+    assertEquals(keySet, noKeySecretManagerState.getMasterKeyState());
+    assertEquals(sequenceNumber,
         noKeySecretManagerState.getDTSequenceNumber());
 
     // check to delete delegationToken
@@ -511,11 +523,11 @@ public class RMStateStoreTestBase {
     RMDTSecretManagerState noKeyAndTokenSecretManagerState =
         store.loadState().getRMDTSecretManagerState();
     token1.clear();
-    Assert.assertEquals(token1,
+    assertEquals(token1,
         noKeyAndTokenSecretManagerState.getTokenState());
-    Assert.assertEquals(keySet,
+    assertEquals(keySet,
         noKeyAndTokenSecretManagerState.getMasterKeyState());
-    Assert.assertEquals(sequenceNumber,
+    assertEquals(sequenceNumber,
         noKeySecretManagerState.getDTSequenceNumber());
     store.close();
 
@@ -538,17 +550,17 @@ public class RMStateStoreTestBase {
     // default version
     Version defaultVersion = stateStoreHelper.getCurrentVersion();
     store.checkVersion();
-    Assert.assertEquals(defaultVersion, store.loadVersion());
+    assertEquals(defaultVersion, store.loadVersion());
 
     // compatible version
     Version compatibleVersion =
         Version.newInstance(defaultVersion.getMajorVersion(),
           defaultVersion.getMinorVersion() + 2);
     stateStoreHelper.writeVersion(compatibleVersion);
-    Assert.assertEquals(compatibleVersion, store.loadVersion());
+    assertEquals(compatibleVersion, store.loadVersion());
     store.checkVersion();
     // overwrite the compatible version
-    Assert.assertEquals(defaultVersion, store.loadVersion());
+    assertEquals(defaultVersion, store.loadVersion());
 
     // incompatible version
     Version incompatibleVersion =
@@ -557,9 +569,9 @@ public class RMStateStoreTestBase {
     stateStoreHelper.writeVersion(incompatibleVersion);
     try {
       store.checkVersion();
-      Assert.fail("Invalid version, should fail.");
+      fail("Invalid version, should fail.");
     } catch (Throwable t) {
-      Assert.assertTrue(t instanceof RMStateVersionIncompatibleException);
+      assertTrue(t instanceof RMStateVersionIncompatibleException);
     }
   }
   
@@ -569,13 +581,21 @@ public class RMStateStoreTestBase {
     store.setRMDispatcher(new TestDispatcher());
     
     long firstTimeEpoch = store.getAndIncrementEpoch();
-    Assert.assertEquals(epoch, firstTimeEpoch);
+    assertEquals(epoch, firstTimeEpoch);
     
     long secondTimeEpoch = store.getAndIncrementEpoch();
-    Assert.assertEquals(epoch + 1, secondTimeEpoch);
+    assertEquals(epoch + 1, secondTimeEpoch);
     
     long thirdTimeEpoch = store.getAndIncrementEpoch();
-    Assert.assertEquals(epoch + 2, thirdTimeEpoch);
+    assertEquals(epoch + 2, thirdTimeEpoch);
+
+    for (int i = 0; i < epochRange; ++i) {
+      store.getAndIncrementEpoch();
+    }
+    long wrappedEpoch = store.getAndIncrementEpoch();
+    // Epoch should have wrapped around and then incremented once for a total
+    // of + 3
+    assertEquals(epoch + 3, wrappedEpoch);
   }
 
   public void testAppDeletion(RMStateStoreHelper stateStoreHelper)
@@ -608,7 +628,7 @@ public class RMStateStoreTestBase {
       appList.add(app);
     }
 
-    Assert.assertEquals(numApps, appList.size());
+    assertEquals(numApps, appList.size());
     for (RMApp app : appList) {
       // wait for app to be stored.
       while (true) {
@@ -629,7 +649,7 @@ public class RMStateStoreTestBase {
     store.deleteStore();
     // verify apps deleted
     for (RMApp app : appList) {
-      Assert.assertFalse(stateStoreHelper.appExists(app));
+      assertFalse(stateStoreHelper.appExists(app));
     }
   }
 
@@ -642,10 +662,10 @@ public class RMStateStoreTestBase {
 
     RMApp rmApp1 = appList.get(0);
     store.removeApplication(rmApp1.getApplicationId());
-    Assert.assertFalse(stateStoreHelper.appExists(rmApp1));
+    assertFalse(stateStoreHelper.appExists(rmApp1));
 
     RMApp rmApp2 = appList.get(1);
-    Assert.assertTrue(stateStoreHelper.appExists(rmApp2));
+    assertTrue(stateStoreHelper.appExists(rmApp2));
   }
 
   public void testRemoveAttempt(RMStateStoreHelper stateStoreHelper)
@@ -668,8 +688,8 @@ public class RMStateStoreTestBase {
         ContainerId.newContainerId(attemptId2, 1).toString(),
         null, null, dispatcher);
     store.removeApplicationAttemptInternal(attemptId1);
-    Assert.assertFalse(stateStoreHelper.attemptExists(attempt1));
-    Assert.assertTrue(stateStoreHelper.attemptExists(attempt2));
+    assertFalse(stateStoreHelper.attemptExists(attempt1));
+    assertTrue(stateStoreHelper.attemptExists(attempt2));
 
     // let things settle down
     Thread.sleep(1000);
@@ -725,10 +745,10 @@ public class RMStateStoreTestBase {
     when(rmContext.getStateStore()).thenReturn(store);
     store.setRMDispatcher(dispatcher);
     RMState state = store.loadState();
-    Assert.assertNotNull(state.getAMRMTokenSecretManagerState());
-    Assert.assertEquals(firstMasterKeyData.getMasterKey(), state
+    assertNotNull(state.getAMRMTokenSecretManagerState());
+    assertEquals(firstMasterKeyData.getMasterKey(), state
       .getAMRMTokenSecretManagerState().getCurrentMasterKey());
-    Assert.assertNull(state
+    assertNull(state
       .getAMRMTokenSecretManagerState().getNextMasterKey());
 
     //create and save the second masterkey
@@ -745,21 +765,42 @@ public class RMStateStoreTestBase {
     when(rmContext.getStateStore()).thenReturn(store);
     store.setRMDispatcher(dispatcher);
     RMState state_2 = store.loadState();
-    Assert.assertNotNull(state_2.getAMRMTokenSecretManagerState());
-    Assert.assertEquals(firstMasterKeyData.getMasterKey(), state_2
+    assertNotNull(state_2.getAMRMTokenSecretManagerState());
+    assertEquals(firstMasterKeyData.getMasterKey(), state_2
       .getAMRMTokenSecretManagerState().getCurrentMasterKey());
-    Assert.assertEquals(secondMasterKeyData.getMasterKey(), state_2
+    assertEquals(secondMasterKeyData.getMasterKey(), state_2
       .getAMRMTokenSecretManagerState().getNextMasterKey());
 
     // re-create the masterKeyData based on the recovered masterkey
     // should have the same secretKey
     appTokenMgr.recover(state_2);
-    Assert.assertEquals(appTokenMgr.getCurrnetMasterKeyData().getSecretKey(),
+    assertEquals(appTokenMgr.getCurrnetMasterKeyData().getSecretKey(),
       firstMasterKeyData.getSecretKey());
-    Assert.assertEquals(appTokenMgr.getNextMasterKeyData().getSecretKey(),
+    assertEquals(appTokenMgr.getNextMasterKeyData().getSecretKey(),
       secondMasterKeyData.getSecretKey());
 
     store.close();
+  }
+
+  public void testAMRMTokenSecretManagerStateStoreKeyLengthChange(
+      RMStateStoreHelper stateStoreHelper) throws Exception {
+    RMState rmState = stateStoreHelper.getRMStateStore().loadState();
+    AMRMTokenSecretManagerState state = rmState.getAMRMTokenSecretManagerState();
+    assertEquals(
+        CommonConfigurationKeysPublic.HADOOP_SECURITY_SECRET_MANAGER_KEY_LENGTH_DEFAULT,
+        state.getCurrentMasterKey().getBytes().array().length * 8
+    );
+    Configuration configuration = new Configuration();
+    configuration.setInt(
+        CommonConfigurationKeysPublic.HADOOP_SECURITY_SECRET_MANAGER_KEY_LENGTH_KEY, 256);
+    SecretManager.update(configuration);
+    RMContext rmContext = mock(RMContext.class);
+    when(rmContext.getStateStore()).thenReturn(stateStoreHelper.getRMStateStore());
+    Configuration conf = new YarnConfiguration();
+    AMRMTokenSecretManager appTokenMgr = new AMRMTokenSecretManager(conf, rmContext);
+    appTokenMgr.recover(rmState);
+    assertEquals(256,  rmState.getAMRMTokenSecretManagerState()
+        .getCurrentMasterKey().getBytes().array().length * 8);
   }
 
   public void testReservationStateStore(
@@ -797,7 +838,7 @@ public class RMStateStoreTestBase {
     RMState state = store.loadState();
     Map<String, Map<ReservationId, ReservationAllocationStateProto>>
       reservationState = state.getReservationState();
-    Assert.assertNotNull(reservationState);
+    assertNotNull(reservationState);
 
     // 2. Store single reservation and verify
     String reservationIdName = r1.toString();
@@ -851,13 +892,13 @@ public class RMStateStoreTestBase {
     store.setRMDispatcher(dispatcher);
     state = store.loadState();
     reservationState = state.getReservationState();
-    Assert.assertNotNull(reservationState);
+    assertNotNull(reservationState);
     reservations = reservationState.get(planName);
-    Assert.assertNotNull(reservations);
+    assertNotNull(reservations);
     ReservationAllocationStateProto storedReservationAllocation =
         reservations.get(r1);
-    Assert.assertNull("Removed reservation should not be available in store",
-        storedReservationAllocation);
+    assertNull(storedReservationAllocation,
+        "Removed reservation should not be available in store");
 
     storedReservationAllocation = reservations.get(r2);
     assertAllocationStateEqual(
@@ -873,9 +914,41 @@ public class RMStateStoreTestBase {
     store.setRMDispatcher(dispatcher);
     state = store.loadState();
     reservationState = state.getReservationState();
-    Assert.assertNotNull(reservationState);
+    assertNotNull(reservationState);
     reservations = reservationState.get(planName);
-    Assert.assertNull(reservations);
+    assertNull(reservations);
+  }
+
+  public void testProxyCA(
+      RMStateStoreHelper stateStoreHelper) throws Exception {
+    RMStateStore store = stateStoreHelper.getRMStateStore();
+    TestDispatcher dispatcher = new TestDispatcher();
+    store.setRMDispatcher(dispatcher);
+
+    ProxyCA originalProxyCA = new ProxyCA();
+    originalProxyCA.init();
+    store.storeProxyCACert(originalProxyCA.getCaCert(),
+        originalProxyCA.getCaKeyPair().getPrivate());
+
+    RMStateStore.ProxyCAState proxyCAState =
+        store.loadState().getProxyCAState();
+    assertEquals(originalProxyCA.getCaCert(), proxyCAState.getCaCert());
+    assertEquals(originalProxyCA.getCaKeyPair().getPrivate(),
+        proxyCAState.getCaPrivateKey());
+
+    // Try replacing with a different ProxyCA
+    ProxyCA newProxyCA = new ProxyCA();
+    newProxyCA.init();
+    assertNotEquals(originalProxyCA.getCaCert(), newProxyCA.getCaCert());
+    assertNotEquals(originalProxyCA.getCaKeyPair().getPrivate(),
+        newProxyCA.getCaKeyPair().getPrivate());
+    store.storeProxyCACert(newProxyCA.getCaCert(),
+        newProxyCA.getCaKeyPair().getPrivate());
+
+    proxyCAState = store.loadState().getProxyCAState();
+    assertEquals(newProxyCA.getCaCert(), proxyCAState.getCaCert());
+    assertEquals(newProxyCA.getCaKeyPair().getPrivate(),
+        proxyCAState.getCaPrivateKey());
   }
 
   private void validateStoredReservation(
@@ -889,13 +962,13 @@ public class RMStateStoreTestBase {
     RMState state = store.loadState();
     Map<String, Map<ReservationId, ReservationAllocationStateProto>>
         reservationState = state.getReservationState();
-    Assert.assertNotNull(reservationState);
+    assertNotNull(reservationState);
     Map<ReservationId, ReservationAllocationStateProto> reservations =
         reservationState.get(planName);
-    Assert.assertNotNull(reservations);
+    assertNotNull(reservations);
     ReservationAllocationStateProto storedReservationAllocation =
         reservations.get(r1);
-    Assert.assertNotNull(storedReservationAllocation);
+    assertNotNull(storedReservationAllocation);
 
     assertAllocationStateEqual(
         allocationStateProto, storedReservationAllocation);
@@ -906,12 +979,12 @@ public class RMStateStoreTestBase {
       ReservationAllocationStateProto expected,
       ReservationAllocationStateProto actual) {
 
-    Assert.assertEquals(
+    assertEquals(
         expected.getAcceptanceTime(), actual.getAcceptanceTime());
-    Assert.assertEquals(expected.getStartTime(), actual.getStartTime());
-    Assert.assertEquals(expected.getEndTime(), actual.getEndTime());
-    Assert.assertEquals(expected.getContainsGangs(), actual.getContainsGangs());
-    Assert.assertEquals(expected.getUser(), actual.getUser());
+    assertEquals(expected.getStartTime(), actual.getStartTime());
+    assertEquals(expected.getEndTime(), actual.getEndTime());
+    assertEquals(expected.getContainsGangs(), actual.getContainsGangs());
+    assertEquals(expected.getUser(), actual.getUser());
     assertEquals(
         expected.getReservationDefinition(), actual.getReservationDefinition());
     assertEquals(expected.getAllocationRequestsList(),
@@ -921,12 +994,12 @@ public class RMStateStoreTestBase {
   void assertAllocationStateEqual(
       ReservationAllocation expected,
       ReservationAllocationStateProto actual) {
-    Assert.assertEquals(
+    assertEquals(
         expected.getAcceptanceTime(), actual.getAcceptanceTime());
-    Assert.assertEquals(expected.getStartTime(), actual.getStartTime());
-    Assert.assertEquals(expected.getEndTime(), actual.getEndTime());
-    Assert.assertEquals(expected.containsGangs(), actual.getContainsGangs());
-    Assert.assertEquals(expected.getUser(), actual.getUser());
+    assertEquals(expected.getStartTime(), actual.getStartTime());
+    assertEquals(expected.getEndTime(), actual.getEndTime());
+    assertEquals(expected.containsGangs(), actual.getContainsGangs());
+    assertEquals(expected.getUser(), actual.getUser());
     assertEquals(
         expected.getReservationDefinition(),
         ReservationSystemUtil.convertFromProtoFormat(

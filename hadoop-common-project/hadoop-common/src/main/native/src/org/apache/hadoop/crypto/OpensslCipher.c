@@ -24,6 +24,57 @@
  
 #include "org_apache_hadoop_crypto_OpensslCipher.h"
 
+/*
+   # OpenSSL ABI Symbols
+
+   Available on all OpenSSL versions:
+
+   | Function                       | 1.0 | 1.1 | 3.0 |
+   |--------------------------------|-----|-----|-----|
+   | EVP_CIPHER_CTX_new             | YES | YES | YES |
+   | EVP_CIPHER_CTX_free            | YES | YES | YES |
+   | EVP_CIPHER_CTX_set_padding     | YES | YES | YES |
+   | EVP_CIPHER_CTX_test_flags      | YES | YES | YES |
+   | EVP_CipherInit_ex              | YES | YES | YES |
+   | EVP_CipherUpdate               | YES | YES | YES |
+   | EVP_CipherFinal_ex             | YES | YES | YES |
+   | ENGINE_by_id                   | YES | YES | YES |
+   | ENGINE_free                    | YES | YES | YES |
+   | EVP_aes_256_ctr                | YES | YES | YES |
+   | EVP_aes_128_ctr                | YES | YES | YES |
+
+   Available on old versions:
+
+   | Function                       | 1.0 | 1.1 | 3.0 |
+   |--------------------------------|-----|-----|-----|
+   | EVP_CIPHER_CTX_cleanup         | YES | --- | --- |
+   | EVP_CIPHER_CTX_init            | YES | --- | --- |
+   | EVP_CIPHER_CTX_block_size      | YES | YES | --- |
+   | EVP_CIPHER_CTX_encrypting      | --- | YES | --- |
+
+   Available on new versions:
+
+   | Function                       | 1.0 | 1.1 | 3.0 |
+   |--------------------------------|-----|-----|-----|
+   | OPENSSL_init_crypto            | --- | YES | YES |
+   | EVP_CIPHER_CTX_reset           | --- | YES | YES |
+   | EVP_CIPHER_CTX_get_block_size  | --- | --- | YES |
+   | EVP_CIPHER_CTX_is_encrypting   | --- | --- | YES |
+
+   Optionally available on new versions:
+
+   | Function                       | 1.0 | 1.1 | 3.0 |
+   |--------------------------------|-----|-----|-----|
+   | EVP_sm4_ctr                    | --- | opt | opt |
+
+   Name changes:
+
+   | < 3.0 name                 | >= 3.0 name                    |
+   |----------------------------|--------------------------------|
+   | EVP_CIPHER_CTX_block_size  | EVP_CIPHER_CTX_get_block_size  |
+   | EVP_CIPHER_CTX_encrypting  | EVP_CIPHER_CTX_is_encrypting   |
+ */
+
 #ifdef UNIX
 static EVP_CIPHER_CTX * (*dlsym_EVP_CIPHER_CTX_new)(void);
 static void (*dlsym_EVP_CIPHER_CTX_free)(EVP_CIPHER_CTX *);
@@ -46,6 +97,13 @@ static int (*dlsym_EVP_CipherUpdate)(EVP_CIPHER_CTX *, unsigned char *,  \
 static int (*dlsym_EVP_CipherFinal_ex)(EVP_CIPHER_CTX *, unsigned char *, int *);
 static EVP_CIPHER * (*dlsym_EVP_aes_256_ctr)(void);
 static EVP_CIPHER * (*dlsym_EVP_aes_128_ctr)(void);
+#if OPENSSL_VERSION_NUMBER >= 0x10100001L
+static EVP_CIPHER * (*dlsym_EVP_sm4_ctr)(void);
+static int (*dlsym_OPENSSL_init_crypto)(uint64_t opts, \
+            const OPENSSL_INIT_SETTINGS *settings);
+static ENGINE * (*dlsym_ENGINE_by_id)(const char *id);
+static int (*dlsym_ENGINE_free)(ENGINE *);
+#endif
 static void *openssl;
 #endif
 
@@ -84,8 +142,29 @@ static __dlsym_EVP_CipherUpdate dlsym_EVP_CipherUpdate;
 static __dlsym_EVP_CipherFinal_ex dlsym_EVP_CipherFinal_ex;
 static __dlsym_EVP_aes_256_ctr dlsym_EVP_aes_256_ctr;
 static __dlsym_EVP_aes_128_ctr dlsym_EVP_aes_128_ctr;
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L
+typedef EVP_CIPHER * (__cdecl *__dlsym_EVP_sm4_ctr)(void);
+typedef int (__cdecl *__dlsym_OPENSSL_init_crypto)(uint64_t opts, \
+             const OPENSSL_INIT_SETTINGS *settings);
+typedef ENGINE * (__cdecl *__dlsym_ENGINE_by_id)(const char *id);
+typedef int (__cdecl *__dlsym_ENGINE_free)(ENGINE *e);
+
+static __dlsym_EVP_sm4_ctr dlsym_EVP_sm4_ctr;
+static __dlsym_OPENSSL_init_crypto dlsym_OPENSSL_init_crypto;
+static __dlsym_ENGINE_by_id dlsym_ENGINE_by_id;
+static __dlsym_ENGINE_free dlsym_ENGINE_free;
+#endif
 static HMODULE openssl;
 #endif
+
+// names changed in OpenSSL 3 ABI - see History section in EVP_EncryptInit(3)
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#define CIPHER_CTX_BLOCK_SIZE "EVP_CIPHER_CTX_get_block_size"
+#define CIPHER_CTX_ENCRYPTING "EVP_CIPHER_CTX_is_encrypting"
+#else
+#define CIPHER_CTX_BLOCK_SIZE "EVP_CIPHER_CTX_block_size"
+#define CIPHER_CTX_ENCRYPTING "EVP_CIPHER_CTX_encrypting"
+#endif /* OPENSSL_VERSION_NUMBER >= 0x30000000L */
 
 static void loadAesCtr(JNIEnv *env)
 {
@@ -99,6 +178,15 @@ static void loadAesCtr(JNIEnv *env)
                       env, openssl, "EVP_aes_256_ctr");
   LOAD_DYNAMIC_SYMBOL(__dlsym_EVP_aes_128_ctr, dlsym_EVP_aes_128_ctr,  \
                       env, openssl, "EVP_aes_128_ctr");
+#endif
+}
+
+static void loadSm4Ctr(JNIEnv *env)
+{
+#ifdef UNIX
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L
+   LOAD_DYNAMIC_SYMBOL(dlsym_EVP_sm4_ctr, env, openssl, "EVP_sm4_ctr");
+#endif
 #endif
 }
 
@@ -142,10 +230,10 @@ JNIEXPORT void JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initIDs
   LOAD_DYNAMIC_SYMBOL(dlsym_EVP_CIPHER_CTX_test_flags, env, openssl,  \
                       "EVP_CIPHER_CTX_test_flags");
   LOAD_DYNAMIC_SYMBOL(dlsym_EVP_CIPHER_CTX_block_size, env, openssl,  \
-                      "EVP_CIPHER_CTX_block_size");
+                      CIPHER_CTX_BLOCK_SIZE);
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
   LOAD_DYNAMIC_SYMBOL(dlsym_EVP_CIPHER_CTX_encrypting, env, openssl,  \
-                      "EVP_CIPHER_CTX_encrypting");
+                      CIPHER_CTX_ENCRYPTING);
 #endif
   LOAD_DYNAMIC_SYMBOL(dlsym_EVP_CipherInit_ex, env, openssl,  \
                       "EVP_CipherInit_ex");
@@ -153,6 +241,14 @@ JNIEXPORT void JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initIDs
                       "EVP_CipherUpdate");
   LOAD_DYNAMIC_SYMBOL(dlsym_EVP_CipherFinal_ex, env, openssl,  \
                       "EVP_CipherFinal_ex");
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L
+  LOAD_DYNAMIC_SYMBOL(dlsym_OPENSSL_init_crypto, env, openssl,  \
+                      "OPENSSL_init_crypto");
+  LOAD_DYNAMIC_SYMBOL(dlsym_ENGINE_by_id, env, openssl,  \
+                      "ENGINE_by_id");
+  LOAD_DYNAMIC_SYMBOL(dlsym_ENGINE_free, env, openssl,  \
+                      "ENGINE_free");
+#endif
 #endif
 
 #ifdef WINDOWS
@@ -173,11 +269,11 @@ JNIEXPORT void JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initIDs
                       openssl, "EVP_CIPHER_CTX_test_flags");
   LOAD_DYNAMIC_SYMBOL(__dlsym_EVP_CIPHER_CTX_block_size,  \
                       dlsym_EVP_CIPHER_CTX_block_size, env,  \
-                      openssl, "EVP_CIPHER_CTX_block_size");
+                      openssl, CIPHER_CTX_BLOCK_SIZE);
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
   LOAD_DYNAMIC_SYMBOL(__dlsym_EVP_CIPHER_CTX_encrypting,  \
                       dlsym_EVP_CIPHER_CTX_encrypting, env,  \
-                      openssl, "EVP_CIPHER_CTX_encrypting");
+                      openssl, CIPHER_CTX_ENCRYPTING);
 #endif
   LOAD_DYNAMIC_SYMBOL(__dlsym_EVP_CipherInit_ex, dlsym_EVP_CipherInit_ex,  \
                       env, openssl, "EVP_CipherInit_ex");
@@ -185,14 +281,34 @@ JNIEXPORT void JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initIDs
                       env, openssl, "EVP_CipherUpdate");
   LOAD_DYNAMIC_SYMBOL(__dlsym_EVP_CipherFinal_ex, dlsym_EVP_CipherFinal_ex,  \
                       env, openssl, "EVP_CipherFinal_ex");
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L
+  LOAD_DYNAMIC_SYMBOL(__dlsym_OPENSSL_init_crypto, dlsym_OPENSSL_init_crypto,  \
+                      env, openssl, "OPENSSL_init_crypto");
+  LOAD_DYNAMIC_SYMBOL(__dlsym_ENGINE_by_id, dlsym_ENGINE_by_id,  \
+                      env, openssl, "ENGINE_by_id");
+  LOAD_DYNAMIC_SYMBOL(__dlsym_ENGINE_free, dlsym_ENGINE_free,  \
+                      env, openssl, "ENGINE_by_free");
+#endif
 #endif
 
   loadAesCtr(env);
+#if !defined(OPENSSL_NO_SM4)
+  loadSm4Ctr(env);
+#endif
+
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L
+  int ret = dlsym_OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL);
+  if(!ret) {
+    THROW(env, "java/lang/UnsatisfiedLinkError", \
+        "Openssl init crypto failed");
+    return;
+  }
+#endif
   jthrowable jthr = (*env)->ExceptionOccurred(env);
   if (jthr) {
     (*env)->DeleteLocalRef(env, jthr);
     THROW(env, "java/lang/UnsatisfiedLinkError",  \
-        "Cannot find AES-CTR support, is your version of Openssl new enough?");
+        "Cannot find AES-CTR support, is your version of OpenSSL new enough?");
     return;
   }
 }
@@ -200,7 +316,7 @@ JNIEXPORT void JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initIDs
 JNIEXPORT jlong JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initContext
     (JNIEnv *env, jclass clazz, jint alg, jint padding)
 {
-  if (alg != AES_CTR) {
+  if (alg != AES_CTR && alg != SM4_CTR) {
     THROW(env, "java/security/NoSuchAlgorithmException", NULL);
     return (jlong)0;
   }
@@ -209,10 +325,26 @@ JNIEXPORT jlong JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initContext
     return (jlong)0;
   }
   
-  if (dlsym_EVP_aes_256_ctr == NULL || dlsym_EVP_aes_128_ctr == NULL) {
+  if (alg == AES_CTR && (dlsym_EVP_aes_256_ctr == NULL || dlsym_EVP_aes_128_ctr == NULL)) {
     THROW(env, "java/security/NoSuchAlgorithmException",  \
         "Doesn't support AES CTR.");
     return (jlong)0;
+  }
+
+  if (alg == SM4_CTR) {
+    int ret = 0;
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L
+    if (dlsym_EVP_sm4_ctr == NULL) {
+      ret = 1;
+    }
+#else
+    ret = 1;
+#endif
+    if (ret) {
+      THROW(env, "java/security/NoSuchAlgorithmException",  \
+              "Doesn't support SM4 CTR.");
+      return (jlong)0;
+    }
   }
   
   // Create and initialize a EVP_CIPHER_CTX
@@ -225,7 +357,29 @@ JNIEXPORT jlong JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initContext
   return JLONG(context);
 }
 
-// Only supports AES-CTR currently
+JNIEXPORT jlong JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_initEngine
+    (JNIEnv *env, jclass clazz, jstring engineId)
+{
+  ENGINE *e = NULL;
+
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L
+  if (engineId != NULL) {
+    const char *id = (*env)->GetStringUTFChars(env, engineId, NULL);
+    if (id != NULL) {
+      e = dlsym_ENGINE_by_id(id);
+      (*env)->ReleaseStringUTFChars(env, engineId, id);
+    }
+  }
+#endif
+
+  if (e == NULL) {
+    return (jlong)0;
+  } else {
+    return JLONG(e);
+  }
+}
+
+// Only supports AES-CTR & SM4-CTR currently
 static EVP_CIPHER * getEvpCipher(int alg, int keyLen)
 {
   EVP_CIPHER *cipher = NULL;
@@ -235,13 +389,19 @@ static EVP_CIPHER * getEvpCipher(int alg, int keyLen)
     } else if (keyLen == KEY_LENGTH_128) {
       cipher = dlsym_EVP_aes_128_ctr();
     }
+  } else if (alg == SM4_CTR) {
+    if (keyLen == KEY_LENGTH_128) {
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L
+      cipher = dlsym_EVP_sm4_ctr();
+#endif
+    }
   }
   return cipher;
 }
 
 JNIEXPORT jlong JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_init
     (JNIEnv *env, jobject object, jlong ctx, jint mode, jint alg, jint padding, 
-    jbyteArray key, jbyteArray iv)
+    jbyteArray key, jbyteArray iv, jlong engine)
 {
   int jKeyLen = (*env)->GetArrayLength(env, key);
   int jIvLen = (*env)->GetArrayLength(env, iv);
@@ -275,9 +435,10 @@ JNIEXPORT jlong JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_init
     THROW(env, "java/lang/InternalError", "Cannot get bytes array for iv.");
     return (jlong)0;
   }
-  
+
+  ENGINE *e = LONG_TO_ENGINE(engine);
   int rc = dlsym_EVP_CipherInit_ex(context, getEvpCipher(alg, jKeyLen),  \
-      NULL, (unsigned char *)jKey, (unsigned char *)jIv, mode == ENCRYPT_MODE);
+      e, (unsigned char *)jKey, (unsigned char *)jIv, mode == ENCRYPT_MODE);
   (*env)->ReleaseByteArrayElements(env, key, jKey, 0);
   (*env)->ReleaseByteArrayElements(env, iv, jIv, 0);
   if (rc == 0) {
@@ -406,11 +567,16 @@ JNIEXPORT jint JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_doFinal
 }
 
 JNIEXPORT void JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_clean
-    (JNIEnv *env, jobject object, jlong ctx) 
+    (JNIEnv *env, jobject object, jlong ctx, jlong engine)
 {
   EVP_CIPHER_CTX *context = CONTEXT(ctx);
   if (context) {
     dlsym_EVP_CIPHER_CTX_free(context);
+  }
+
+  ENGINE *e = LONG_TO_ENGINE(engine);
+  if (e) {
+    dlsym_ENGINE_free(e);
   }
 }
 
@@ -450,4 +616,25 @@ JNIEXPORT jstring JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_getLibrary
     return (*env)->NewStringUTF(env, "Unavailable");
   }
 #endif
+}
+
+JNIEXPORT jboolean JNICALL Java_org_apache_hadoop_crypto_OpensslCipher_isSupportedSuite
+    (JNIEnv *env, jclass clazz, jint alg, jint padding)
+{
+  if (padding != NOPADDING) {
+    return JNI_FALSE;
+  }
+
+  if (alg == AES_CTR && (dlsym_EVP_aes_256_ctr != NULL && dlsym_EVP_aes_128_ctr != NULL)) {
+    return JNI_TRUE;
+  }
+
+  if (alg == SM4_CTR) {
+#if OPENSSL_VERSION_NUMBER >= 0x10101001L && !defined(OPENSSL_NO_SM4)
+    if (dlsym_EVP_sm4_ctr != NULL) {
+      return JNI_TRUE;
+    }
+#endif
+  }
+  return JNI_FALSE;
 }

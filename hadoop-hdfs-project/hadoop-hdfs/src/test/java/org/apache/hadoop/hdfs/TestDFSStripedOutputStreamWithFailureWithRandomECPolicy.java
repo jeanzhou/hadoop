@@ -17,25 +17,27 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.io.erasurecode.ECSchema;
+import org.junit.jupiter.api.Tag;
 
 /**
  * This tests write operation of DFS striped file with a random erasure code
  * policy except for the default policy under Datanode failure conditions.
  */
+@Tag("slow")
 public class TestDFSStripedOutputStreamWithFailureWithRandomECPolicy extends
     TestDFSStripedOutputStreamWithFailure {
 
   private final ECSchema schema;
 
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       TestDFSStripedOutputStreamWithRandomECPolicy.class.getName());
 
   public TestDFSStripedOutputStreamWithFailureWithRandomECPolicy() {
     schema = StripedFileTestUtil.getRandomNonDefaultECPolicy().getSchema();
-    LOG.info(schema);
+    LOG.info("{}", schema.toString());
   }
 
   @Override

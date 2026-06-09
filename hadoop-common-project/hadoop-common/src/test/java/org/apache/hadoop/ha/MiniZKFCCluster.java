@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.ha;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -36,9 +36,9 @@ import org.apache.hadoop.test.MultithreadedTestUtil.TestingThread;
 import org.apache.zookeeper.KeeperException.NoNodeException;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.server.ZooKeeperServer;
+import org.apache.hadoop.util.Preconditions;
 
-import com.google.common.base.Preconditions;
-import com.google.common.primitives.Ints;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Ints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -185,6 +185,10 @@ public class MiniZKFCCluster {
   
   public void setUnreachable(int idx, boolean unreachable) {
     svcs.get(idx).actUnreachable = unreachable;
+  }
+
+  public void setFailToBecomeObserver(int idx, boolean doFail) {
+    svcs.get(idx).failToBecomeObserver = doFail;
   }
 
   /**
@@ -365,6 +369,11 @@ public class MiniZKFCCluster {
         }
       }
       return services;
+    }
+
+    @Override
+    protected boolean isSSLEnabled() {
+      return false;
     }
   }
 }

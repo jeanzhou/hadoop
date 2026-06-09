@@ -16,9 +16,34 @@
 # limitations under the License.
 #
 
-cmake_minimum_required(VERSION 3.1 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
+
+# Need this CMake policy for using the MultiThreaded MSVC runtime library.
+cmake_policy(SET CMP0091 NEW)
+
+# Need this CMake policy for invoking target_link_libraries on a target in any directory.
+cmake_policy(SET CMP0079 NEW)
+
+project(hadoop_hdfs_native_client)
 
 enable_testing()
+
+set(CMAKE_CXX_STANDARD 17)
+
+if (MSVC)
+    # Instructs MSVC to use the static version of the runtime library.
+    # More info - https://docs.microsoft.com/en-us/cpp/build/reference/md-mt-ld-use-run-time-library?view=msvc-170
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+
+    # This indicates that Windows 10 and above are supported.
+    # More info - https://docs.microsoft.com/en-us/cpp/porting/modifying-winver-and-win32-winnt?view=msvc-170
+    set(NT_REQUIRED_VERSION 0x0A00)
+    add_definitions(-D_WIN32_WINNT=${NT_REQUIRED_VERSION})
+
+    # Windows.h defines the "min" and "max" macros which conflicts with the std::min and std::max from C++ STL.
+    # Adding the below definition will disable this macro.
+    add_definitions(-DNOMINMAX)
+endif (MSVC)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/../../../hadoop-common-project/hadoop-common)
 include(HadoopCommon)
@@ -65,6 +90,8 @@ if(WIN32)
     set(OUT_DIR bin)
 else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fvisibility=hidden")
+    # using old default behavior on GCC >= 10.0
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fcommon")
     set(OS_DIR ${CMAKE_SOURCE_DIR}/main/native/libhdfs/os/posix)
 
     # IMPORTANT: OUT_DIR MUST be relative to maven's
@@ -85,7 +112,8 @@ function(build_libhdfs_test NAME LIBRARY)
             list(APPEND FILES ${CMAKE_SOURCE_DIR}/main/native/libhdfs-tests/${FIL})
         endif()
     endforeach()
-    add_executable("${NAME}_${LIBRARY}" ${FILES})
+    add_executable("${NAME}_${LIBRARY}" $<TARGET_OBJECTS:x_platform_obj_c_api> $<TARGET_OBJECTS:x_platform_obj> ${FILES})
+    target_include_directories("${NAME}_${LIBRARY}" PRIVATE main/native/libhdfspp/lib)
 endfunction()
 
 function(add_libhdfs_test NAME LIBRARY)
@@ -96,8 +124,84 @@ function(link_libhdfs_test NAME LIBRARY)
 target_link_libraries("${NAME}_${LIBRARY}" ${LIBRARY} ${ARGN})
 endfunction()
 
+
+set(STORED_CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+hadoop_set_find_shared_library_without_version()
+set(OPENSSL_NAME "crypto")
+if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+    SET(OPENSSL_NAME "libcrypto")
+endif()
+message("CUSTOM_OPENSSL_PREFIX = ${CUSTOM_OPENSSL_PREFIX}")
+find_library(OPENSSL_LIBRARY
+    NAMES ${OPENSSL_NAME}
+    PATHS ${CUSTOM_OPENSSL_PREFIX} ${CUSTOM_OPENSSL_PREFIX}/lib
+          ${CUSTOM_OPENSSL_PREFIX}/lib64 ${CUSTOM_OPENSSL_LIB} NO_DEFAULT_PATH)
+find_library(OPENSSL_LIBRARY NAMES ${OPENSSL_NAME})
+find_path(OPENSSL_INCLUDE_DIR
+    NAMES openssl/evp.h
+    PATHS ${CUSTOM_OPENSSL_PREFIX} ${CUSTOM_OPENSSL_PREFIX}/include
+          ${CUSTOM_OPENSSL_INCLUDE} NO_DEFAULT_PATH)
+find_path(OPENSSL_INCLUDE_DIR NAMES openssl/evp.h)
+set(CMAKE_FIND_LIBRARY_SUFFIXES ${STORED_CMAKE_FIND_LIBRARY_SUFFIXES})
+set(USABLE_OPENSSL 0)
+if(OPENSSL_LIBRARY AND OPENSSL_INCLUDE_DIR)
+    include(CheckCSourceCompiles)
+    set(OLD_CMAKE_REQUIRED_INCLUDES ${CMAKE_REQUIRED_INCLUDES})
+    set(CMAKE_REQUIRED_INCLUDES ${OPENSSL_INCLUDE_DIR})
+    set(CMAKE_REQUIRED_LIBRARIES ${OPENSSL_LIBRARY})
+    check_c_source_compiles("#include <openssl/evp.h>\nint main(int argc, char **argv) { return !EVP_aes_256_ctr; }" HAS_NEW_ENOUGH_OPENSSL)
+    set(CMAKE_REQUIRED_INCLUDES ${OLD_CMAKE_REQUIRED_INCLUDES})
+    if(NOT HAS_NEW_ENOUGH_OPENSSL)
+        message("The OpenSSL library installed at ${OPENSSL_LIBRARY} is too old.  You need a version at least new enough to have EVP_aes_256_ctr.")
+    else()
+        SET(USABLE_OPENSSL 1)
+    endif()
+endif()
+if(USABLE_OPENSSL)
+    get_filename_component(HADOOP_OPENSSL_LIBRARY ${OPENSSL_LIBRARY} NAME)
+    set(OPENSSL_SOURCE_FILES
+        "${SRC}/crypto/OpensslCipher.c"
+        "${SRC}/crypto/random/OpensslSecureRandom.c")
+    set(REQUIRE_OPENSSL ${REQUIRE_OPENSSL}) # Stop warning about unused variable.
+else()
+    message("Cannot find a usable OpenSSL library. OPENSSL_LIBRARY=${OPENSSL_LIBRARY}, OPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}, CUSTOM_OPENSSL_LIB=${CUSTOM_OPENSSL_LIB}, CUSTOM_OPENSSL_PREFIX=${CUSTOM_OPENSSL_PREFIX}, CUSTOM_OPENSSL_INCLUDE=${CUSTOM_OPENSSL_INCLUDE}")
+    if(REQUIRE_OPENSSL)
+        message(FATAL_ERROR "Terminating build because require.openssl was specified.")
+    endif()
+    set(OPENSSL_LIBRARY "")
+    set(OPENSSL_INCLUDE_DIR "")
+    set(OPENSSL_SOURCE_FILES "")
+endif()
+
 add_subdirectory(main/native/libhdfs)
 add_subdirectory(main/native/libhdfs-tests)
+add_subdirectory(main/native/libhdfs-examples)
+
+# Temporary fix to disable Libhdfs++ build on older systems that do not support thread_local
+include(CheckCXXSourceCompiles)
+unset (THREAD_LOCAL_SUPPORTED CACHE)
+set (CMAKE_CXX_STANDARD 11)
+set (CMAKE_CXX_STANDARD_REQUIRED ON)
+set (CMAKE_REQUIRED_LIBRARIES ${CMAKE_THREAD_LIBS_INIT})
+check_cxx_source_compiles(
+    "#include <thread>
+    int main(void) {
+      thread_local int s;
+      return 0;
+    }"
+    THREAD_LOCAL_SUPPORTED)
+if (THREAD_LOCAL_SUPPORTED)
+    add_subdirectory(main/native/libhdfspp)
+else()
+    message(WARNING
+    "WARNING: Libhdfs++ library was not built because the required feature thread_local storage \
+    is not supported by your compiler. Known compilers that support this feature: GCC 4.8+, Visual Studio 2015+, \
+    Clang (community version 3.3+), Clang (version for Xcode 8+ and iOS 9+).")
+endif (THREAD_LOCAL_SUPPORTED)
+
+if(REQUIRE_LIBWEBHDFS)
+    add_subdirectory(contrib/libwebhdfs)
+endif()
 
 # Find Linux FUSE
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")

@@ -18,10 +18,11 @@
 
 /**
  * These .proto interfaces are public and stable.
- * Please see http://wiki.apache.org/hadoop/Compatibility
+ * Please see https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/Compatibility.html
  * for what changes are allowed for a *stable* .proto interface.
  */
 
+syntax = "proto2";
 option java_package = "org.apache.hadoop.yarn.proto";
 option java_outer_classname = "YarnProtos";
 option java_generic_services = true;
@@ -62,6 +63,8 @@ message ResourceInformationProto {
   optional int64 value = 2;
   optional string units = 3;
   optional ResourceTypesProto type = 4;
+  repeated string tags = 5;
+  repeated StringStringMapProto attributes = 6;
 }
 
 message ResourceTypeInfoProto {
@@ -80,6 +83,7 @@ message ResourceUtilizationProto {
   optional int32 pmem = 1;
   optional int32 vmem = 2;
   optional float cpu = 3;
+  repeated StringFloatMapProto customResources = 4;
 }
 
 message ResourceOptionProto {
@@ -153,6 +157,7 @@ message ContainerProto {
   optional int64 allocation_request_id = 8 [default = -1];
   optional int32 version = 9 [default = 0];
   repeated string allocation_tags = 10;
+  optional string exposed_ports = 11;
 }
 
 message ContainerReportProto {
@@ -168,6 +173,7 @@ message ContainerReportProto {
   optional ContainerStateProto container_state = 10;
   optional string node_http_address = 11;
   optional ExecutionTypeProto executionType = 12 [default = GUARANTEED];
+  optional string exposed_ports = 13;
 }
 
 enum YarnApplicationStateProto {
@@ -238,6 +244,11 @@ message StringLongMapProto {
   required int64 value = 2;
 }
 
+message StringFloatMapProto {
+  required string key  = 1;
+  required float value = 2;
+}
+
 message ApplicationResourceUsageReportProto {
   optional int32 num_used_containers = 1;
   optional int32 num_reserved_containers = 2;
@@ -281,6 +292,9 @@ message ApplicationReportProto {
   optional string appNodeLabelExpression = 24;
   optional string amNodeLabelExpression = 25;
   repeated AppTimeoutsMapProto appTimeouts = 26;
+  optional int64 launchTime = 27;
+  optional int64 submitTime = 28;
+  optional string rmClusterId = 29;
 }
 
 message AppTimeoutsMapProto {
@@ -354,6 +368,7 @@ message NodeReportProto {
   optional ResourceUtilizationProto node_utilization = 12;
   optional uint32 decommissioning_timeout = 13;
   optional NodeUpdateTypeProto node_update_type = 14;
+  repeated NodeAttributeProto node_attributes = 15;
 }
 
 message NodeIdToLabelsProto {
@@ -371,6 +386,42 @@ message NodeLabelProto {
   optional bool isExclusive = 2 [default = true]; 
 }
 
+enum NodeAttributeTypeProto {
+  STRING = 1;
+}
+
+message NodeAttributeKeyProto {
+  optional string attributePrefix = 1 [default="rm.yarn.io"];
+  required string attributeName = 2;
+}
+
+message NodeAttributeProto {
+  required NodeAttributeKeyProto attributeKey = 1;
+  optional NodeAttributeTypeProto attributeType = 2 [default = STRING];
+  optional string attributeValue = 3 [default=""];
+}
+
+
+message NodeAttributeInfoProto {
+  required NodeAttributeKeyProto attributeKey = 1;
+  required NodeAttributeTypeProto attributeType = 2;
+}
+
+message NodeToAttributeValueProto {
+  required string hostname = 1;
+  required string attributeValue = 2;
+}
+
+message AttributeToNodesProto {
+  required NodeAttributeKeyProto nodeAttribute = 1;
+  repeated NodeToAttributeValueProto nodeValueMap = 2;
+}
+
+message NodeToAttributesProto {
+  optional string node = 1;
+  repeated NodeAttributeProto nodeAttributes = 2;
+}
+
 enum ContainerTypeProto {
   APPLICATION_MASTER = 1;
   TASK = 2;
@@ -379,6 +430,28 @@ enum ContainerTypeProto {
 enum ExecutionTypeProto {
   GUARANTEED = 1;
   OPPORTUNISTIC = 2;
+}
+
+message DeregisterSubClustersProto {
+  optional string subClusterId = 1;
+  optional string deregisterState = 2;
+  optional string lastHeartBeatTime = 3;
+  optional string information = 4;
+  optional string subClusterState = 5;
+}
+
+message FederationQueueWeightProto {
+  optional string routerWeight = 1;
+  optional string amrmWeight = 2;
+  optional string headRoomAlpha = 3;
+  optional string queue = 4;
+  optional string policyManagerClassName = 5;
+}
+
+message FederationSubClusterProto {
+  optional string subClusterId = 1;
+  optional string lastHeartBeatTime = 2;
+  optional string subClusterState = 3;
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -521,6 +594,8 @@ message YarnClusterMetricsProto {
   optional int32 num_lost_nms = 4;
   optional int32 num_unhealthy_nms = 5;
   optional int32 num_rebooted_nms = 6;
+  optional int32 num_decommissioning_nms = 7;
+  optional int32 num_shutdown_nms = 8;
 }
 
 enum QueueStateProto {
@@ -564,6 +639,20 @@ message QueueInfoProto {
   optional bool preemptionDisabled = 11;
   repeated QueueConfigurationsMapProto queueConfigurationsMap = 12;
   optional bool intraQueuePreemptionDisabled = 13;
+  optional float weight = 14;
+  optional string queuePath = 15;
+  optional int32 maxParallelApps = 16;
+  optional string schedulerType = 17;
+  optional int32 minResourceVCore = 18;
+  optional int64 minResourceMemory = 19;
+  optional int32 maxResourceVCore = 20;
+  optional int64 maxResourceMemory = 21;
+  optional int32 reservedResourceVCore = 22;
+  optional int64 reservedResourceMemory = 23;
+  optional int32 steadyFairShareVCore = 24;
+  optional int64 steadyFairShareMemory = 25;
+  optional string subClusterId = 26;
+  optional int32 maxRunningApp = 27;
 }
 
 message QueueConfigurationsProto {
@@ -608,11 +697,18 @@ message PlacementConstraintProto {
   optional CompositePlacementConstraintProto compositeConstraint = 2;
 }
 
+enum NodeAttributeOpCodeProto {
+  NO_OP = 1;
+  EQ = 2;
+  NE = 3;
+}
+
 message SimplePlacementConstraintProto {
   required string scope = 1;
   repeated PlacementConstraintTargetProto targetExpressions = 2;
   optional int32 minCardinality = 3;
   optional int32 maxCardinality = 4;
+  optional NodeAttributeOpCodeProto attributeOpCode = 5;
 }
 
 message PlacementConstraintTargetProto {

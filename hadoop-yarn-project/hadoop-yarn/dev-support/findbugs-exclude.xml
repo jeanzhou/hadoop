@@ -67,11 +67,6 @@
   </Match>
   <Match>
     <Class name="org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptMetrics" />
-    <Method name="getLocalityStatistics" />
-    <Bug pattern="EI_EXPOSE_REP" />
-  </Match>
-  <Match>
-    <Class name="org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptMetrics" />
     <Method name="incNumAllocatedContainers"/>
     <Bug pattern="VO_VOLATILE_INCREMENT" />
   </Match>
@@ -116,6 +111,18 @@
     <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher.ContainersLauncher" />
     <Method name="handle" />
     <Bug pattern="BC_UNCONFIRMED_CAST" />
+  </Match>
+
+  <!-- Ignore exposed internal representations -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.api.records.Resource" />
+    <Method name="getResources" />
+    <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptMetrics" />
+    <Method name="getLocalityStatistics" />
+    <Bug pattern="EI_EXPOSE_REP" />
   </Match>
 
   <!-- Object cast is based on the event type -->
@@ -200,6 +207,10 @@
   </Match>
   <Match>
     <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.RecoveryComparator" />
+    <Bug pattern="SE_COMPARATOR_SHOULD_BE_SERIALIZABLE" />
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.globalpolicygenerator.policygenerator.LoadBasedGlobalPolicy$SortByDescendingLoad" />
     <Bug pattern="SE_COMPARATOR_SHOULD_BE_SERIALIZABLE" />
   </Match>
   <!-- Ignore some irrelevant class name warning -->
@@ -380,6 +391,11 @@
     <Method name="initAndStartNodeManager" />
     <Bug pattern="DM_EXIT" />
   </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.globalpolicygenerator.GlobalPolicyGenerator" />
+    <Medhod name="startGPG" />
+    <Bug pattern="DM_EXIT" />
+  </Match>
  
   <!-- Ignore heartbeat exception when killing localizer -->
   <Match>
@@ -395,6 +411,10 @@
   </Match>
   <Match>
     <Class name="org.apache.hadoop.yarn.server.nodemanager.security.authorize.NMPolicyProvider" />
+    <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.router.security.authorize.RouterPolicyProvider" />
     <Bug pattern="EI_EXPOSE_REP" />
   </Match>
 
@@ -461,6 +481,10 @@
       <Bug pattern="DC_DOUBLECHECK" />
   </Match>
 
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.security.authorize.NMPolicyProvider"/>
+    <Bug pattern="DC_DOUBLECHECK" />
+  </Match>
   <!-- ApplicationClassLoader is deprecated and moved to hadoop-common; ignore
        warning on the identical name as it should be removed later -->
   <Match>
@@ -628,22 +652,6 @@
     <Bug pattern="MS_EXPOSE_REP" />
   </Match>
 
-  <Match>
-    <Class name="org.apache.hadoop.registry.server.dns.RegistryDNS" />
-    <Method name="addNIOTCP" />
-    <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE" />
-  </Match>
-  <Match>
-    <Class name="org.apache.hadoop.registry.server.dns.RegistryDNS" />
-    <Method name="addNIOUDP" />
-    <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE" />
-  </Match>
-  <Match>
-    <Class name="org.apache.hadoop.registry.server.dns.RegistryDNS" />
-    <Method name="serveNIOTCP" />
-    <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE" />
-  </Match>
-
   <!-- EQ_OVERRIDING_EQUALS_NOT_SYMMETRIC -->
   <Match>
     <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu.AssignedGpuDevice" />
@@ -658,4 +666,149 @@
     <Bug pattern="NP_NULL_ON_SOME_PATH" />
   </Match>
 
+  <!-- Expose the reference to avoid performance overhead -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.api.records.Resource" />
+    <Method name="getResources" />
+    <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+
+  <!-- The called method signature is String emptyToNull(@Nullable String string) in guava 27, so this should be ignored -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService"/>
+    <Method name="getHealthReport" />
+    <Bug pattern="NP_NULL_PARAM_DEREF"/>
+  </Match>
+
+  <!-- The variable is not used, but it's defined for the document model. -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.timelineservice.documentstore.collection.document.entity.TimelineEventSubDoc"/>
+    <Method name="setValid" />
+    <Bug pattern="URF_UNREAD_FIELD"/>
+  </Match>
+
+  <!-- The variable is not used, but it's defined for the document model. -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.timelineservice.documentstore.collection.document.entity.TimelineMetricSubDoc"/>
+    <Method name="setValid" />
+    <Bug pattern="URF_UNREAD_FIELD"/>
+  </Match>
+
+  <!-- The called method signature is public boolean set(@Nullable V value) in guava 27, so this should be ignored -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore$UpdateAppTransition"/>
+    <Method name="transition" />
+    <Bug pattern="NP_NONNULL_PARAM_VIOLATION"/>
+  </Match>
+
+  <!-- The called method signature is public boolean set(@Nullable V value) in guava 27, so this should be ignored -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler"/>
+    <Method name="updateApplicationPriority" />
+    <Bug pattern="NP_NONNULL_PARAM_VIOLATION"/>
+  </Match>
+
+  <!-- Device files are always under /dev in production, but it's necessary to override in tests -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.com.nec.NECVEPlugin"/>
+    <Method name="getDevices" />
+    <Bug pattern="DMI_HARDCODED_ABSOLUTE_FILENAME" />
+  </Match>
+
+  <!-- Suppress warning about anonymous class for mocking. -->
+  <Match>
+    <Class name="~org\.apache\.hadoop\.yarn\.server\.timelineservice\.reader\.TestTimelineReaderWebServicesHBaseStorage.*" />
+    <Bug pattern="UMAC_UNCALLABLE_METHOD_OF_ANONYMOUS_CLASS" />
+  </Match>
+
+  <!-- Generated files from JSON schema -->
+  <Match>
+    <Package name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.placement.schema" />
+  </Match>
+
+  <!-- Ignore String == comparison in RMAdminCLI help builders -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.client.cli.RMAdminCLI" />
+    <Or>
+      <Method name="buildHelpMsg" />
+      <Method name="buildIndividualUsageMsg" />
+    </Or>
+    <Bug pattern="ES_COMPARING_STRINGS_WITH_EQ" />
+  </Match>
+
+  <!-- Ignore EI_EXPOSE_STATIC_REP2 for RMDelegationTokenIdentifier.Renewer#setSecretManager -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier$Renewer" />
+    <Method name="setSecretManager" />
+    <Bug pattern="EI_EXPOSE_STATIC_REP2" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.federation.cache.FederationCache$CacheRequest" />
+    <Bug pattern="SIC_INNER_SHOULD_BE_STATIC" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.sharedcachemanager.webapp.SCMWebServer$SCMWebApp" />
+    <Bug pattern="SIC_INNER_SHOULD_BE_STATIC" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.security.BaseContainerTokenSecretManager" />
+    <Field name="currentMasterKey" />
+    <Bug pattern="NP_UNWRITTEN_PUBLIC_OR_PROTECTED_FIELD" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.security.BaseNMTokenSecretManager" />
+    <Field name="currentMasterKey" />
+    <Bug pattern="NP_UNWRITTEN_PUBLIC_OR_PROTECTED_FIELD" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.security.http.RMAuthenticationFilter" />
+    <Method name="setDelegationTokenSecretManager" />
+    <Bug pattern="EI_EXPOSE_STATIC_REP2" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.timeline.security.TimelineAuthenticationFilter" />
+    <Method name="setTimelineDelegationTokenSecretManager" />
+    <Bug pattern="EI_EXPOSE_STATIC_REP2" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.webapp.ContainerShellWebSocket" />
+    <Method name="init" />
+    <Bug pattern="EI_EXPOSE_STATIC_REP2" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher.ContainerLaunch$UnixShellScriptBuilder" />
+    <Method name="errorCheck" />
+    <Bug pattern="UPM_UNCALLED_PRIVATE_METHOD" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ResourceLocalizationService$PublicLocalizer" />
+    <Method name="work" />
+    <Bug pattern="NP_NULL_ON_SOME_PATH_EXCEPTION" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu.NvidiaDockerV2CommandPlugin" />
+    <Method name="updateDockerRunCommand" />
+    <Bug pattern="SBSC_USE_STRINGBUFFER_CONCATENATION" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.WeightQueueCapacityCalculator" />
+    <Method name="calculateMinimumResource" />
+    <Bug pattern="FE_FLOATING_POINT_EQUALITY" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.ResourceManager" />
+    <Bug pattern="IS2_INCONSISTENT_SYNC" />
+  </Match>
 </FindBugsFilter>

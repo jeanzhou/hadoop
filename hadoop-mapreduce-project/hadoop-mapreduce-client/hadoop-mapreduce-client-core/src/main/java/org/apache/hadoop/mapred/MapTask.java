@@ -63,6 +63,7 @@ import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormatCounter;
 import org.apache.hadoop.mapreduce.lib.map.WrappedMapper;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormatCounter;
+import org.apache.hadoop.mapreduce.security.IntermediateEncryptedStream;
 import org.apache.hadoop.mapreduce.split.JobSplit.TaskSplitIndex;
 import org.apache.hadoop.mapreduce.task.MapContextImpl;
 import org.apache.hadoop.mapreduce.CryptoUtils;
@@ -73,6 +74,7 @@ import org.apache.hadoop.util.QuickSort;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringInterner;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -149,8 +151,8 @@ public class MapTask extends Task {
    * @param <V>
    */
   class TrackedRecordReader<K, V> 
-      implements RecordReader<K,V> {
-    private RecordReader<K,V> rawIn;
+      implements RecordReader<K, V> {
+    private RecordReader<K, V> rawIn;
     private Counters.Counter fileInputByteCounter;
     private Counters.Counter inputRecordCounter;
     private TaskReporter reporter;
@@ -239,7 +241,7 @@ public class MapTask extends Task {
    * This class skips the records based on the failed ranges from previous 
    * attempts.
    */
-  class SkippingRecordReader<K, V> extends TrackedRecordReader<K,V> {
+  class SkippingRecordReader<K, V> extends TrackedRecordReader<K, V> {
     private SkipRangeIterator skipIt;
     private SequenceFile.Writer skipWriter;
     private boolean toWriteSkipRecs;
@@ -929,7 +931,7 @@ public class MapTask extends Task {
     // spill accounting
     private int maxRec;
     private int softLimit;
-    boolean spillInProgress;;
+    boolean spillInProgress;
     int bufferRemaining;
     volatile Throwable sortSpillException = null;
 
@@ -954,7 +956,10 @@ public class MapTask extends Task {
       new ArrayList<SpillRecord>();
     private int totalIndexCacheMemory;
     private int indexCacheMemoryLimit;
+    private int spillFilesCountLimit;
     private static final int INDEX_CACHE_MEMORY_LIMIT_DEFAULT = 1024 * 1024;
+    private static final int SPILL_FILES_COUNT_LIMIT_DEFAULT = -1;
+    private static final int SPILL_FILES_COUNT_UNBOUNDED_LIMIT_VALUE = -1;
 
     private MapTask mapTask;
     private MapOutputFile mapOutputFile;
@@ -983,9 +988,16 @@ public class MapTask extends Task {
           MRJobConfig.DEFAULT_IO_SORT_MB);
       indexCacheMemoryLimit = job.getInt(JobContext.INDEX_CACHE_MEMORY_LIMIT,
                                          INDEX_CACHE_MEMORY_LIMIT_DEFAULT);
+      spillFilesCountLimit = job.getInt(JobContext.SPILL_FILES_COUNT_LIMIT,
+          SPILL_FILES_COUNT_LIMIT_DEFAULT);
       if (spillper > (float)1.0 || spillper <= (float)0.0) {
         throw new IOException("Invalid \"" + JobContext.MAP_SORT_SPILL_PERCENT +
             "\": " + spillper);
+      }
+      if(spillFilesCountLimit != SPILL_FILES_COUNT_UNBOUNDED_LIMIT_VALUE
+          && spillFilesCountLimit < 0) {
+        throw new IOException("Invalid value for \"" + JobContext.SPILL_FILES_COUNT_LIMIT + "\", " +
+            "current value: " + spillFilesCountLimit);
       }
       if ((sortmb & 0x7FF) != sortmb) {
         throw new IOException(
@@ -1538,10 +1550,10 @@ public class MapTask extends Task {
 
     public void close() { }
 
-    protected class SpillThread extends Thread {
+    protected class SpillThread extends SubjectInheritingThread {
 
       @Override
-      public void run() {
+      public void work() {
         spillLock.lock();
         spillThreadRunning = true;
         try {
@@ -1630,7 +1642,9 @@ public class MapTask extends Task {
           IFile.Writer<K, V> writer = null;
           try {
             long segmentStart = out.getPos();
-            partitionOut = CryptoUtils.wrapIfNecessary(job, out, false);
+            partitionOut =
+                IntermediateEncryptedStream.wrapIfNecessary(job, out, false,
+                    filename);
             writer = new Writer<K, V>(job, partitionOut, keyClass, valClass, codec,
                                       spilledRecordsCounter);
             if (combinerRunner == null) {
@@ -1687,6 +1701,7 @@ public class MapTask extends Task {
           Path indexFilename =
               mapOutputFile.getSpillIndexFileForWrite(numSpills, partitions
                   * MAP_OUTPUT_INDEX_RECORD_LENGTH);
+          IntermediateEncryptedStream.addSpillIndexFile(indexFilename, job);
           spillRec.writeToFile(indexFilename, job);
         } else {
           indexCacheList.add(spillRec);
@@ -1694,7 +1709,7 @@ public class MapTask extends Task {
             spillRec.size() * MAP_OUTPUT_INDEX_RECORD_LENGTH;
         }
         LOG.info("Finished spill " + numSpills);
-        ++numSpills;
+        incrementNumSpills();
       } finally {
         if (out != null) out.close();
         if (partitionOut != null) {
@@ -1727,7 +1742,9 @@ public class MapTask extends Task {
           try {
             long segmentStart = out.getPos();
             // Create a new codec, don't care!
-            partitionOut = CryptoUtils.wrapIfNecessary(job, out, false);
+            partitionOut =
+                IntermediateEncryptedStream.wrapIfNecessary(job, out, false,
+                    filename);
             writer = new IFile.Writer<K,V>(job, partitionOut, keyClass, valClass, codec,
                                             spilledRecordsCounter);
 
@@ -1761,13 +1778,14 @@ public class MapTask extends Task {
           Path indexFilename =
               mapOutputFile.getSpillIndexFileForWrite(numSpills, partitions
                   * MAP_OUTPUT_INDEX_RECORD_LENGTH);
+          IntermediateEncryptedStream.addSpillIndexFile(indexFilename, job);
           spillRec.writeToFile(indexFilename, job);
         } else {
           indexCacheList.add(spillRec);
           totalIndexCacheMemory +=
             spillRec.size() * MAP_OUTPUT_INDEX_RECORD_LENGTH;
         }
-        ++numSpills;
+        incrementNumSpills();
       } finally {
         if (out != null) out.close();
         if (partitionOut != null) {
@@ -1854,15 +1872,19 @@ public class MapTask extends Task {
         finalOutFileSize += rfs.getFileStatus(filename[i]).getLen();
       }
       if (numSpills == 1) { //the spill is the final output
+        Path indexFileOutput =
+            mapOutputFile.getOutputIndexFileForWriteInVolume(filename[0]);
         sameVolRename(filename[0],
             mapOutputFile.getOutputFileForWriteInVolume(filename[0]));
         if (indexCacheList.size() == 0) {
-          sameVolRename(mapOutputFile.getSpillIndexFile(0),
-            mapOutputFile.getOutputIndexFileForWriteInVolume(filename[0]));
+          Path indexFilePath = mapOutputFile.getSpillIndexFile(0);
+          IntermediateEncryptedStream.validateSpillIndexFile(
+              indexFilePath, job);
+          sameVolRename(indexFilePath, indexFileOutput);
         } else {
-          indexCacheList.get(0).writeToFile(
-            mapOutputFile.getOutputIndexFileForWriteInVolume(filename[0]), job);
+          indexCacheList.get(0).writeToFile(indexFileOutput, job);
         }
+        IntermediateEncryptedStream.addSpillIndexFile(indexFileOutput, job);
         sortPhase.complete();
         return;
       }
@@ -1870,6 +1892,7 @@ public class MapTask extends Task {
       // read in paged indices
       for (int i = indexCacheList.size(); i < numSpills; ++i) {
         Path indexFileName = mapOutputFile.getSpillIndexFile(i);
+        IntermediateEncryptedStream.validateSpillIndexFile(indexFileName, job);
         indexCacheList.add(new SpillRecord(indexFileName, job));
       }
 
@@ -1881,7 +1904,7 @@ public class MapTask extends Task {
           mapOutputFile.getOutputFileForWrite(finalOutFileSize);
       Path finalIndexFile =
           mapOutputFile.getOutputIndexFileForWrite(finalIndexFileSize);
-
+      IntermediateEncryptedStream.addSpillIndexFile(finalIndexFile, job);
       //The output stream for the final single output file
       FSDataOutputStream finalOut = rfs.create(finalOutputFile, true, 4096);
       FSDataOutputStream finalPartitionOut = null;
@@ -1893,8 +1916,9 @@ public class MapTask extends Task {
         try {
           for (int i = 0; i < partitions; i++) {
             long segmentStart = finalOut.getPos();
-            finalPartitionOut = CryptoUtils.wrapIfNecessary(job, finalOut,
-                false);
+            finalPartitionOut =
+                IntermediateEncryptedStream.wrapIfNecessary(job, finalOut,
+                    false, finalOutputFile);
             Writer<K, V> writer =
               new Writer<K, V>(job, finalPartitionOut, keyClass, valClass, codec, null);
             writer.close();
@@ -1957,7 +1981,8 @@ public class MapTask extends Task {
 
           //write merged output to disk
           long segmentStart = finalOut.getPos();
-          finalPartitionOut = CryptoUtils.wrapIfNecessary(job, finalOut, false);
+          finalPartitionOut = IntermediateEncryptedStream.wrapIfNecessary(job,
+              finalOut, false, finalOutputFile);
           Writer<K, V> writer =
               new Writer<K, V>(job, finalPartitionOut, keyClass, valClass, codec,
                                spilledRecordsCounter);
@@ -2008,12 +2033,27 @@ public class MapTask extends Task {
       if (!dst.getParentFile().exists()) {
         if (!dst.getParentFile().mkdirs()) {
           throw new IOException("Unable to rename " + src + " to "
-              + dst + ": couldn't create parent directory"); 
+              + dst + ": couldn't create parent directory");
         }
       }
       
       if (!src.renameTo(dst)) {
         throw new IOException("Unable to rename " + src + " to " + dst);
+      }
+    }
+
+    /**
+     * Increments numSpills local counter by taking into consideration
+     * the max limit on spill files being generated by the job.
+     * If limit is reached, this function throws an IOException
+     */
+    private void incrementNumSpills() throws IOException {
+      ++numSpills;
+      if(spillFilesCountLimit != SPILL_FILES_COUNT_UNBOUNDED_LIMIT_VALUE
+          && numSpills > spillFilesCountLimit) {
+        throw new IOException("Too many spill files got created, control it with " +
+            "mapreduce.task.spill.files.count.limit, current value: " + spillFilesCountLimit +
+            ", current spill count: " + numSpills);
       }
     }
   } // MapOutputBuffer

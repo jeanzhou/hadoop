@@ -18,12 +18,18 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.metrics;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
@@ -32,6 +38,7 @@ import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEvent;
 import org.apache.hadoop.yarn.client.api.TimelineClient;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.server.metrics.AppAttemptMetricsConstants;
 import org.apache.hadoop.yarn.server.metrics.ApplicationMetricsConstants;
@@ -51,22 +58,98 @@ import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
  */
 public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
 
-  private static final Log LOG =
-      LogFactory.getLog(TimelineServiceV1Publisher.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TimelineServiceV1Publisher.class);
 
   public TimelineServiceV1Publisher() {
     super("TimelineserviceV1Publisher");
   }
 
   private TimelineClient client;
+  private LinkedBlockingQueue<TimelineEntity> entityQueue;
+  private ExecutorService sendEventThreadPool;
+  private int dispatcherPoolSize;
+  private int dispatcherBatchSize;
+  private int putEventInterval;
+  private boolean isTimeLineServerBatchEnabled;
+  private volatile boolean stopped = false;
+  private PutEventThread putEventThread;
+  private Object sendEntityLock;
 
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
+    isTimeLineServerBatchEnabled =
+        conf.getBoolean(
+            YarnConfiguration.RM_TIMELINE_SERVER_V1_PUBLISHER_BATCH_ENABLED,
+            YarnConfiguration.DEFAULT_RM_TIMELINE_SERVER_V1_PUBLISHER_BATCH_ENABLED);
+    if (isTimeLineServerBatchEnabled) {
+      putEventInterval =
+          conf.getInt(YarnConfiguration.RM_TIMELINE_SERVER_V1_PUBLISHER_INTERVAL,
+              YarnConfiguration.DEFAULT_RM_TIMELINE_SERVER_V1_PUBLISHER_INTERVAL)
+              * 1000;
+      if (putEventInterval <= 0) {
+        throw new IllegalArgumentException(
+            "RM_TIMELINE_SERVER_V1_PUBLISHER_INTERVAL should be greater than 0");
+      }
+      dispatcherPoolSize = conf.getInt(
+          YarnConfiguration.RM_SYSTEM_METRICS_PUBLISHER_DISPATCHER_POOL_SIZE,
+          YarnConfiguration.
+              DEFAULT_RM_SYSTEM_METRICS_PUBLISHER_DISPATCHER_POOL_SIZE);
+      if (dispatcherPoolSize <= 0) {
+        throw new IllegalArgumentException(
+            "RM_SYSTEM_METRICS_PUBLISHER_DISPATCHER_POOL_SIZE should be greater than 0");
+      }
+      dispatcherBatchSize = conf.getInt(
+          YarnConfiguration.RM_TIMELINE_SERVER_V1_PUBLISHER_DISPATCHER_BATCH_SIZE,
+          YarnConfiguration.
+              DEFAULT_RM_TIMELINE_SERVER_V1_PUBLISHER_DISPATCHER_BATCH_SIZE);
+      if (dispatcherBatchSize <= 1) {
+        throw new IllegalArgumentException(
+            "RM_TIMELINE_SERVER_V1_PUBLISHER_DISPATCHER_BATCH_SIZE should be greater than 1");
+      }
+      putEventThread = new PutEventThread();
+      sendEventThreadPool = Executors.newFixedThreadPool(dispatcherPoolSize);
+      entityQueue = new LinkedBlockingQueue<>(dispatcherBatchSize + 1);
+      sendEntityLock = new Object();
+      LOG.info("Timeline service v1 batch publishing enabled");
+    } else {
+      LOG.info("Timeline service v1 batch publishing disabled");
+    }
     client = TimelineClient.createTimelineClient();
     addIfService(client);
     super.serviceInit(conf);
     getDispatcher().register(SystemMetricsEventType.class,
         new TimelineV1EventHandler());
+  }
+
+  protected void serviceStart() throws Exception {
+    if (isTimeLineServerBatchEnabled) {
+      stopped = false;
+      putEventThread.start();
+    }
+    super.serviceStart();
+  }
+
+  protected void serviceStop() throws Exception {
+    super.serviceStop();
+    if (isTimeLineServerBatchEnabled) {
+      stopped = true;
+      putEventThread.interrupt();
+      try {
+        putEventThread.join();
+        SendEntity task = new SendEntity();
+        if (!task.buffer.isEmpty()) {
+          LOG.info("Initiating final putEntities, remaining entities left in entityQueue: {}",
+              task.buffer.size());
+          sendEventThreadPool.submit(task);
+        }
+      } finally {
+        sendEventThreadPool.shutdown();
+        if (!sendEventThreadPool.awaitTermination(3, TimeUnit.SECONDS)) {
+          sendEventThreadPool.shutdownNow();
+        }
+      }
+    }
   }
 
   @SuppressWarnings("unchecked")
@@ -94,7 +177,7 @@ public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
     entityInfo.put(ApplicationMetricsConstants.APP_NODE_LABEL_EXPRESSION,
         app.getAppNodeLabelExpression());
     if (app.getCallerContext() != null) {
-      if (app.getCallerContext().getContext() != null) {
+      if (app.getCallerContext().isContextValid()) {
         entityInfo.put(ApplicationMetricsConstants.YARN_APP_CALLER_CONTEXT,
             app.getCallerContext().getContext());
       }
@@ -108,6 +191,8 @@ public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
         app.getApplicationSubmissionContext().getAMContainerSpec();
     entityInfo.put(ApplicationMetricsConstants.AM_CONTAINER_LAUNCH_COMMAND,
         amContainerSpec.getCommands());
+    entityInfo.put(ApplicationMetricsConstants.STATE_EVENT_INFO,
+        RMServerUtils.createApplicationState(app.getState()).toString());
 
     entity.setOtherInfo(entityInfo);
     TimelineEvent tEvent = new TimelineEvent();
@@ -115,6 +200,19 @@ public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
     tEvent.setTimestamp(createdTime);
 
     entity.addEvent(tEvent);
+    getDispatcher().getEventHandler().handle(new TimelineV1PublishEvent(
+        SystemMetricsEventType.PUBLISH_ENTITY, entity, app.getApplicationId()));
+  }
+
+  @Override
+  public void appLaunched(RMApp app, long launchTime) {
+    TimelineEntity entity = createApplicationEntity(app.getApplicationId());
+
+    TimelineEvent tEvent = new TimelineEvent();
+    tEvent.setEventType(ApplicationMetricsConstants.LAUNCHED_EVENT_TYPE);
+    tEvent.setTimestamp(launchTime);
+    entity.addEvent(tEvent);
+
     getDispatcher().getEventHandler().handle(new TimelineV1PublishEvent(
         SystemMetricsEventType.PUBLISH_ENTITY, entity, app.getApplicationId()));
   }
@@ -151,9 +249,9 @@ public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
     tEvent.setEventInfo(eventInfo);
 
     entity.addEvent(tEvent);
-    // sync sending of finish event to avoid possibility of saving application
-    // finished state in RMStateStore save without publishing in ATS.
-    putEntity(entity); // sync event so that ATS update is done without fail.
+
+    getDispatcher().getEventHandler().handle(new TimelineV1PublishEvent(
+        SystemMetricsEventType.PUBLISH_ENTITY, entity, app.getApplicationId()));
   }
 
   @SuppressWarnings("unchecked")
@@ -242,7 +340,7 @@ public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
   @SuppressWarnings("unchecked")
   @Override
   public void appAttemptFinished(RMAppAttempt appAttempt,
-      RMAppAttemptState appAttemtpState, RMApp app, long finishedTime) {
+      RMAppAttemptState appAttemptState, RMApp app, long finishedTime) {
     TimelineEntity entity =
         createAppAttemptEntity(appAttempt.getAppAttemptId());
 
@@ -259,7 +357,7 @@ public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
     eventInfo.put(AppAttemptMetricsConstants.FINAL_STATUS_INFO,
         app.getFinalApplicationStatus().toString());
     eventInfo.put(AppAttemptMetricsConstants.STATE_INFO, RMServerUtils
-        .createApplicationAttemptState(appAttemtpState).toString());
+        .createApplicationAttemptState(appAttemptState).toString());
     if (appAttempt.getMasterContainer() != null) {
       eventInfo.put(AppAttemptMetricsConstants.MASTER_CONTAINER_INFO,
           appAttempt.getMasterContainer().getId().toString());
@@ -359,23 +457,68 @@ public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
   }
 
   private void putEntity(TimelineEntity entity) {
-    try {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Publishing the entity " + entity.getEntityId()
-            + ", JSON-style content: "
-            + TimelineUtils.dumpTimelineRecordtoJSON(entity));
+    if (isTimeLineServerBatchEnabled) {
+      try {
+        entityQueue.put(entity);
+        if (entityQueue.size() > dispatcherBatchSize) {
+          SendEntity task = null;
+          synchronized (sendEntityLock) {
+            if (entityQueue.size() > dispatcherBatchSize) {
+              task = new SendEntity();
+            }
+          }
+          if (task != null) {
+            sendEventThreadPool.submit(task);
+          }
+        }
+      } catch (Exception e) {
+        LOG.error("Error when publishing entity batch  [ " + entity.getEntityType() + ","
+            + entity.getEntityId() + " ] ", e);
       }
-      client.putEntities(entity);
-    } catch (Exception e) {
-      LOG.error("Error when publishing entity [" + entity.getEntityType() + ","
-          + entity.getEntityId() + "]", e);
+    } else {
+      try {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Publishing the entity " + entity.getEntityId()
+              + ", JSON-style content: "
+              + TimelineUtils.dumpTimelineRecordtoJSON(entity));
+        }
+        client.putEntities(entity);
+      } catch (Exception e) {
+        LOG.error("Error when publishing entity [ " + entity.getEntityType() + ","
+            + entity.getEntityId() + " ] ", e);
+      }
+    }
+  }
+
+  private class SendEntity implements Runnable {
+
+    private ArrayList<TimelineEntity> buffer;
+
+    SendEntity() {
+      buffer = new ArrayList();
+      entityQueue.drainTo(buffer);
+    }
+
+    @Override
+    public void run() {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Number of timeline entities being sent in batch: {}", buffer.size());
+      }
+      if (buffer.isEmpty()) {
+        return;
+      }
+      try {
+        client.putEntities(buffer.toArray(new TimelineEntity[0]));
+      } catch (Exception e) {
+        LOG.error("Error when publishing entity: ", e);
+      }
     }
   }
 
   private class TimelineV1PublishEvent extends TimelinePublishEvent {
     private TimelineEntity entity;
 
-    public TimelineV1PublishEvent(SystemMetricsEventType type,
+    TimelineV1PublishEvent(SystemMetricsEventType type,
         TimelineEntity entity, ApplicationId appId) {
       super(type, appId);
       this.entity = entity;
@@ -391,6 +534,48 @@ public class TimelineServiceV1Publisher extends AbstractSystemMetricsPublisher {
     @Override
     public void handle(TimelineV1PublishEvent event) {
       putEntity(event.getEntity());
+    }
+  }
+
+  private class PutEventThread extends SubjectInheritingThread {
+    PutEventThread() {
+      super("PutEventThread");
+    }
+
+    @Override
+    public void work() {
+      LOG.info("System metrics publisher will put events every " +
+          String.valueOf(putEventInterval) + " milliseconds");
+      while (!stopped && !Thread.currentThread().isInterrupted()) {
+        if (System.currentTimeMillis() % putEventInterval >= 1000) {
+          try {
+            Thread.sleep(500);
+          } catch (InterruptedException e) {
+            LOG.warn(SystemMetricsPublisher.class.getName()
+                + " is interrupted. Exiting.");
+            break;
+          }
+          continue;
+        }
+        SendEntity task = null;
+        synchronized (sendEntityLock) {
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Creating SendEntity task in PutEventThread");
+          }
+          task = new SendEntity();
+        }
+        if (task != null) {
+          sendEventThreadPool.submit(task);
+        }
+        try {
+          // sleep added to avoid multiple SendEntity task within a single interval.
+          Thread.sleep(1000);
+        } catch (InterruptedException e) {
+          LOG.warn(SystemMetricsPublisher.class.getName()
+              + " is interrupted. Exiting.");
+          break;
+        }
+      }
     }
   }
 }

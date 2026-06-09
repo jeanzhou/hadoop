@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
@@ -119,6 +119,7 @@ public class BlockRecoveryWorker {
       List<BlockRecord> syncList = new ArrayList<>(locs.length);
       int errorCount = 0;
       int candidateReplicaCnt = 0;
+      DataNodeFaultInjector.get().delay();
 
       // Check generation stamps, replica size and state. Replica must satisfy
       // the following criteria to be included in syncList for recovery:
@@ -141,33 +142,27 @@ public class BlockRecoveryWorker {
                 ReplicaState.RWR.getValue()) {
               syncList.add(new BlockRecord(id, proxyDN, info));
             } else {
-              if (LOG.isDebugEnabled()) {
-                LOG.debug("Block recovery: Ignored replica with invalid " +
-                    "original state: " + info + " from DataNode: " + id);
-              }
+              LOG.debug("Block recovery: Ignored replica with invalid " +
+                  "original state: {} from DataNode: {}", info, id);
             }
           } else {
-            if (LOG.isDebugEnabled()) {
-              if (info == null) {
-                LOG.debug("Block recovery: DataNode: " + id + " does not have "
-                    + "replica for block: " + block);
-              } else {
-                LOG.debug("Block recovery: Ignored replica with invalid "
-                    + "generation stamp or length: " + info + " from " +
-                    "DataNode: " + id);
-              }
+            if (info == null) {
+              LOG.debug("Block recovery: DataNode: {} does not have " +
+                  "replica for block: {}", id, block);
+            } else {
+              LOG.debug("Block recovery: Ignored replica with invalid "
+                  + "generation stamp or length: {} from DataNode: {}", info, id);
             }
           }
         } catch (RecoveryInProgressException ripE) {
           InterDatanodeProtocol.LOG.warn(
-              "Recovery for replica " + block + " on data-node " + id
-                  + " is already in progress. Recovery id = "
-                  + rBlock.getNewGenerationStamp() + " is aborted.", ripE);
+              "Recovery for replica {} on data-node {} is already in progress. " +
+                  "Recovery id = {} is aborted.", block, id, rBlock.getNewGenerationStamp(), ripE);
           return;
         } catch (IOException e) {
           ++errorCount;
-          InterDatanodeProtocol.LOG.warn("Failed to recover block (block="
-              + block + ", datanode=" + id + ")", e);
+          InterDatanodeProtocol.LOG.warn("Failed to recover block (block={}, datanode={})",
+              block, id, e);
         }
       }
 
@@ -205,11 +200,9 @@ public class BlockRecoveryWorker {
       // or their replicas have 0 length.
       // The block can be deleted.
       if (syncList.isEmpty()) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("syncBlock for block " + block + ", all datanodes don't " +
-              "have the block or their replicas have 0 length. The block can " +
-              "be deleted.");
-        }
+        LOG.debug("syncBlock for block {}, all datanodes don't " +
+            "have the block or their replicas have 0 length. The block can " +
+            "be deleted.", block);
         nn.commitBlockSynchronization(block, recoveryId, 0,
             true, true, DatanodeID.EMPTY_ARRAY, null);
         return;
@@ -248,12 +241,9 @@ public class BlockRecoveryWorker {
                   r.rInfo.getNumBytes() == finalizedLength) {
             participatingList.add(r);
           }
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("syncBlock replicaInfo: block=" + block +
-                ", from datanode " + r.id + ", receivedState=" + rState.name() +
-                ", receivedLength=" + r.rInfo.getNumBytes() +
-                ", bestState=FINALIZED, finalizedLength=" + finalizedLength);
-          }
+          LOG.debug("syncBlock replicaInfo: block={}, from datanode {}, receivedState={}, " +
+              "receivedLength={}, bestState=FINALIZED, finalizedLength={}",
+              block, r.id, rState.name(), r.rInfo.getNumBytes(), finalizedLength);
         }
         newBlock.setNumBytes(finalizedLength);
         break;
@@ -266,16 +256,15 @@ public class BlockRecoveryWorker {
             minLength = Math.min(minLength, r.rInfo.getNumBytes());
             participatingList.add(r);
           }
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("syncBlock replicaInfo: block=" + block +
-                ", from datanode " + r.id + ", receivedState=" + rState.name() +
-                ", receivedLength=" + r.rInfo.getNumBytes() + ", bestState=" +
-                bestState.name());
-          }
+          LOG.debug("syncBlock replicaInfo: block={}, from datanode {}, receivedState={}, " +
+              "receivedLength={}, bestState={}", block, r.id, rState.name(),
+              r.rInfo.getNumBytes(), bestState.name());
         }
         // recover() guarantees syncList will have at least one replica with RWR
         // or better state.
-        assert minLength != Long.MAX_VALUE : "wrong minLength";
+        if (minLength == Long.MAX_VALUE) {
+          throw new IOException("Incorrect block size");
+        }
         newBlock.setNumBytes(minLength);
         break;
       case RUR:
@@ -322,11 +311,8 @@ public class BlockRecoveryWorker {
         storages[i] = r.storageID;
       }
 
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Datanode triggering commitBlockSynchronization, block=" +
-            block + ", newGs=" + newBlock.getGenerationStamp() +
-            ", newLength=" + newBlock.getNumBytes());
-      }
+      LOG.debug("Datanode triggering commitBlockSynchronization, block={}, newGs={}, " +
+          "newLength={}", block, newBlock.getGenerationStamp(), newBlock.getNumBytes());
 
       nn.commitBlockSynchronization(block,
           newBlock.getGenerationStamp(), newBlock.getNumBytes(), true, false,
@@ -336,19 +322,24 @@ public class BlockRecoveryWorker {
 
   /**
    * blk_0  blk_1  blk_2  blk_3  blk_4  blk_5  blk_6  blk_7  blk_8
-   *  64k    64k    64k    64k    64k    64k    64k    64k    64k   <-- stripe_0
+   *  64k    64k    64k    64k    64k    64k    64k    64k    64k   &lt;--
+   *  stripe_0
    *  64k    64k    64k    64k    64k    64k    64k    64k    64k
-   *  64k    64k    64k    64k    64k    64k    64k    61k    <-- startStripeIdx
+   *  64k    64k    64k    64k    64k    64k    64k    61k    &lt;--
+   *  startStripeIdx
    *  64k    64k    64k    64k    64k    64k    64k
    *  64k    64k    64k    64k    64k    64k    59k
    *  64k    64k    64k    64k    64k    64k
-   *  64k    64k    64k    64k    64k    64k                <-- last full stripe
-   *  64k    64k    13k    64k    55k     3k              <-- target last stripe
+   *  64k    64k    64k    64k    64k    64k                &lt;--
+   *  last full stripe
+   *  64k    64k    13k    64k    55k     3k              &lt;--
+   *  target last stripe
    *  64k    64k           64k     1k
    *  64k    64k           58k
    *  64k    64k
    *  64k    19k
-   *  64k                                               <-- total visible stripe
+   *  64k                                               &lt;--
+   *  total visible stripe
    *
    *  Due to different speed of streamers, the internal blocks in a block group
    *  could have different lengths when the block group isn't ended normally.
@@ -395,17 +386,20 @@ public class BlockRecoveryWorker {
       Map<Long, BlockRecord> syncBlocks = new HashMap<>(locs.length);
       final int dataBlkNum = ecPolicy.getNumDataUnits();
       final int totalBlkNum = dataBlkNum + ecPolicy.getNumParityUnits();
+      int zeroLenReplicaCnt = 0;
+      int dnNotHaveReplicaCnt = 0;
       //check generation stamps
       for (int i = 0; i < locs.length; i++) {
         DatanodeID id = locs[i];
+        ExtendedBlock internalBlk = null;
         try {
           DatanodeID bpReg = getDatanodeID(bpid);
+          internalBlk = new ExtendedBlock(block);
+          final long blockId = block.getBlockId() + blockIndices[i];
+          internalBlk.setBlockId(blockId);
           InterDatanodeProtocol proxyDN = bpReg.equals(id) ?
               datanode : DataNode.createInterDataNodeProtocolProxy(id, conf,
               dnConf.socketTimeout, dnConf.connectToDnViaHostname);
-          ExtendedBlock internalBlk = new ExtendedBlock(block);
-          final long blockId = block.getBlockId() + blockIndices[i];
-          internalBlk.setBlockId(blockId);
           ReplicaRecoveryInfo info = callInitReplicaRecovery(proxyDN,
               new RecoveringBlock(internalBlk, null, recoveryId));
 
@@ -419,27 +413,49 @@ public class BlockRecoveryWorker {
               // simply choose the one with larger length.
               // TODO: better usage of redundant replicas
               syncBlocks.put(blockId, new BlockRecord(id, proxyDN, info));
+            } else {
+              LOG.debug("Block recovery: Ignored replica with invalid " +
+                  "original state: {} from DataNode: {} by block: {}", info, id, block);
+            }
+          } else {
+            if (info == null) {
+              LOG.debug("Block recovery: DataNode: {} does not have " +
+                  "replica for block: (block={}, internalBlk={})", id, block, internalBlk);
+              dnNotHaveReplicaCnt++;
+            } else {
+              LOG.debug("Block recovery: Ignored replica with invalid "
+                  + "generation stamp or length: {} from DataNode: {} by block: {}",
+                  info, id, block);
+              if (info.getNumBytes() == 0) {
+                zeroLenReplicaCnt++;
+              }
             }
           }
         } catch (RecoveryInProgressException ripE) {
           InterDatanodeProtocol.LOG.warn(
-              "Recovery for replica " + block + " on data-node " + id
-                  + " is already in progress. Recovery id = "
-                  + rBlock.getNewGenerationStamp() + " is aborted.", ripE);
+              "Recovery for replica (block={}, internalBlk={}) on data-node {} is already " +
+                  "in progress. Recovery id = {} is aborted.", block, internalBlk, id,
+              rBlock.getNewGenerationStamp(), ripE);
           return;
         } catch (IOException e) {
-          InterDatanodeProtocol.LOG.warn("Failed to recover block (block="
-              + block + ", datanode=" + id + ")", e);
+          InterDatanodeProtocol.LOG.warn("Failed to recover block (block={}, internalBlk={}, " +
+                  "datanode={})", block, internalBlk, id, e);
         }
       }
-      checkLocations(syncBlocks.size());
 
-      final long safeLength = getSafeLength(syncBlocks);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Recovering block " + block
-            + ", length=" + block.getNumBytes() + ", safeLength=" + safeLength
-            + ", syncList=" + syncBlocks);
+      final long safeLength;
+      if (dnNotHaveReplicaCnt + zeroLenReplicaCnt <= locs.length - ecPolicy.getNumDataUnits()) {
+        checkLocations(syncBlocks.size());
+        safeLength = getSafeLength(syncBlocks);
+      } else {
+        safeLength = 0;
+        LOG.warn("Block recovery: {} datanodes do not have the replica of block {}." +
+            " {} datanodes have zero-length replica. Will remove this block.",
+            dnNotHaveReplicaCnt, block, zeroLenReplicaCnt);
       }
+
+      LOG.debug("Recovering block {}, length={}, safeLength={}, syncList={}", block,
+          block.getNumBytes(), safeLength, syncBlocks);
 
       // If some internal blocks reach the safe length, convert them to RUR
       List<BlockRecord> rurList = new ArrayList<>(locs.length);
@@ -451,28 +467,39 @@ public class BlockRecoveryWorker {
           rurList.add(r);
         }
       }
-      assert rurList.size() >= dataBlkNum : "incorrect safe length";
 
-      // Recovery the striped block by truncating internal blocks to the safe
-      // length. Abort if there is any failure in this step.
-      truncatePartialBlock(rurList, safeLength);
+      if (safeLength > 0) {
+        Preconditions.checkArgument(rurList.size() >= dataBlkNum, "incorrect safe length");
+        // Recovery the striped block by truncating internal blocks to the safe
+        // length. Abort if there is any failure in this step.
+        truncatePartialBlock(rurList, safeLength);
+      }
 
       // notify Namenode the new size and locations
       final DatanodeID[] newLocs = new DatanodeID[totalBlkNum];
       final String[] newStorages = new String[totalBlkNum];
-      for (int i = 0; i < totalBlkNum; i++) {
-        newLocs[blockIndices[i]] = DatanodeID.EMPTY_DATANODE_ID;
-        newStorages[blockIndices[i]] = "";
+      for (int i = 0; i < newLocs.length; i++) {
+        newLocs[i] = DatanodeID.EMPTY_DATANODE_ID;
+        newStorages[i] = "";
       }
       for (BlockRecord r : rurList) {
         int index = (int) (r.rInfo.getBlockId() &
             HdfsServerConstants.BLOCK_GROUP_INDEX_MASK);
         newLocs[index] = r.id;
-        newStorages[index] = r.storageID;
+        if (r.storageID != null) {
+          newStorages[index] = r.storageID;
+        }
       }
       ExtendedBlock newBlock = new ExtendedBlock(bpid, block.getBlockId(),
           safeLength, recoveryId);
       DatanodeProtocolClientSideTranslatorPB nn = getActiveNamenodeForBP(bpid);
+      if (safeLength == 0) {
+        nn.commitBlockSynchronization(block, newBlock.getGenerationStamp(),
+            newBlock.getNumBytes(), true, true, newLocs, newStorages);
+        LOG.info("After block recovery, the length of new block is 0. " +
+            "Will remove this block: {} from file.", newBlock);
+        return;
+      }
       nn.commitBlockSynchronization(block, newBlock.getGenerationStamp(),
           newBlock.getNumBytes(), true, false, newLocs, newStorages);
     }
@@ -490,8 +517,8 @@ public class BlockRecoveryWorker {
           r.updateReplicaUnderRecovery(bpid, recoveryId, r.rInfo.getBlockId(),
               newSize);
         } catch (IOException e) {
-          InterDatanodeProtocol.LOG.warn("Failed to updateBlock (newblock="
-              + ", datanode=" + r.id + ")", e);
+          InterDatanodeProtocol.LOG.warn("Failed to updateBlock (block={}, internalBlk={}, " +
+                  "datanode={})", block, r.rInfo, r.id, e);
           failedList.add(r.id);
         }
       }
@@ -526,8 +553,8 @@ public class BlockRecoveryWorker {
     private void checkLocations(int locationCount)
         throws IOException {
       if (locationCount < ecPolicy.getNumDataUnits()) {
-        throw new IOException(block + " has no enough internal blocks" +
-            ", unable to start recovery. Locations=" + Arrays.asList(locs));
+        throw new IOException(block + " has no enough internal blocks(current: " + locationCount +
+            "), unable to start recovery. Locations=" + Arrays.asList(locs));
       }
     }
   }
@@ -544,12 +571,9 @@ public class BlockRecoveryWorker {
     ExtendedBlock block = rb.getBlock();
     DatanodeInfo[] targets = rb.getLocations();
 
-    LOG.info("BlockRecoveryWorker: " + who + " calls recoverBlock(" + block
-        + ", targets=[" + Joiner.on(", ").join(targets) + "]"
-        + ", newGenerationStamp=" + rb.getNewGenerationStamp()
-        + ", newBlock=" + rb.getNewBlock()
-        + ", isStriped=" + rb.isStriped()
-        + ")");
+    LOG.info("BlockRecoveryWorker: {} calls recoverBlock({}, targets=[{}], newGenerationStamp={}"
+        + ", newBlock={}, isStriped={})", who, block, Joiner.on(", ").join(targets),
+        rb.getNewGenerationStamp(), rb.getNewBlock(), rb.isStriped());
   }
 
   /**
@@ -593,17 +617,22 @@ public class BlockRecoveryWorker {
     Daemon d = new Daemon(datanode.threadGroup, new Runnable() {
       @Override
       public void run() {
-        for(RecoveringBlock b : blocks) {
-          try {
-            logRecoverBlock(who, b);
-            if (b.isStriped()) {
-              new RecoveryTaskStriped((RecoveringStripedBlock) b).recover();
-            } else {
-              new RecoveryTaskContiguous(b).recover();
+        datanode.metrics.incrDataNodeBlockRecoveryWorkerCount();
+        try {
+          for (RecoveringBlock b : blocks) {
+            try {
+              logRecoverBlock(who, b);
+              if (b.isStriped()) {
+                new RecoveryTaskStriped((RecoveringStripedBlock) b).recover();
+              } else {
+                new RecoveryTaskContiguous(b).recover();
+              }
+            } catch (IOException e) {
+              LOG.warn("recover Block: {} FAILED: ", b, e);
             }
-          } catch (IOException e) {
-            LOG.warn("recoverBlocks FAILED: " + b, e);
           }
+        } finally {
+          datanode.metrics.decrDataNodeBlockRecoveryWorkerCount();
         }
       }
     });

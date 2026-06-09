@@ -21,16 +21,16 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SUPPORT_ALLOW_FORMAT_KEY;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
@@ -42,9 +42,9 @@ import org.apache.hadoop.hdfs.server.namenode.TestGenericJournalConf.DummyJourna
 import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 import org.apache.hadoop.test.PathUtils;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
  * Startup and format tests
@@ -53,13 +53,13 @@ import org.junit.Test;
 public class TestAllowFormat {
   public static final String NAME_NODE_HOST = "localhost:";
   public static final String NAME_NODE_HTTP_HOST = "0.0.0.0:";
-  private static final Log LOG =
-    LogFactory.getLog(TestAllowFormat.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestAllowFormat.class.getName());
   private static final File DFS_BASE_DIR = new File(PathUtils.getTestDir(TestAllowFormat.class), "dfs");
   private static Configuration config;
   private static MiniDFSCluster cluster = null;
 
-  @BeforeClass
+  @BeforeAll
   public static void setUp() throws Exception {
     config = new Configuration();
     if ( DFS_BASE_DIR.exists() && !FileUtil.fullyDelete(DFS_BASE_DIR) ) {
@@ -90,7 +90,7 @@ public class TestAllowFormat {
   /**
    * clean up
    */
-  @AfterClass
+  @AfterAll
   public static void tearDown() throws Exception {
     if (cluster!=null) {
       cluster.shutdown();
@@ -136,9 +136,10 @@ public class TestAllowFormat {
       fail("Format succeeded, when it should have failed");
     } catch (IOException e) { // expected to fail
       // Verify we got message we expected
-      assertTrue("Exception was not about formatting Namenode", 
+      assertTrue(
           e.getMessage().startsWith("The option " + 
-                                    DFS_NAMENODE_SUPPORT_ALLOW_FORMAT_KEY));
+              DFS_NAMENODE_SUPPORT_ALLOW_FORMAT_KEY),
+          "Exception was not about formatting Namenode");
       LOG.info("Expected failure: " + StringUtils.stringifyException(e));
       LOG.info("Done verifying format will fail with allowformat false");
     }
@@ -165,7 +166,8 @@ public class TestAllowFormat {
     String localhost = "127.0.0.1";
     InetSocketAddress nnAddr1 = new InetSocketAddress(localhost, 8020);
     InetSocketAddress nnAddr2 = new InetSocketAddress(localhost, 8020);
-    HATestUtil.setFailoverConfigurations(conf, logicalName, nnAddr1, nnAddr2);
+    HATestUtil.setFailoverConfigurations(conf, logicalName, null,
+        nnAddr1, nnAddr2);
 
     conf.set(DFS_NAMENODE_NAME_DIR_KEY,
         new File(DFS_BASE_DIR, "name").getAbsolutePath());

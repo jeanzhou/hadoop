@@ -17,9 +17,10 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileSystem;
@@ -32,21 +33,22 @@ import org.apache.hadoop.hdfs.web.WebHdfsConstants;
 import org.apache.hadoop.hdfs.web.WebHdfsTestUtil;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.Rule;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Random;
 
+@Timeout(300)
+@Tag("slow")
 public class TestWriteReadStripedFile {
-  public static final Log LOG = LogFactory.getLog(TestWriteReadStripedFile.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestWriteReadStripedFile.class);
   private final ErasureCodingPolicy ecPolicy =
       SystemErasureCodingPolicies.getByID(
           SystemErasureCodingPolicies.RS_3_2_POLICY_ID);
@@ -63,21 +65,15 @@ public class TestWriteReadStripedFile {
   private Configuration conf = new HdfsConfiguration();
 
   static {
-    GenericTestUtils.setLogLevel(DFSOutputStream.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.ALL);
-    ((Log4JLogger)LogFactory.getLog(BlockPlacementPolicy.class))
-        .getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(DFSOutputStream.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(BlockPlacementPolicy.LOG, Level.TRACE);
   }
 
-  @Rule
-  public Timeout globalTimeout = new Timeout(300000);
-
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
-        false);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDNs).build();
     fs = cluster.getFileSystem();
     fs.enableErasureCodingPolicy(ecPolicy.getName());
@@ -86,7 +82,7 @@ public class TestWriteReadStripedFile {
         ecPolicy.getName());
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (cluster != null) {
       cluster.shutdown();
@@ -325,10 +321,9 @@ public class TestWriteReadStripedFile {
     }
     try {
       fs.concat(target, srcs);
-      Assert.fail("non-ec file shouldn't concat with ec file");
+      Assertions.fail("non-ec file shouldn't concat with ec file");
     } catch (RemoteException e){
-      Assert.assertTrue(e.getMessage()
-          .contains("have different erasure coding policy"));
+      Assertions.assertTrue(e.getMessage().contains("have different erasure coding policy"));
     }
   }
 }

@@ -23,6 +23,8 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.service.Service;
+import org.apache.hadoop.yarn.api.records.timeline.TimelineHealth;
+import org.apache.hadoop.yarn.api.records.timelineservice.TimelineDomain;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntities;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineWriteResponse;
@@ -51,12 +53,28 @@ public interface TimelineWriter extends Service {
       TimelineEntities data, UserGroupInformation callerUgi) throws IOException;
 
   /**
+   * Stores {@link TimelineDomain} object to the timeline
+   * store. Any errors occurring for individual write request objects will be
+   * reported in the response.
+   *
+   * @param context a {@link TimelineCollectorContext}
+   * @param domain a {@link TimelineDomain} object.
+   * @return a {@link TimelineWriteResponse} object.
+   * @throws IOException if there is any exception encountered while storing or
+   *           writing entities to the back end storage.
+   */
+  TimelineWriteResponse write(TimelineCollectorContext context,
+      TimelineDomain domain) throws IOException;
+
+  /**
    * Aggregates the entity information to the timeline store based on which
    * track this entity is to be rolled up to The tracks along which aggregations
    * are to be done are given by {@link TimelineAggregationTrack}
    *
    * Any errors occurring for individual write request objects will be reported
    * in the response.
+   *<p>
+   * This is not invoked anywhere, tested and all implementations return null.
    *
    * @param data
    *          a {@link TimelineEntity} object
@@ -64,7 +82,7 @@ public interface TimelineWriter extends Service {
    *          value.
    * @param track Specifies the track or dimension along which aggregation would
    *     occur. Includes USER, FLOW, QUEUE, etc.
-   * @return a {@link TimelineWriteResponse} object.
+   * @return a {@link TimelineWriteResponse} object. All implementations return null.
    * @throws IOException if there is any exception encountered while aggregating
    *     entities to the backend storage.
    */
@@ -80,4 +98,13 @@ public interface TimelineWriter extends Service {
    *     entities to the backend storage.
    */
   void flush() throws IOException;
+
+  /**
+   * Check if writer connection is working properly.
+   *
+   * @return True if writer connection works as expected, false otherwise.
+   */
+  TimelineHealth getHealthStatus();
+
+
 }

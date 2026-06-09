@@ -18,50 +18,52 @@
 
 package org.apache.hadoop.fs.s3a.commit;
 
+import java.io.File;
 import java.io.IOException;
-import java.io.InterruptedIOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.util.List;
-import java.util.stream.Collectors;
 
-import com.amazonaws.services.s3.AmazonS3;
-import org.junit.Assert;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.contract.ContractTestUtils;
 import org.apache.hadoop.fs.s3a.AbstractS3ATestBase;
-import org.apache.hadoop.fs.s3a.FailureInjectionPolicy;
-import org.apache.hadoop.fs.s3a.InconsistentAmazonS3Client;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
-import org.apache.hadoop.fs.s3a.WriteOperationHelper;
 import org.apache.hadoop.fs.s3a.commit.files.SuccessData;
+import org.apache.hadoop.fs.statistics.IOStatisticsLogging;
+import org.apache.hadoop.fs.statistics.IOStatisticsSnapshot;
+import org.apache.hadoop.fs.statistics.IOStatisticsSupport;
 import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.TypeConverter;
+import org.apache.hadoop.mapreduce.lib.output.committer.manifest.files.ManifestPrinter;
+import org.apache.hadoop.mapreduce.lib.output.committer.manifest.files.ManifestSuccessData;
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
 import org.apache.hadoop.mapreduce.v2.util.MRBuilderUtils;
 
+import static java.time.temporal.ChronoField.DAY_OF_MONTH;
+import static java.time.temporal.ChronoField.MONTH_OF_YEAR;
+import static java.time.temporal.ChronoField.YEAR;
 import static org.apache.hadoop.fs.s3a.Constants.*;
 import static org.apache.hadoop.fs.s3a.MultipartTestUtils.listMultipartUploads;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.*;
 import static org.apache.hadoop.fs.s3a.commit.CommitConstants.*;
+import static org.apache.hadoop.fs.statistics.IOStatisticsLogging.ioStatisticsToString;
 
 /**
  * Base test suite for committer operations.
- *
- * By default, these tests enable the inconsistent committer, with
- * a delay of {@link #CONSISTENCY_DELAY}; they may also have throttling
- * enabled/disabled.
- *
- * <b>Important:</b> all filesystem probes will have to wait for
- * the FS inconsistency delays and handle things like throttle exceptions,
- * or disable throttling and fault injection before the probe.
  *
  */
 public abstract class AbstractCommitITest extends AbstractS3ATestBase {
@@ -69,32 +71,22 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
   private static final Logger LOG =
       LoggerFactory.getLogger(AbstractCommitITest.class);
 
-  protected static final int CONSISTENCY_DELAY = 500;
-  protected static final int CONSISTENCY_PROBE_INTERVAL = 500;
-  protected static final int CONSISTENCY_WAIT = CONSISTENCY_DELAY * 2;
-
-  private InconsistentAmazonS3Client inconsistentClient;
+  /**
+   * Job statistics accrued across all test cases.
+   */
+  private static final IOStatisticsSnapshot JOB_STATISTICS =
+      IOStatisticsSupport.snapshotIOStatistics();
 
   /**
-   * Should the inconsistent S3A client be used?
-   * Default value: true.
-   * @return true for inconsistent listing
+   * Helper class for commit operations and assertions.
    */
-  public boolean useInconsistentClient() {
-    return true;
-  }
+  private CommitterTestHelper testHelper;
 
   /**
-   * switch to an inconsistent path if in inconsistent mode.
-   * {@inheritDoc}
+   * Directory for job summary reports.
+   * This should be set up in test suites testing against real object stores.
    */
-  @Override
-  protected Path path(String filepath) throws IOException {
-    return useInconsistentClient() ?
-           super.path(FailureInjectionPolicy.DEFAULT_DELAY_KEY_SUBSTRING
-               + "/" + filepath)
-           : super.path(filepath);
-  }
+  private File reportDir;
 
   /**
    * Creates a configuration for commit operations: commit is enabled in the FS
@@ -104,22 +96,69 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
   @Override
   protected Configuration createConfiguration() {
     Configuration conf = super.createConfiguration();
-    conf.setBoolean(MAGIC_COMMITTER_ENABLED, true);
+    disableFilesystemCaching(conf);
+    String bucketName = getTestBucketName(conf);
+    removeBucketOverrides(bucketName, conf,
+        MAGIC_COMMITTER_ENABLED,
+        S3A_COMMITTER_FACTORY_KEY,
+        FS_S3A_COMMITTER_NAME,
+        FS_S3A_COMMITTER_STAGING_CONFLICT_MODE,
+        FS_S3A_COMMITTER_STAGING_UNIQUE_FILENAMES,
+        FAST_UPLOAD_BUFFER,
+        S3A_COMMITTER_EXPERIMENTAL_COLLECT_IOSTATISTICS);
+
+    conf.setBoolean(MAGIC_COMMITTER_ENABLED, DEFAULT_MAGIC_COMMITTER_ENABLED);
     conf.setLong(MIN_MULTIPART_THRESHOLD, MULTIPART_MIN_SIZE);
     conf.setInt(MULTIPART_SIZE, MULTIPART_MIN_SIZE);
     conf.set(FAST_UPLOAD_BUFFER, FAST_UPLOAD_BUFFER_ARRAY);
-    if (useInconsistentClient()) {
-      enableInconsistentS3Client(conf, CONSISTENCY_DELAY);
-    }
+    // and bind the report dir
+    conf.set(OPT_SUMMARY_REPORT_DIR, reportDir.toURI().toString());
+    conf.setBoolean(S3A_COMMITTER_EXPERIMENTAL_COLLECT_IOSTATISTICS, true);
     return conf;
   }
 
+  @AfterAll
+  public static void printStatistics() {
+    LOG.info("Aggregate job statistics {}\n",
+        IOStatisticsLogging.ioStatisticsToPrettyString(JOB_STATISTICS));
+  }
   /**
    * Get the log; can be overridden for test case log.
    * @return a log.
    */
   public Logger log() {
     return LOG;
+  }
+
+  /**
+   * Get directory for reports; valid after
+   * setup.
+   * @return where success/failure reports go.
+   */
+  protected File getReportDir() {
+    return reportDir;
+  }
+
+  @BeforeEach
+  @Override
+  public void setup() throws Exception {
+    // set the manifest committer to a localfs path for reports across
+    // all threads.
+    // do this before superclass setup so reportDir is non-null there
+    // and can be used in creating the configuration.
+    reportDir = new File(getProjectBuildDir(), "reports");
+    reportDir.mkdirs();
+
+    super.setup();
+    testHelper = new CommitterTestHelper(getFileSystem());
+  }
+
+  /**
+   * Get helper class.
+   * @return helper; only valid after setup.
+   */
+  public CommitterTestHelper getTestHelper() {
+    return testHelper;
   }
 
   /***
@@ -139,7 +178,6 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
 
   /**
    * Clean up a directory.
-   * Waits for consistency if needed
    * @param dir directory
    * @param conf configuration
    * @throws IOException failure
@@ -148,100 +186,35 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
     if (dir != null) {
       describe("deleting %s", dir);
       FileSystem fs = dir.getFileSystem(conf);
-      waitForConsistency();
+
       fs.delete(dir, true);
-      waitForConsistency();
+
     }
   }
 
   /**
-   * Setup will use inconsistent client if {@link #useInconsistentClient()}
-   * is true.
-   * @throws Exception failure.
+   * Create a random Job ID using the fork ID and the current time.
+   * @return fork ID string in a format parseable by Jobs
+   * @throws Exception failure
    */
-  @Override
-  public void setup() throws Exception {
-    super.setup();
-    if (useInconsistentClient()) {
-      AmazonS3 client = getFileSystem()
-          .getAmazonS3ClientForTesting("fault injection");
-      Assert.assertTrue(
-          "AWS client is not inconsistent, even though the test requirees it "
-          + client,
-          client instanceof InconsistentAmazonS3Client);
-      inconsistentClient = (InconsistentAmazonS3Client) client;
-    }
-  }
-
-  /**
-   * Teardown waits for the consistency delay and resets failure count, so
-   * FS is stable, before the superclass teardown is called. This
-   * should clean things up better.
-   * @throws Exception failure.
-   */
-  @Override
-  public void teardown() throws Exception {
-    waitForConsistency();
-    // make sure there are no failures any more
-    resetFailures();
-    super.teardown();
-  }
-
-  /**
-   * Wait a multiple of the inconsistency delay for things to stabilize;
-   * no-op if the consistent client is used.
-   * @throws InterruptedIOException if the sleep is interrupted
-   */
-  protected void waitForConsistency() throws InterruptedIOException {
-    if (useInconsistentClient() && inconsistentClient != null) {
-      try {
-        Thread.sleep(2* inconsistentClient.getDelayKeyMsec());
-      } catch (InterruptedException e) {
-        throw (InterruptedIOException)
-            (new InterruptedIOException("while waiting for consistency: " + e)
-                .initCause(e));
-      }
-    }
-  }
-
-  /**
-   * Set the throttling factor on requests.
-   * @param p probability of a throttling occurring: 0-1.0
-   */
-  protected void setThrottling(float p) {
-    if (inconsistentClient != null) {
-      inconsistentClient.setThrottleProbability(p);
-    }
-  }
-
-  /**
-   * Set the throttling factor on requests and number of calls to throttle.
-   * @param p probability of a throttling occurring: 0-1.0
-   * @param limit limit to number of calls which fail
-   */
-  protected void setThrottling(float p, int limit) {
-    if (inconsistentClient != null) {
-      inconsistentClient.setThrottleProbability(p);
-    }
-    setFailureLimit(limit);
-  }
-
-  /**
-   * Turn off throttling.
-   */
-  protected void resetFailures() {
-    if (inconsistentClient != null) {
-      setThrottling(0, 0);
-    }
-  }
-
-  /**
-   * Set failure limit.
-   * @param limit limit to number of calls which fail
-   */
-  private void setFailureLimit(int limit) {
-    if (inconsistentClient != null) {
-      inconsistentClient.setFailureLimit(limit);
+  public static String randomJobId() throws Exception {
+    String testUniqueForkId = System.getProperty(TEST_UNIQUE_FORK_ID, "0001");
+    int l = testUniqueForkId.length();
+    String trailingDigits = testUniqueForkId.substring(l - 4, l);
+    try {
+      int digitValue = Integer.valueOf(trailingDigits);
+      DateTimeFormatter formatter = new DateTimeFormatterBuilder()
+          .parseCaseInsensitive()
+          .appendValue(YEAR, 4)
+          .appendValue(MONTH_OF_YEAR, 2)
+          .appendValue(DAY_OF_MONTH, 2)
+          .toFormatter();
+      return String.format("%s%04d_%04d",
+          LocalDateTime.now().format(formatter),
+          (long)(Math.random() * 1000),
+          digitValue);
+    } catch (NumberFormatException e) {
+      throw new Exception("Failed to parse " + trailingDigits, e);
     }
   }
 
@@ -251,19 +224,9 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
    * @return a count of aborts
    * @throws IOException trouble.
    */
-  protected int abortMultipartUploadsUnderPath(Path path) throws IOException {
-    S3AFileSystem fs = getFileSystem();
-    if (fs != null && path != null) {
-      String key = fs.pathToKey(path);
-      WriteOperationHelper writeOps = fs.getWriteOperationHelper();
-      int count = writeOps.abortMultipartUploadsUnderPath(key);
-      if (count > 0) {
-        log().info("Multipart uploads deleted: {}", count);
-      }
-      return count;
-    } else {
-      return 0;
-    }
+  protected void abortMultipartUploadsUnderPath(Path path) throws IOException {
+    getTestHelper()
+        .abortMultipartUploadsUnderPath(path);
   }
 
   /**
@@ -272,8 +235,8 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
    * @throws IOException IO failure
    */
   protected void assertMultipartUploadsPending(Path path) throws IOException {
-    assertTrue("No multipart uploads in progress under " + path,
-        countMultipartUploads(path) > 0);
+    assertTrue(countMultipartUploads(path) > 0,
+        "No multipart uploads in progress under " + path);
   }
 
   /**
@@ -285,10 +248,9 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
   protected void assertNoMultipartUploadsPending(Path path) throws IOException {
     List<String> uploads = listMultipartUploads(getFileSystem(),
         pathToPrefix(path));
-    if (!uploads.isEmpty()) {
-      String result = uploads.stream().collect(Collectors.joining("\n"));
-      fail("Multipart uploads in progress under " + path + " \n" + result);
-    }
+    Assertions.assertThat(uploads)
+        .describedAs("Multipart uploads in progress under " + path)
+        .isEmpty();
   }
 
   /**
@@ -326,29 +288,13 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
    * and that it can be loaded.
    * The contents will be logged and returned.
    * @param dir directory to scan
+   * @param jobId job ID, only verified if non-empty
    * @return the loaded success data
    * @throws IOException IO Failure
    */
-  protected SuccessData verifySuccessMarker(Path dir) throws IOException {
-    assertPathExists("Success marker",
-        new Path(dir, _SUCCESS));
-    SuccessData successData = loadSuccessMarker(dir);
-    log().info("Success data {}", successData.toString());
-    log().info("Metrics\n{}",
-        successData.dumpMetrics("  ", " = ", "\n"));
-    log().info("Diagnostics\n{}",
-        successData.dumpDiagnostics("  ", " = ", "\n"));
-    return successData;
-  }
-
-  /**
-   * Load the success marker and return the data inside it.
-   * @param dir directory containing the marker
-   * @return the loaded data
-   * @throws IOException on any failure to load or validate the data
-   */
-  protected SuccessData loadSuccessMarker(Path dir) throws IOException {
-    return SuccessData.load(getFileSystem(), new Path(dir, _SUCCESS));
+  protected SuccessData verifySuccessMarker(Path dir, String jobId)
+      throws IOException {
+    return validateSuccessFile(dir, "", getFileSystem(), "query", 0, jobId);
   }
 
   /**
@@ -416,5 +362,94 @@ public abstract class AbstractCommitITest extends AbstractS3ATestBase {
     return new TaskAttemptContextImpl(
         jContext.getConfiguration(),
         TypeConverter.fromYarn(attemptID));
+  }
+
+
+  /**
+   * Load in the success data marker: this guarantees that an S3A
+   * committer was used.
+   * @param outputPath path of job
+   * @param committerName name of committer to match, or ""
+   * @param fs filesystem
+   * @param origin origin (e.g. "teragen" for messages)
+   * @param minimumFileCount minimum number of files to have been created
+   * @param jobId job ID, only verified if non-empty
+   * @return the success data
+   * @throws IOException IO failure
+   */
+  public static SuccessData validateSuccessFile(final Path outputPath,
+      final String committerName,
+      final S3AFileSystem fs,
+      final String origin,
+      final int minimumFileCount,
+      final String jobId) throws IOException {
+    SuccessData successData = loadSuccessFile(fs, outputPath, origin);
+    String commitDetails = successData.toString();
+    LOG.info("Committer name " + committerName + "\n{}",
+        commitDetails);
+    LOG.info("Committer statistics: \n{}",
+        successData.dumpMetrics("  ", " = ", "\n"));
+    LOG.info("Job IOStatistics: \n{}",
+        ioStatisticsToString(successData.getIOStatistics()));
+    LOG.info("Diagnostics\n{}",
+        successData.dumpDiagnostics("  ", " = ", "\n"));
+    if (!committerName.isEmpty()) {
+      assertEquals(committerName, successData.getCommitter(),
+          "Wrong committer in " + commitDetails);
+    }
+    Assertions.assertThat(successData.getFilenames())
+        .describedAs("Files committed in " + commitDetails)
+        .hasSizeGreaterThanOrEqualTo(minimumFileCount);
+    if (StringUtils.isNotEmpty(jobId)) {
+      Assertions.assertThat(successData.getJobId())
+          .describedAs("JobID in " + commitDetails)
+          .isEqualTo(jobId);
+    }
+    // also load as a manifest success data file
+    // to verify consistency and that the CLI tool works.
+    Path success = new Path(outputPath, _SUCCESS);
+    final ManifestPrinter showManifest = new ManifestPrinter();
+    ManifestSuccessData manifestSuccessData =
+        showManifest.loadAndPrintManifest(fs, success);
+
+    return successData;
+  }
+
+  /**
+   * Load a success file; fail if the file is empty/nonexistent.
+   * The statistics in {@link #JOB_STATISTICS} are updated with
+   * the statistics from the success file
+   * @param fs filesystem
+   * @param outputPath directory containing the success file.
+   * @param origin origin of the file
+   * @return the loaded file.
+   * @throws IOException failure to find/load the file
+   * @throws AssertionError file is 0-bytes long,
+   */
+  public static SuccessData loadSuccessFile(final FileSystem fs,
+      final Path outputPath, final String origin) throws IOException {
+    ContractTestUtils.assertPathExists(fs,
+        "Output directory " + outputPath
+            + " from " + origin
+            + " not found: Job may not have executed",
+        outputPath);
+    Path success = new Path(outputPath, _SUCCESS);
+    FileStatus status = ContractTestUtils.verifyPathExists(fs,
+        "job completion marker " + success
+            + " from " + origin
+            + " not found: Job may have failed",
+        success);
+    assertTrue(status.isFile(),
+        "_SUCCESS outout from " + origin + " is not a file " + status);
+    assertTrue(status.getLen() > 0,
+        "0 byte success file "
+        + success + " from " + origin
+        + "; an S3A committer was not used");
+    String body = ContractTestUtils.readUTF8(fs, success, -1);
+    LOG.info("Loading committer success file {}. Actual contents=\n{}", success,
+        body);
+    SuccessData successData = SuccessData.load(fs, success);
+    JOB_STATISTICS.aggregate(successData.getIOStatistics());
+    return successData;
   }
 }

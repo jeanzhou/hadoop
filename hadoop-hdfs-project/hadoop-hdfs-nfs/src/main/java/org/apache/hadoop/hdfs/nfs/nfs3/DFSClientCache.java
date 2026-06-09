@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSClient;
@@ -40,13 +40,13 @@ import org.apache.hadoop.io.MultipleIOException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ShutdownHookManager;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Objects;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.cache.RemovalListener;
-import com.google.common.cache.RemovalNotification;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Objects;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.RemovalListener;
+import org.apache.hadoop.thirdparty.com.google.common.cache.RemovalNotification;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -172,13 +172,17 @@ class DFSClientCache {
         LOG.info("Added export: {} FileSystem URI: {} with namenodeId: {}",
             exportPath, exportPath, namenodeId);
         namenodeUriMap.put(namenodeId, exportURI);
-      } else {
-        // if the nnid already exists, it better be the for the same namenode
+      } else if (!exportURI.getAuthority().equals(value.getAuthority())) {
+        // different namenode authorities hashed to the same namenodeId — real collision
         String msg = String.format("FS:%s, Namenode ID collision for path:%s "
                 + "nnid:%s uri being added:%s existing uri:%s", fs.getScheme(),
             exportPath, namenodeId, exportURI, value);
         LOG.error(msg);
         throw new FileSystemException(msg);
+      } else {
+        // same namenode authority (multiple export paths on the same namenode) — safe
+        LOG.debug("Export path: {} maps to an already-registered namenode URI: {}"
+            + " with namenodeId: {}", exportPath, exportURI, namenodeId);
       }
     }
   }

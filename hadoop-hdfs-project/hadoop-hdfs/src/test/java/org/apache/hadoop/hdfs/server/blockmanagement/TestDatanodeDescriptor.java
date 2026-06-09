@@ -17,9 +17,10 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 
@@ -27,7 +28,7 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo.AddBlockResult;
 import org.apache.hadoop.hdfs.server.common.GenerationStamp;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 /**
  * This class tests that methods in DatanodeDescriptor
@@ -63,22 +64,22 @@ public class TestDatanodeDescriptor {
     DatanodeStorageInfo[] storages = dd.getStorageInfos();
     assertTrue(storages.length > 0);
     // add first block
-    assertTrue(storages[0].addBlock(blk) == AddBlockResult.ADDED);
+    assertEquals(AddBlockResult.ADDED, storages[0].addBlock(blk));
     assertEquals(1, dd.numBlocks());
     // remove a non-existent block
     assertFalse(BlocksMap.removeBlock(dd, blk1));
     assertEquals(1, dd.numBlocks());
     // add an existent block
-    assertFalse(storages[0].addBlock(blk) == AddBlockResult.ADDED);
+    assertNotEquals(AddBlockResult.ADDED, storages[0].addBlock(blk));
     assertEquals(1, dd.numBlocks());
     // add second block
-    assertTrue(storages[0].addBlock(blk1) == AddBlockResult.ADDED);
+    assertEquals(AddBlockResult.ADDED, storages[0].addBlock(blk1));
     assertEquals(2, dd.numBlocks());
     // remove first block
     assertTrue(BlocksMap.removeBlock(dd, blk));
     assertEquals(1, dd.numBlocks());
     // remove second block
     assertTrue(BlocksMap.removeBlock(dd, blk1));
-    assertEquals(0, dd.numBlocks());    
+    assertEquals(0, dd.numBlocks());
   }
 }

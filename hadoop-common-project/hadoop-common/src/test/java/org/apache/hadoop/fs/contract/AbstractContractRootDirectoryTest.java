@@ -21,22 +21,29 @@ package org.apache.hadoop.fs.contract;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.assertj.core.api.Assertions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.hadoop.test.tags.RootFilesystemTest;
 
+import static org.apache.commons.lang3.StringUtils.join;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.createFile;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.dataset;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.deleteChildren;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.dumpStats;
+import static org.apache.hadoop.fs.contract.ContractTestUtils.iteratorToList;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.listChildren;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.toList;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.treeWalk;
@@ -46,11 +53,13 @@ import static org.apache.hadoop.fs.contract.ContractTestUtils.treeWalk;
  * Only subclass this for tests against transient filesystems where
  * you don't care about the data.
  */
+@RootFilesystemTest
 public abstract class AbstractContractRootDirectoryTest extends AbstractFSContractTestBase {
   private static final Logger LOG =
       LoggerFactory.getLogger(AbstractContractRootDirectoryTest.class);
   public static final int OBJECTSTORE_RETRY_TIMEOUT = 30000;
 
+  @BeforeEach
   @Override
   public void setup() throws Exception {
     super.setup();
@@ -94,22 +103,18 @@ public abstract class AbstractContractRootDirectoryTest extends AbstractFSContra
     final FileStatus[] originalChildren = listChildren(fs, root);
     LambdaTestUtils.eventually(
         OBJECTSTORE_RETRY_TIMEOUT,
-        new Callable<Void>() {
-          @Override
-          public Void call() throws Exception {
-            FileStatus[] deleted = deleteChildren(fs, root, true);
-            FileStatus[] children = listChildren(fs, root);
-            if (children.length > 0) {
-              fail(String.format(
-                  "After %d attempts: listing after rm /* not empty"
-                      + "\n%s\n%s\n%s",
-                  iterations.incrementAndGet(),
-                  dumpStats("final", children),
+        () -> {
+          iterations.incrementAndGet();
+          FileStatus[] deleted = deleteChildren(fs, root, true);
+          FileStatus[] children = listChildren(fs, root);
+          Assertions.assertThat(children)
+              .describedAs("After %d attempts: listing after rm /* not empty"
+                      + "\ndeleted: %s\n: original %s",
+                  iterations.get(),
                   dumpStats("deleted", deleted),
-                  dumpStats("original", originalChildren)));
-            }
-            return null;
-          }
+                  dumpStats("original", originalChildren))
+              .isEmpty();
+          return null;
         },
         new LambdaTestUtils.ProportionalRetryInterval(50, 1000));
     // then try to delete the empty one
@@ -149,14 +154,18 @@ public abstract class AbstractContractRootDirectoryTest extends AbstractFSContra
     Path root = new Path("/");
     assertIsDirectory(root);
     Path file = new Path("/testRmRootRecursive");
-    ContractTestUtils.touch(getFileSystem(), file);
-    boolean deleted = getFileSystem().delete(root, true);
-    assertIsDirectory(root);
-    LOG.info("rm -rf / result is {}", deleted);
-    if (deleted) {
-      assertPathDoesNotExist("expected file to be deleted", file);
-    } else {
-      assertPathExists("expected file to be preserved", file);;
+    try {
+      ContractTestUtils.touch(getFileSystem(), file);
+      boolean deleted = getFileSystem().delete(root, true);
+      assertIsDirectory(root);
+      LOG.info("rm -rf / result is {}", deleted);
+      if (deleted) {
+        assertPathDoesNotExist("expected file to be deleted", file);
+      } else {
+        assertPathExists("expected file to be preserved", file);
+      }
+    } finally{
+      getFileSystem().delete(file, false);
     }
   }
 
@@ -183,17 +192,35 @@ public abstract class AbstractContractRootDirectoryTest extends AbstractFSContra
     Path root = new Path("/");
     FileStatus[] statuses = fs.listStatus(root);
     for (FileStatus status : statuses) {
-      ContractTestUtils.assertDeleted(fs, status.getPath(), true);
+      ContractTestUtils.assertDeleted(fs, status.getPath(), false, true, false);
     }
-    assertEquals("listStatus on empty root-directory returned a non-empty list",
-        0, fs.listStatus(root).length);
-    assertFalse("listFiles(/, false).hasNext",
-        fs.listFiles(root, false).hasNext());
-    assertFalse("listFiles(/, true).hasNext",
-        fs.listFiles(root, true).hasNext());
-    assertFalse("listLocatedStatus(/).hasNext",
-        fs.listLocatedStatus(root).hasNext());
+    Assertions.assertThat(fs.listStatus(root))
+        .describedAs("ls /")
+        .hasSize(0);
+    assertNoElements("listFiles(/, false)",
+        fs.listFiles(root, false));
+    assertNoElements("listFiles(/, true)",
+        fs.listFiles(root, true));
+    assertNoElements("listLocatedStatus(/)",
+        fs.listLocatedStatus(root));
     assertIsDirectory(root);
+  }
+
+  /**
+   * Assert that an iterator has no elements; the raised exception
+   * will include the element list.
+   * @param operation operation for assertion text.
+   * @param iter iterator
+   * @throws IOException failure retrieving the values.
+   */
+  protected void assertNoElements(String operation,
+      RemoteIterator<LocatedFileStatus> iter) throws IOException {
+    List<LocatedFileStatus> resultList = toList(iter);
+    if (!resultList.isEmpty()) {
+      fail("Expected no results from " + operation + ", but got "
+          + resultList.size() + " elements:\n"
+          + join(resultList, "\n"));
+    }
   }
 
   @Test
@@ -202,11 +229,28 @@ public abstract class AbstractContractRootDirectoryTest extends AbstractFSContra
     FileSystem fs = getFileSystem();
     Path root = new Path("/");
     FileStatus[] statuses = fs.listStatus(root);
+    String listStatusResult = join(statuses, "\n");
     List<LocatedFileStatus> locatedStatusList = toList(
         fs.listLocatedStatus(root));
-    assertEquals(statuses.length, locatedStatusList.size());
+    String locatedStatusResult = join(locatedStatusList, "\n");
+
+    assertEquals(statuses.length,
+        locatedStatusList.size(), "listStatus(/) vs listLocatedStatus(/) with \n"
+        + "listStatus =" + listStatusResult
+        +" listLocatedStatus = " + locatedStatusResult);
     List<LocatedFileStatus> fileList = toList(fs.listFiles(root, false));
-    assertTrue(fileList.size() <= statuses.length);
+    String listFilesResult = join(fileList, "\n");
+    assertTrue(fileList.size() <= statuses.length,
+        "listStatus(/) vs listFiles(/, false) with \n"
+        + "listStatus = " + listStatusResult
+        + "listFiles = " + listFilesResult);
+    List<FileStatus> statusList = (List<FileStatus>) iteratorToList(
+            fs.listStatusIterator(root));
+    Assertions.assertThat(statusList)
+            .describedAs("Result of listStatus(/) and listStatusIterator(/)"
+                    + " must match")
+            .hasSameElementsAs(Arrays.stream(statuses)
+                    .collect(Collectors.toList()));
   }
 
   @Test
@@ -219,7 +263,7 @@ public abstract class AbstractContractRootDirectoryTest extends AbstractFSContra
         fs.listFiles(root, true));
     describe("verifying consistency with treewalk's files");
     ContractTestUtils.TreeScanResults treeWalk = treeWalk(fs, root);
-    treeWalk.assertFieldsEquivalent("files", listing,
+    treeWalk.assertFieldsEquivalent("treewalk vs listFiles(/, true)", listing,
         treeWalk.getFiles(),
         listing.getFiles());
   }

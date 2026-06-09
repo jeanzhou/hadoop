@@ -34,11 +34,15 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.http.FilterContainer;
+import org.apache.hadoop.http.FilterInitializer;
+import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.net.NetUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestWebHdfsWithAuthenticationFilter {
   private static boolean authorized = false;
@@ -63,17 +67,28 @@ public class TestWebHdfsWithAuthenticationFilter {
     public void destroy() {
     }
 
+    /** Initializer for Custom Filter. */
+    static public class Initializer extends FilterInitializer {
+      public Initializer() {}
+
+      @Override
+      public void initFilter(FilterContainer container, Configuration config) {
+        container.addFilter("customFilter",
+            TestWebHdfsWithAuthenticationFilter.CustomizedFilter.class.
+            getName(), null);
+      }
+    }
   }
 
   private static Configuration conf;
   private static MiniDFSCluster cluster;
   private static FileSystem fs;
 
-  @BeforeClass
+  @BeforeAll
   public static void setUp() throws IOException {
     conf = new Configuration();
-    conf.set(DFSConfigKeys.DFS_WEBHDFS_AUTHENTICATION_FILTER_KEY,
-        CustomizedFilter.class.getName());
+    conf.set(HttpServer2.FILTER_INITIALIZER_PROPERTY,
+        CustomizedFilter.Initializer.class.getName());
     conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY, "localhost:0");
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
     InetSocketAddress addr = cluster.getNameNode().getHttpAddress();
@@ -82,7 +97,7 @@ public class TestWebHdfsWithAuthenticationFilter {
     cluster.waitActive();
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() throws IOException {
     if (fs != null) {
       fs.close();
@@ -98,7 +113,7 @@ public class TestWebHdfsWithAuthenticationFilter {
     authorized = false;
     try {
       fs.getFileStatus(new Path("/"));
-      Assert.fail("The filter fails to block the request");
+      fail("The filter fails to block the request");
     } catch (IOException e) {
     }
     authorized = true;

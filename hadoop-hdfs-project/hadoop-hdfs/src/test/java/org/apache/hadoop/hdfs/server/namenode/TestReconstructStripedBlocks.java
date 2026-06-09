@@ -19,12 +19,14 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
+import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
@@ -45,18 +47,21 @@ import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Iterator;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestReconstructStripedBlocks {
   public static final Logger LOG = LoggerFactory.getLogger(
@@ -84,6 +89,7 @@ public class TestReconstructStripedBlocks {
     // chooseUnderReplicatedBlocks at once.
     conf.setInt(
         DFSConfigKeys.DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION, 5);
+
   }
 
   @Test
@@ -132,8 +138,7 @@ public class TestReconstructStripedBlocks {
       for (BlockInfo blk : blocks) {
         assertTrue(blk.isStriped());
         assertTrue(blk.isComplete());
-        assertEquals(cellSize * dataBlocks,
-            blk.getNumBytes());
+        assertEquals(cellSize * dataBlocks, blk.getNumBytes());
         final BlockInfoStriped sb = (BlockInfoStriped) blk;
         assertEquals(groupSize, sb.numNodes());
       }
@@ -167,15 +172,14 @@ public class TestReconstructStripedBlocks {
       DataNode lastDn = cluster.getDataNodes().get(groupSize);
       DatanodeDescriptor last =
           bm.getDatanodeManager().getDatanode(lastDn.getDatanodeId());
-      assertEquals("Counting the number of outstanding EC tasks", numBlocks,
-          last.getNumberOfBlocksToBeErasureCoded());
+      assertEquals(numBlocks, last.getNumberOfBlocksToBeErasureCoded(),
+          "Counting the number of outstanding EC tasks");
       List<BlockECReconstructionInfo> reconstruction =
           last.getErasureCodeCommand(numBlocks);
       for (BlockECReconstructionInfo info : reconstruction) {
         assertEquals(1, info.getTargetDnInfos().length);
         assertEquals(last, info.getTargetDnInfos()[0]);
-        assertEquals(info.getSourceDnInfos().length,
-            info.getLiveBlockIndices().length);
+        assertEquals(info.getSourceDnInfos().length, info.getLiveBlockIndices().length);
         if (groupSize - numOfMissed == dataBlocks) {
           // It's a QUEUE_HIGHEST_PRIORITY block, so the busy DNs will be chosen
           // to make sure we have NUM_DATA_BLOCKS DNs to do reconstruction
@@ -184,8 +188,7 @@ public class TestReconstructStripedBlocks {
         } else {
           // The block has no highest priority, so we don't use the busy DNs as
           // sources
-          assertEquals(groupSize - numOfMissed - numOfBusy,
-              info.getSourceDnInfos().length);
+          assertEquals(groupSize - numOfMissed - numOfBusy, info.getSourceDnInfos().length);
         }
       }
       BlockManagerTestUtil.updateState(bm);
@@ -277,8 +280,6 @@ public class TestReconstructStripedBlocks {
   public void testCountLiveReplicas() throws Exception {
     final HdfsConfiguration conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
-        false);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(groupSize + 2)
         .build();
     cluster.waitActive();
@@ -335,13 +336,13 @@ public class TestReconstructStripedBlocks {
       boolean reconstructed = false;
       for (int i = 0; i < 5; i++) {
         NumberReplicas num = null;
-        fsn.readLock();
+        fsn.readLock(RwLockMode.GLOBAL);
         try {
           BlockInfo blockInfo = cluster.getNamesystem().getFSDirectory()
               .getINode4Write(filePath.toString()).asFile().getLastBlock();
           num = bm.countNodes(blockInfo);
         } finally {
-          fsn.readUnlock();
+          fsn.readUnlock(RwLockMode.GLOBAL, "testCountLiveReplicas");
         }
         if (num.liveReplicas() >= groupSize) {
           reconstructed = true;
@@ -350,7 +351,7 @@ public class TestReconstructStripedBlocks {
           Thread.sleep(1000);
         }
       }
-      Assert.assertTrue(reconstructed);
+      assertTrue(reconstructed);
 
       blks = fs.getClient().getLocatedBlocks(filePath.toString(), 0);
       block = (LocatedStripedBlock) blks.getLastLocatedBlock();
@@ -359,14 +360,15 @@ public class TestReconstructStripedBlocks {
         bitSet.set(index);
       }
       for (int i = 0; i < groupSize; i++) {
-        Assert.assertTrue(bitSet.get(i));
+        assertTrue(bitSet.get(i));
       }
     } finally {
       cluster.shutdown();
     }
   }
 
-  @Test(timeout=120000) // 1 min timeout
+  @Test
+  @Timeout(value = 120)
   public void testReconstructionWork() throws Exception {
     Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_NAMENODE_MIN_BLOCK_SIZE_KEY, 0);
@@ -432,4 +434,145 @@ public class TestReconstructStripedBlocks {
       dfsCluster.shutdown();
     }
   }
+  private byte[] writeStripedFile(DistributedFileSystem fs, Path ecFile,
+                                  int writeBytes) throws Exception {
+    byte[] bytes = StripedFileTestUtil.generateBytes(writeBytes);
+    DFSTestUtil.writeFile(fs, ecFile, new String(bytes));
+    StripedFileTestUtil.waitBlockGroupsReported(fs, ecFile.toString());
+
+    return bytes;
+  }
+  @Test
+  public void testReconstrutionWithBusyBlock1() throws Exception {
+    //When the index of busy block is smaller than the missing block
+    //[0(busy),1(busy),3,4,5,6,7,8]
+    int busyNodeIndex1 = 0;
+    int busyNodeIndex2 = 1;
+    int deadNodeIndex = 2;
+    final Path ecDir = new Path(GenericTestUtils.getRandomizedTempPath());
+    final Path ecFile = new Path(ecDir, "testReconstrutionWithBusyBlock1");
+    int writeBytes = cellSize * dataBlocks;
+    HdfsConfiguration conf = new HdfsConfiguration();
+    initConf(conf);
+    conf.setBoolean(DFSConfigKeys.DFS_DISK_BALANCER_ENABLED, false);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY,
+            2000);
+    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY,
+            1000);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY,
+            4);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+            1);
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(groupSize + 5)
+            .build();
+    cluster.waitActive();
+    DistributedFileSystem dfs = cluster.getFileSystem(0);
+    dfs.enableErasureCodingPolicy(
+            StripedFileTestUtil.getDefaultECPolicy().getName());
+    dfs.mkdirs(ecDir);
+    dfs.setErasureCodingPolicy(ecDir,
+            StripedFileTestUtil.getDefaultECPolicy().getName());
+    byte[] originBytesArray = writeStripedFile(dfs, ecFile, writeBytes);
+    List<LocatedBlock> lbs = ((HdfsDataInputStream) dfs.open(ecFile))
+            .getAllBlocks();
+    LocatedStripedBlock lsb = (LocatedStripedBlock) lbs.get(0);
+    DatanodeInfo[] dnList = lsb.getLocations();
+    BlockManager bm = cluster.getNamesystem().getBlockManager();
+    BlockInfoStriped blockInfo =
+            (BlockInfoStriped) bm.getStoredBlock(
+                    new Block(lsb.getBlock().getBlockId()));
+
+    //1.Make nodes busy
+    DatanodeDescriptor busyNode = bm.getDatanodeManager()
+            .getDatanode(dnList[busyNodeIndex1].getDatanodeUuid());
+    for (int j = 0; j < maxReplicationStreams; j++) {
+      busyNode.incrementPendingReplicationWithoutTargets();
+    }
+    DatanodeDescriptor busyNode2 = bm.getDatanodeManager()
+            .getDatanode(dnList[busyNodeIndex2].getDatanodeUuid());
+    for (int j = 0; j < maxReplicationStreams; j++) {
+      busyNode2.incrementPendingReplicationWithoutTargets();
+    }
+
+    //2.Make a node missing
+    DataNode dn = cluster.getDataNode(dnList[deadNodeIndex].getIpcPort());
+    cluster.stopDataNode(dnList[deadNodeIndex].getXferAddr());
+    cluster.setDataNodeDead(dn.getDatanodeId());
+
+    //3.Whether there is excess replicas or not during the recovery?
+    assertEquals(8, bm.countNodes(blockInfo).liveReplicas());
+
+    GenericTestUtils.waitFor(
+        () -> {
+          return bm.countNodes(blockInfo).liveReplicas() == 9||
+              bm.countNodes(blockInfo).excessReplicas() >= 1||
+              bm.countNodes(blockInfo).redundantInternalBlocks() >= 1;
+        },
+        10, 100000);
+
+    assertEquals(0, bm.countNodes(blockInfo).excessReplicas());
+    assertEquals(9, bm.countNodes(blockInfo).liveReplicas());
+  }
+
+  @Test
+  public void testReconstructionWithStorageTypeNotEnough() throws Exception {
+    final HdfsConfiguration conf = new HdfsConfiguration();
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
+
+    // Nine disk node eleven archive node.
+    int numDn = groupSize * 2 + 2;
+    StorageType[][] storageTypes = new StorageType[numDn][];
+    Arrays.fill(storageTypes, 0, groupSize,
+        new StorageType[]{StorageType.DISK, StorageType.DISK});
+    Arrays.fill(storageTypes, groupSize, numDn,
+        new StorageType[]{StorageType.ARCHIVE, StorageType.ARCHIVE});
+
+    // Nine disk racks and one archive rack.
+    String[] racks = {
+        "/rack1", "/rack2", "/rack3", "/rack4", "/rack5", "/rack6", "/rack7", "/rack8",
+        "/rack9", "/rack0", "/rack0", "/rack0", "/rack0", "/rack0", "/rack0", "/rack0",
+        "/rack0", "/rack0", "/rack0", "/rack0"};
+
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDn)
+        .storageTypes(storageTypes)
+        .racks(racks)
+        .build();
+    cluster.waitActive();
+    DistributedFileSystem fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
+
+    try {
+      fs.mkdirs(dirPath);
+      fs.setStoragePolicy(dirPath, "COLD");
+      fs.setErasureCodingPolicy(dirPath,
+          StripedFileTestUtil.getDefaultECPolicy().getName());
+      DFSTestUtil.createFile(fs, filePath,
+          cellSize * dataBlocks * 2, (short) 1, 0L);
+
+      // Stop one dn.
+      LocatedBlocks blks = fs.getClient().getLocatedBlocks(filePath.toString(), 0);
+      LocatedStripedBlock block = (LocatedStripedBlock) blks.getLastLocatedBlock();
+      DatanodeInfo dnToStop = block.getLocations()[0];
+      cluster.stopDataNode(dnToStop.getXferAddr());
+      cluster.setDataNodeDead(dnToStop);
+
+      // Wait for reconstruction to happen.
+      StripedFileTestUtil.waitForReconstructionFinished(filePath, fs, groupSize);
+      blks = fs.getClient().getLocatedBlocks(filePath.toString(), 0);
+      block = (LocatedStripedBlock) blks.getLastLocatedBlock();
+      BitSet bitSet = new BitSet(groupSize);
+      for (byte index : block.getBlockIndices()) {
+        bitSet.set(index);
+      }
+      for (int i = 0; i < groupSize; i++) {
+        assertTrue(bitSet.get(i));
+      }
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
 }

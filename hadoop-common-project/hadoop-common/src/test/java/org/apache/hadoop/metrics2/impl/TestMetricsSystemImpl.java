@@ -23,29 +23,38 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-
-import javax.annotation.Nullable;
-
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import java.util.stream.StreamSupport;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.invocation.InvocationOnMock;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.stubbing.Answer;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.atMost;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 
-import com.google.common.base.Predicate;
-import com.google.common.base.Supplier;
-import com.google.common.collect.Iterables;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterables;
 
 import org.apache.commons.configuration2.SubsetConfiguration;
 import org.apache.hadoop.metrics2.MetricsException;
 import org.apache.hadoop.test.GenericTestUtils;
-import static org.apache.hadoop.test.MoreAsserts.*;
+import org.apache.hadoop.test.MoreAsserts;
 
 import org.apache.hadoop.metrics2.AbstractMetric;
 import org.apache.hadoop.metrics2.MetricsRecord;
@@ -59,7 +68,6 @@ import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import org.apache.hadoop.metrics2.lib.MutableRate;
 import org.apache.hadoop.metrics2.lib.MutableGaugeLong;
-import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,7 +75,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Test the MetricsSystemImpl class
  */
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class TestMetricsSystemImpl {
   private static final Logger LOG =
       LoggerFactory.getLogger(TestMetricsSystemImpl.class);
@@ -132,7 +140,7 @@ public class TestMetricsSystemImpl {
     List<MetricsRecord> mr2 = r2.getAllValues();
     if (mr1.size() != 0 && mr2.size() != 0) {
       checkMetricsRecords(mr1);
-      assertEquals("output", mr1, mr2);
+      assertEquals(mr1, mr2, "output");
     } else if (mr1.size() != 0) {
       checkMetricsRecords(mr1);
     } else if (mr2.size() != 0) {
@@ -176,7 +184,7 @@ public class TestMetricsSystemImpl {
     List<MetricsRecord> mr1 = r1.getAllValues();
     List<MetricsRecord> mr2 = r2.getAllValues();
     checkMetricsRecords(mr1);
-    assertEquals("output", mr1, mr2);
+    assertEquals(mr1, mr2, "output");
 
   }
   
@@ -246,13 +254,9 @@ public class TestMetricsSystemImpl {
     for (Thread t : threads)
       t.join();
     assertEquals(0L, ms.droppedPubAll.value());
-    assertTrue(StringUtils.join("\n", Arrays.asList(results)),
-      Iterables.all(Arrays.asList(results), new Predicate<String>() {
-        @Override
-        public boolean apply(@Nullable String input) {
-          return input.equalsIgnoreCase("Passed");
-        }
-      }));
+    assertTrue(Arrays.asList(results).stream().allMatch(
+        input -> input.equalsIgnoreCase("Passed")),
+        String.join("\n", Arrays.asList(results)));
     ms.stop();
     ms.shutdown();
   }
@@ -312,8 +316,8 @@ public class TestMetricsSystemImpl {
     ms.stop();
     ms.shutdown();
     assertTrue(hanging.getInterrupted());
-    assertTrue("The sink didn't get called after its first hang " +
-               "for subsequent records.", hanging.getGotCalledSecondTime());
+    assertTrue(hanging.getGotCalledSecondTime(),
+        "The sink didn't get called after its first hang for subsequent records.");
   }
 
   private static class HangingSink implements MetricsSink {
@@ -368,11 +372,14 @@ public class TestMetricsSystemImpl {
     ms.shutdown();
   }
 
-  @Test(expected=MetricsException.class) public void testRegisterDupError() {
-    MetricsSystem ms = new MetricsSystemImpl("test");
-    TestSource ts = new TestSource("ts");
-    ms.register(ts);
-    ms.register(ts);
+  @Test
+  public void testRegisterDupError() {
+    assertThrows(MetricsException.class, () -> {
+      MetricsSystem ms = new MetricsSystemImpl("test");
+      TestSource ts = new TestSource("ts");
+      ms.register(ts);
+      ms.register(ts);
+    });
   }
 
   @Test public void testStartStopStart() {
@@ -432,11 +439,11 @@ public class TestMetricsSystemImpl {
   private void checkMetricsRecords(List<MetricsRecord> recs) {
     LOG.debug(recs.toString());
     MetricsRecord r = recs.get(0);
-    assertEquals("name", "s1rec", r.name());
-    assertEquals("tags", new MetricsTag[] {
+    assertEquals("s1rec", r.name(), "name");
+    MoreAsserts.assertEquals("tags", new MetricsTag[] {
       tag(MsInfo.Context, "test"),
       tag(MsInfo.Hostname, hostname)}, r.tags());
-    assertEquals("metrics", MetricsLists.builder("")
+    MoreAsserts.assertEquals("metrics", MetricsLists.builder("")
       .addCounter(info("C1", "C1 desc"), 1L)
       .addGauge(info("G1", "G1 desc"), 2L)
       .addCounter(info("S1NumOps", "Number of ops for s1"), 1L)
@@ -444,8 +451,10 @@ public class TestMetricsSystemImpl {
       .metrics(), r.metrics());
 
     r = recs.get(1);
-    assertTrue("NumActiveSinks should be 3", Iterables.contains(r.metrics(),
-               new MetricGaugeInt(MsInfo.NumActiveSinks, 3)));
+    assertTrue(Iterables.contains(r.metrics(), new MetricGaugeInt(MsInfo.NumActiveSinks, 3)),
+        "NumActiveSinks should be 3");
+    assertTrue(Iterables.contains(r.metrics(), new MetricGaugeInt(MsInfo.NumAllSinks, 3)),
+        "NumAllSinks should be 3");
   }
 
   @Test
@@ -482,14 +491,12 @@ public class TestMetricsSystemImpl {
       ms.onTimerEvent();
       verify(dataSink, timeout(500).times(2)).putMetrics(r1.capture());
       List<MetricsRecord> mr = r1.getAllValues();
-      Number qSize = Iterables.find(mr.get(1).metrics(),
-          new Predicate<AbstractMetric>() {
-            @Override
-            public boolean apply(@Nullable AbstractMetric input) {
-              assert input != null;
-              return input.name().equals("Sink_slowSinkQsize");
-            }
-      }).value();
+      Number qSize = StreamSupport.stream(mr.get(1).metrics().spliterator(),
+          false).filter(
+              input -> {
+                assert input != null;
+                return input.name().equals("Sink_slowSinkQsize");
+              }).findFirst().get().value();
       assertEquals(1, qSize);
     } finally {
       proceedSignal.countDown();
@@ -534,7 +541,8 @@ public class TestMetricsSystemImpl {
   /**
    * HADOOP-11932
    */
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testHangOnSinkRead() throws Exception {
     new ConfigBuilder().add("*.period", 8)
         .add("test.sink.test.class", TestSink.class.getName())
@@ -638,5 +646,26 @@ public class TestMetricsSystemImpl {
 
   private static String getPluginUrlsAsString() {
     return "file:metrics2-test-plugin.jar";
+  }
+
+  @Test
+  public void testMetricSystemRestart() {
+    MetricsSystemImpl ms = new MetricsSystemImpl("msRestartTestSystem");
+    TestSink ts = new TestSink();
+    String sinkName = "restartTestSink";
+
+    try {
+      ms.start();
+      ms.register(sinkName, "", ts);
+      assertNotNull(ms.getSinkAdapter(sinkName),
+          "no adapter exists for " + sinkName);
+      ms.stop();
+
+      ms.start();
+      assertNotNull(ms.getSinkAdapter(sinkName),
+          "no adapter exists for " + sinkName);
+    } finally {
+      ms.stop();
+    }
   }
 }

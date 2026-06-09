@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.security.authorize;
 
+import java.net.InetAddress;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
@@ -30,7 +31,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.MachineList;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 @InterfaceStability.Unstable
 @InterfaceAudience.Public
@@ -75,9 +76,9 @@ public class DefaultImpersonationProvider implements ImpersonationProvider {
     //   $configPrefix.[ANY].hosts
     //
     String prefixRegEx = configPrefix.replace(".", "\\.");
-    String usersGroupsRegEx = prefixRegEx + "[^.]*(" +
+    String usersGroupsRegEx = prefixRegEx + "[\\S]*(" +
         Pattern.quote(CONF_USERS) + "|" + Pattern.quote(CONF_GROUPS) + ")";
-    String hostsRegEx = prefixRegEx + "[^.]*" + Pattern.quote(CONF_HOSTS);
+    String hostsRegEx = prefixRegEx + "[\\S]*" + Pattern.quote(CONF_HOSTS);
 
   // get list of users and groups per proxyuser
     Map<String,String> allMatchKeys = 
@@ -105,8 +106,8 @@ public class DefaultImpersonationProvider implements ImpersonationProvider {
   }
 
   @Override
-  public void authorize(UserGroupInformation user, 
-      String remoteAddress) throws AuthorizationException {
+  public void authorize(UserGroupInformation user,
+      InetAddress remoteAddress) throws AuthorizationException {
     
     if (user == null) {
       throw new IllegalArgumentException("user is null.");

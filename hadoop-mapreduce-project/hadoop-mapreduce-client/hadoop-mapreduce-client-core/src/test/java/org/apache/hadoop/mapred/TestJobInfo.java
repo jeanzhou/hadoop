@@ -30,17 +30,20 @@ import org.apache.hadoop.mapreduce.JobID;
 import org.apache.hadoop.mapreduce.TaskID;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.JobStatus.State;
-import org.junit.Assert;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * test class JobInfo
- * 
- * 
+ *
+ *
  */
 public class TestJobInfo {
-  @Test (timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testJobInfo() throws IOException {
     JobID jid = new JobID("001", 1);
     Text user = new Text("User");
@@ -59,7 +62,8 @@ public class TestJobInfo {
 
   }
   
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testTaskID() throws IOException, InterruptedException {
     JobID jobid = new JobID("1014873536921", 6);
     TaskID tid = new TaskID(jobid, TaskType.MAP, 0);
@@ -69,9 +73,9 @@ public class TestJobInfo {
         new org.apache.hadoop.mapred.TaskReport(tid1, 0.0f,
           State.FAILED.toString(), null, TIPStatus.FAILED, 100, 100,
           new org.apache.hadoop.mapred.Counters());
-    Assert
-      .assertEquals(treport.getTaskId(), "task_1014873536921_0006_m_000000");
-    Assert.assertEquals(treport.getTaskID().toString(),
-      "task_1014873536921_0006_m_000000");
+    assertThat(treport.getTaskId()).isEqualTo(
+        "task_1014873536921_0006_m_000000");
+    assertThat(treport.getTaskID().toString()).isEqualTo(
+        "task_1014873536921_0006_m_000000");
   }
 }

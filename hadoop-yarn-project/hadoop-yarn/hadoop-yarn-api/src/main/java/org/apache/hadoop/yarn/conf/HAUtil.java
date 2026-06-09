@@ -27,7 +27,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,8 +64,12 @@ public class HAUtil {
    *         configuration; else false.
    */
   public static boolean isFederationFailoverEnabled(Configuration conf) {
-    return conf.getBoolean(YarnConfiguration.FEDERATION_FAILOVER_ENABLED,
-        YarnConfiguration.DEFAULT_FEDERATION_FAILOVER_ENABLED);
+    // Federation failover is not enabled unless federation is enabled. This previously caused
+    // YARN RMProxy to use the HA Retry policy in a non-HA & non-federation environments because
+    // the default federation failover enabled value is true.
+    return isFederationEnabled(conf) &&
+        conf.getBoolean(YarnConfiguration.FEDERATION_FAILOVER_ENABLED,
+            YarnConfiguration.DEFAULT_FEDERATION_FAILOVER_ENABLED);
   }
 
   /**
@@ -98,7 +102,7 @@ public class HAUtil {
   /**
    * Verify configuration for Resource Manager HA.
    * @param conf Configuration
-   * @throws YarnRuntimeException
+   * @throws YarnRuntimeException thrown by a remote service.
    */
   public static void verifyAndSetConfiguration(Configuration conf)
     throws YarnRuntimeException {
@@ -129,8 +133,8 @@ public class HAUtil {
       for (String prefix : YarnConfiguration.getServiceAddressConfKeys(conf)) {
         checkAndSetRMRPCAddress(prefix, id, conf);
       }
-      setValue.append(id);
-      setValue.append(",");
+      setValue.append(id)
+          .append(",");
     }
     conf.set(YarnConfiguration.RM_HA_IDS,
       setValue.substring(0, setValue.length() - 1));
@@ -316,7 +320,10 @@ public class HAUtil {
   }
 
   /**
-   * Add non empty and non null suffix to a key.
+   * Add non-empty and non-null suffix to a key.
+   *
+   * @param key key.
+   * @param suffix suffix.
    * @return the suffixed key
    */
   public static String addSuffix(String key, String suffix) {

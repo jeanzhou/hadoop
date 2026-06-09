@@ -18,8 +18,9 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.ams.ApplicationMasterServiceContext;
 import org.apache.hadoop.yarn.ams.ApplicationMasterServiceUtils;
@@ -36,6 +37,7 @@ import org.apache.hadoop.yarn.api.records.CollectorInfo;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerUpdateType;
+import org.apache.hadoop.yarn.api.records.EnhancedHeadroom;
 import org.apache.hadoop.yarn.api.records.NMToken;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeReport;
@@ -53,7 +55,7 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.InvalidContainerReleaseException;
 import org.apache.hadoop.yarn.exceptions.InvalidResourceBlacklistRequestException;
 import org.apache.hadoop.yarn.exceptions.InvalidResourceRequestException;
-import org.apache.hadoop.yarn.exceptions.SchedulerInvalidResoureRequestException;
+import org.apache.hadoop.yarn.exceptions.SchedulerInvalidResourceRequestException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
@@ -74,6 +76,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ContainerUpdates;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler
     .SchedulerNodeReport;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
@@ -89,13 +92,20 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+import static org.apache.hadoop.yarn.exceptions
+        .InvalidResourceRequestException.InvalidResourceType
+        .GREATER_THEN_MAX_ALLOCATION;
+import static org.apache.hadoop.yarn.exceptions
+        .InvalidResourceRequestException.InvalidResourceType.LESS_THAN_ZERO;
+
 /**
  * This is the default Application Master Service processor. It has be the
  * last processor in the @{@link AMSProcessingChain}.
  */
 final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
 
-  private static final Log LOG = LogFactory.getLog(DefaultAMSProcessor.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(DefaultAMSProcessor.class);
 
   private final static List<Container> EMPTY_CONTAINER_LIST =
       new ArrayList<Container>();
@@ -107,12 +117,21 @@ final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
 
   private RMContext rmContext;
   private ResourceProfilesManager resourceProfilesManager;
+  private boolean timelineServiceV2Enabled;
+  private boolean nodelabelsEnabled;
+  private Set<String> exclusiveEnforcedPartitions;
 
   @Override
   public void init(ApplicationMasterServiceContext amsContext,
       ApplicationMasterServiceProcessor nextProcessor) {
     this.rmContext = (RMContext)amsContext;
     this.resourceProfilesManager = rmContext.getResourceProfilesManager();
+    this.timelineServiceV2Enabled = YarnConfiguration.
+        timelineServiceV2Enabled(rmContext.getYarnConfiguration());
+    this.nodelabelsEnabled = YarnConfiguration
+        .areNodeLabelsEnabled(rmContext.getYarnConfiguration());
+    this.exclusiveEnforcedPartitions = YarnConfiguration
+        .getExclusiveEnforcedPartitions(rmContext.getYarnConfiguration());
   }
 
   @Override
@@ -149,14 +168,13 @@ final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
     // and corresponding NM tokens.
     if (app.getApplicationSubmissionContext()
         .getKeepContainersAcrossApplicationAttempts()) {
+      // Clear the node set remembered by the secret manager. Necessary
+      // for UAM restart because we use the same attemptId.
+      rmContext.getNMTokenSecretManager().clearNodeSetForAttempt(applicationAttemptId);
       List<Container> transferredContainers = getScheduler()
           .getTransferredContainers(applicationAttemptId);
       if (!transferredContainers.isEmpty()) {
         response.setContainersFromPreviousAttempts(transferredContainers);
-        // Clear the node set remembered by the secret manager. Necessary
-        // for UAM restart because we use the same attemptId.
-        rmContext.getNMTokenSecretManager()
-            .clearNodeSetForAttempt(applicationAttemptId);
 
         List<NMToken> nmTokens = new ArrayList<NMToken>();
         for (Container container : transferredContainers) {
@@ -221,18 +239,23 @@ final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
           && ResourceRequest.ANY.equals(req.getResourceName())) {
         req.setNodeLabelExpression(asc.getNodeLabelExpression());
       }
+      if (ResourceRequest.ANY.equals(req.getResourceName())) {
+        SchedulerUtils.enforcePartitionExclusivity(req,
+            exclusiveEnforcedPartitions, asc.getNodeLabelExpression());
+      }
     }
 
-    Resource maximumCapacity = getScheduler().getMaximumResourceCapability();
+    Resource maximumCapacity =
+        getScheduler().getMaximumResourceCapability(app.getQueue());
 
     // sanity check
     try {
       RMServerUtils.normalizeAndValidateRequests(ask,
           maximumCapacity, app.getQueue(),
-          getScheduler(), getRmContext());
+          getScheduler(), getRmContext(), nodelabelsEnabled);
     } catch (InvalidResourceRequestException e) {
-      LOG.warn("Invalid resource ask by application " + appAttemptId, e);
-      throw e;
+      RMAppAttempt rmAppAttempt = app.getRMAppAttempt(appAttemptId);
+      handleInvalidResourceException(e, rmAppAttempt);
     }
 
     try {
@@ -278,7 +301,7 @@ final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
         allocation = getScheduler().allocate(appAttemptId, ask,
             request.getSchedulingRequests(), release,
             blacklistAdditions, blacklistRemovals, containerUpdateRequests);
-      } catch (SchedulerInvalidResoureRequestException e) {
+      } catch (SchedulerInvalidResourceRequestException e) {
         LOG.warn("Exceptions caught when scheduler handling requests");
         throw new YarnException(e);
       }
@@ -310,15 +333,39 @@ final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
         .pullJustFinishedContainers());
     response.setAvailableResources(allocation.getResourceLimit());
 
+    QueueMetrics queueMetrics =
+        this.rmContext.getScheduler().getRootQueueMetrics();
+    if (queueMetrics != null) {
+      int totalVirtualCores =
+          queueMetrics.getAllocatedVirtualCores() + queueMetrics
+              .getAvailableVirtualCores();
+      int pendingContainers = queueMetrics.getPendingContainers();
+      response.setEnhancedHeadroom(
+          EnhancedHeadroom.newInstance(pendingContainers, totalVirtualCores));
+    }
+
     addToContainerUpdates(response, allocation,
         ((AbstractYarnScheduler)getScheduler())
             .getApplicationAttempt(appAttemptId).pullUpdateContainerErrors());
 
-    response.setNumClusterNodes(getScheduler().getNumClusterNodes());
+    String label="";
+    try {
+      label = rmContext.getScheduler()
+          .getQueueInfo(app.getQueue(), false, false)
+          .getDefaultNodeLabelExpression();
+    } catch (Exception e){
+      //Queue may not exist since it could be auto-created in case of
+      // dynamic queues
+    }
+
+    if (label == null || label.equals("")) {
+      response.setNumClusterNodes(getScheduler().getNumClusterNodes());
+    } else {
+      response.setNumClusterNodes(rmContext.getNodeLabelManager().getActiveNMCountPerLabel(label));
+    }
 
     // add collector address for this application
-    if (YarnConfiguration.timelineServiceV2Enabled(
-        getRmContext().getYarnConfiguration())) {
+    if (timelineServiceV2Enabled) {
       CollectorInfo collectorInfo = app.getCollectorInfo();
       if (collectorInfo != null) {
         response.setCollectorInfo(collectorInfo);
@@ -334,6 +381,20 @@ final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
 
     response.setContainersFromPreviousAttempts(
         allocation.getPreviousAttemptContainers());
+
+    response.setRejectedSchedulingRequests(allocation.getRejectedRequest());
+
+  }
+
+  private void handleInvalidResourceException(InvalidResourceRequestException e,
+          RMAppAttempt rmAppAttempt) throws InvalidResourceRequestException {
+    if (e.getInvalidResourceType() == LESS_THAN_ZERO ||
+            e.getInvalidResourceType() == GREATER_THEN_MAX_ALLOCATION) {
+      rmAppAttempt.updateAMLaunchDiagnostics(e.getMessage());
+    }
+    LOG.warn("Invalid resource ask by application " +
+            rmAppAttempt.getAppAttemptId(), e);
+    throw e;
   }
 
   private void handleNodeUpdates(RMApp app, AllocateResponse allocateResponse) {
@@ -345,7 +406,7 @@ final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
         RMNode rmNode = rmNodeEntry.getKey();
         SchedulerNodeReport schedulerNodeReport =
             getScheduler().getNodeReport(rmNode.getNodeID());
-        Resource used = BuilderUtils.newResource(0, 0);
+        Resource used = Resources.createResource(0);
         int numContainers = 0;
         if (schedulerNodeReport != null) {
           used = schedulerNodeReport.getUsedResource();
@@ -382,7 +443,7 @@ final class DefaultAMSProcessor implements ApplicationMasterServiceProcessor {
     // Send the status update to the appAttempt.
     getRmContext().getDispatcher().getEventHandler().handle(
         new RMAppAttemptStatusupdateEvent(appAttemptId, request
-            .getProgress()));
+            .getProgress(), request.getTrackingUrl()));
   }
 
   @Override

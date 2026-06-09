@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.preemption;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
@@ -28,6 +28,7 @@ import org.apache.hadoop.yarn.util.resource.Resources;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -43,20 +44,21 @@ public class PreemptionManager {
   }
 
   public void refreshQueues(CSQueue parent, CSQueue current) {
+    writeLock.lock();
     try {
-      writeLock.lock();
       PreemptableQueue parentEntity = null;
       if (parent != null) {
-        parentEntity = entities.get(parent.getQueueName());
+        parentEntity = entities.get(parent.getQueuePath());
       }
 
-      if (!entities.containsKey(current.getQueueName())) {
-        entities.put(current.getQueueName(),
+      if (!entities.containsKey(current.getQueuePath())) {
+        entities.put(current.getQueuePath(),
             new PreemptableQueue(parentEntity));
       }
 
-      if (current.getChildQueues() != null) {
-        for (CSQueue child : current.getChildQueues()) {
+      List<CSQueue> childQueues = current.getChildQueuesByTryLock();
+      if (childQueues != null) {
+        for (CSQueue child : childQueues) {
           refreshQueues(current, child);
         }
       }
@@ -67,8 +69,8 @@ public class PreemptionManager {
   }
 
   public void addKillableContainer(KillableContainer container) {
+    writeLock.lock();
     try {
-      writeLock.lock();
       PreemptableQueue entity = entities.get(container.getLeafQueueName());
       if (null != entity) {
         entity.addKillableContainer(container);
@@ -80,8 +82,8 @@ public class PreemptionManager {
   }
 
   public void removeKillableContainer(KillableContainer container) {
+    writeLock.lock();
     try {
-      writeLock.lock();
       PreemptableQueue entity = entities.get(container.getLeafQueueName());
       if (null != entity) {
         entity.removeKillableContainer(container);
@@ -106,8 +108,8 @@ public class PreemptionManager {
   @VisibleForTesting
   public Map<ContainerId, RMContainer> getKillableContainersMap(
       String queueName, String partition) {
+    readLock.lock();
     try {
-      readLock.lock();
       PreemptableQueue entity = entities.get(queueName);
       if (entity != null) {
         Map<ContainerId, RMContainer> containers =
@@ -129,8 +131,8 @@ public class PreemptionManager {
   }
 
   public Resource getKillableResource(String queueName, String partition) {
+    readLock.lock();
     try {
-      readLock.lock();
       PreemptableQueue entity = entities.get(queueName);
       if (entity != null) {
         Resource res = entity.getTotalKillableResources().get(partition);
@@ -147,8 +149,8 @@ public class PreemptionManager {
   }
 
   public Map<String, PreemptableQueue> getShallowCopyOfPreemptableQueues() {
+    readLock.lock();
     try {
-      readLock.lock();
       Map<String, PreemptableQueue> map = new HashMap<>();
       for (Map.Entry<String, PreemptableQueue> entry : entities.entrySet()) {
         String key = entry.getKey();

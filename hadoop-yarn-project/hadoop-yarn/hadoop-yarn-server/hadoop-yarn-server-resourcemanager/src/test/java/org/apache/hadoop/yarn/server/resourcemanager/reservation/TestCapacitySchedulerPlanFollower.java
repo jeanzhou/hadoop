@@ -17,9 +17,11 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.reservation;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
@@ -30,7 +32,6 @@ import java.util.concurrent.ConcurrentMap;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.AccessControlException;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
@@ -43,19 +44,17 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerContext;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.TestUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import org.mockito.Matchers;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 
 public class TestCapacitySchedulerPlanFollower extends
@@ -66,10 +65,7 @@ public class TestCapacitySchedulerPlanFollower extends
   private CapacitySchedulerContext csContext;
   private CapacityScheduler cs;
 
-  @Rule
-  public TestName name = new TestName();
-
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     CapacityScheduler spyCs = new CapacityScheduler();
     cs = spy(spyCs);
@@ -82,11 +78,13 @@ public class TestCapacitySchedulerPlanFollower extends
         spy(new ConcurrentHashMap<ApplicationId, RMApp>());
     RMApp rmApp = mock(RMApp.class);
     RMAppAttempt rmAppAttempt = mock(RMAppAttempt.class);
-    when(rmApp.getRMAppAttempt((ApplicationAttemptId) Matchers.any()))
+    when(rmApp.getRMAppAttempt(any()))
         .thenReturn(rmAppAttempt);
     when(rmApp.getCurrentAppAttempt()).thenReturn(rmAppAttempt);
-    Mockito.doReturn(rmApp).when(spyApps).get((ApplicationId) Matchers.any());
-    Mockito.doReturn(true).when(spyApps).containsKey((ApplicationId) Matchers.any());
+    Mockito.doReturn(rmApp)
+        .when(spyApps).get(ArgumentMatchers.<ApplicationId>any());
+    Mockito.doReturn(true)
+        .when(spyApps).containsKey(ArgumentMatchers.<ApplicationId>any());
     when(spyRMContext.getRMApps()).thenReturn(spyApps);
     when(spyRMContext.getScheduler()).thenReturn(scheduler);
 
@@ -126,10 +124,12 @@ public class TestCapacitySchedulerPlanFollower extends
 
     String reservationQ =
         ReservationSystemTestUtil.getFullReservationQueueName();
+    QueuePath reservationQueuePath =
+        ReservationSystemTestUtil.getFullReservationQueuePath();
     CapacitySchedulerConfiguration csConf = cs.getConfiguration();
-    csConf.setReservationWindow(reservationQ, 20L);
-    csConf.setMaximumCapacity(reservationQ, 40);
-    csConf.setAverageCapacity(reservationQ, 20);
+    csConf.setReservationWindow(reservationQueuePath, 20L);
+    csConf.setMaximumCapacity(reservationQueuePath, 40);
+    csConf.setAverageCapacity(reservationQueuePath, 20);
     policy.init(reservationQ, csConf);
   }
 
@@ -156,8 +156,8 @@ public class TestCapacitySchedulerPlanFollower extends
   @Override
   protected void checkDefaultQueueBeforePlanFollowerRun(){
     Queue defQ = getDefaultQueue();
-    Assert.assertEquals(0, getNumberOfApplications(defQ));
-    Assert.assertNotNull(defQ);
+    assertEquals(0, getNumberOfApplications(defQ));
+    assertNotNull(defQ);
   }
 
   @Override
@@ -191,8 +191,8 @@ public class TestCapacitySchedulerPlanFollower extends
       double expectedCapacity, double expectedMaxCapacity) {
     CSQueue q = cs.getQueue(r2.toString());
     assertNotNull(q);
-    Assert.assertEquals(expectedCapacity, q.getCapacity(), 0.01);
-    Assert.assertEquals(expectedMaxCapacity, q.getMaximumCapacity(), 1.0);
+    assertEquals(expectedCapacity, q.getCapacity(), 0.01);
+    assertEquals(expectedMaxCapacity, q.getMaximumCapacity(), 1.0);
   }
 
   @Override
@@ -206,7 +206,7 @@ public class TestCapacitySchedulerPlanFollower extends
     return new ApplicationACLsManager(conf);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (scheduler != null) {
       cs.stop();

@@ -17,19 +17,29 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertFalse;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Write.RECOVER_LEASE_ON_CLOSE_EXCEPTION_KEY;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.doThrow;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.CreateFlag;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.mockito.Mockito;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StreamCapabilities.StreamCapability;
+import org.apache.hadoop.hdfs.client.HdfsDataOutputStream.SyncFlag;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.io.IOUtils;
@@ -37,20 +47,20 @@ import org.apache.hadoop.io.erasurecode.CodecUtil;
 import org.apache.hadoop.io.erasurecode.ErasureCodeNative;
 import org.apache.hadoop.io.erasurecode.rawcoder.NativeRSRawErasureCoderFactory;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.Timeout;
 
+@Timeout(300)
 public class TestDFSStripedOutputStream {
-  public static final Log LOG = LogFactory.getLog(
+  public static final Logger LOG = LoggerFactory.getLogger(
       TestDFSStripedOutputStream.class);
 
   static {
-    GenericTestUtils.setLogLevel(DFSOutputStream.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(DFSOutputStream.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.TRACE);
   }
 
   private ErasureCodingPolicy ecPolicy;
@@ -64,14 +74,11 @@ public class TestDFSStripedOutputStream {
   private final int stripesPerBlock = 4;
   private int blockSize;
 
-  @Rule
-  public Timeout globalTimeout = new Timeout(300000);
-
   public ErasureCodingPolicy getEcPolicy() {
     return StripedFileTestUtil.getDefaultECPolicy();
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     /*
      * Initialize erasure coding policy.
@@ -100,7 +107,7 @@ public class TestDFSStripedOutputStream {
     fs.getClient().setErasureCodingPolicy("/", ecPolicy.getName());
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -195,19 +202,24 @@ public class TestDFSStripedOutputStream {
   public void testStreamFlush() throws Exception {
     final byte[] bytes = StripedFileTestUtil.generateBytes(blockSize *
         dataBlocks * 3 + cellSize * dataBlocks + cellSize + 123);
-    FSDataOutputStream os = fs.create(new Path("/ec-file-1"));
-    assertFalse("DFSStripedOutputStream should not have hflush() " +
-            "capability yet!", os.hasCapability(
-                StreamCapability.HFLUSH.getValue()));
-    assertFalse("DFSStripedOutputStream should not have hsync() " +
-            "capability yet!", os.hasCapability(
-                StreamCapability.HSYNC.getValue()));
-    InputStream is = new ByteArrayInputStream(bytes);
-    IOUtils.copyBytes(is, os, bytes.length);
-    os.hflush();
-    IOUtils.copyBytes(is, os, bytes.length);
-    os.hsync();
-    os.close();
+    try (FSDataOutputStream os = fs.create(new Path("/ec-file-1"))) {
+      assertFalse(os.hasCapability(StreamCapability.HFLUSH.getValue()),
+          "DFSStripedOutputStream should not have hflush() capability yet!");
+      assertFalse(os.hasCapability(StreamCapability.HSYNC.getValue()),
+          "DFSStripedOutputStream should not have hsync() capability yet!");
+      try (InputStream is = new ByteArrayInputStream(bytes)) {
+        IOUtils.copyBytes(is, os, bytes.length);
+        os.hflush();
+        IOUtils.copyBytes(is, os, bytes.length);
+        os.hsync();
+        IOUtils.copyBytes(is, os, bytes.length);
+      }
+      assertTrue(os.getWrappedStream() instanceof DFSStripedOutputStream,
+          "stream is not a DFSStripedOutputStream");
+      final DFSStripedOutputStream dfssos =
+          (DFSStripedOutputStream) os.getWrappedStream();
+      dfssos.hsync(EnumSet.of(SyncFlag.UPDATE_LENGTH));
+    }
   }
 
   private void testOneFile(String src, int writeBytes) throws Exception {
@@ -220,5 +232,90 @@ public class TestDFSStripedOutputStream {
 
     StripedFileTestUtil.checkData(fs, testPath, writeBytes,
         new ArrayList<DatanodeInfo>(), null, blockSize * dataBlocks);
+  }
+
+  @Test
+  public void testFileBlockSizeSmallerThanCellSize() throws Exception {
+    final Path path = new Path("testFileBlockSizeSmallerThanCellSize");
+    final byte[] bytes = StripedFileTestUtil.generateBytes(cellSize * 2);
+    try {
+      DFSTestUtil.writeFile(fs, path, bytes, cellSize / 2);
+      fail("Creating a file with block size smaller than "
+          + "ec policy's cell size should fail");
+    } catch (IOException expected) {
+      LOG.info("Caught expected exception", expected);
+      GenericTestUtils
+          .assertExceptionContains("less than the cell size", expected);
+    }
+  }
+
+  @Test
+  public void testExceptionInCloseECFileWithRecoverLease() throws Exception {
+    Configuration config = new Configuration();
+    config.setBoolean(RECOVER_LEASE_ON_CLOSE_EXCEPTION_KEY, true);
+    DFSClient client =
+        new DFSClient(cluster.getNameNode(0).getNameNodeAddress(), config);
+    DFSClient spyClient = Mockito.spy(client);
+    DFSOutputStream dfsOutputStream =
+        spyClient.create("/testExceptionInCloseECFileWithRecoverLease",
+            FsPermission.getFileDefault(), EnumSet.of(CreateFlag.CREATE),
+            (short) 3, 1024*1024, null, 1024, null);
+    assertTrue(dfsOutputStream instanceof DFSStripedOutputStream,
+        "stream should be a DFSStripedOutputStream");
+    DFSOutputStream spyDFSOutputStream = Mockito.spy(dfsOutputStream);
+    doThrow(new IOException("Emulated IOException in close"))
+        .when(spyDFSOutputStream).completeFile(Mockito.any());
+    try {
+      spyDFSOutputStream.close();
+      fail();
+    } catch (IOException ioe) {
+      assertTrue(spyDFSOutputStream.isLeaseRecovered());
+      waitForFileClosed("/testExceptionInCloseECFileWithRecoverLease");
+      assertTrue(isFileClosed("/testExceptionInCloseECFileWithRecoverLease"));
+    }
+  }
+
+  @Test
+  public void testExceptionInCloseECFileWithoutRecoverLease() throws Exception {
+    Configuration config = new Configuration();
+    DFSClient client =
+        new DFSClient(cluster.getNameNode(0).getNameNodeAddress(), config);
+    DFSClient spyClient = Mockito.spy(client);
+    DFSOutputStream dfsOutputStream =
+        spyClient.create("/testExceptionInCloseECFileWithoutRecoverLease",
+            FsPermission.getFileDefault(), EnumSet.of(CreateFlag.CREATE),
+            (short) 3, 1024*1024, null, 1024, null);
+    assertTrue(dfsOutputStream instanceof DFSStripedOutputStream,
+        "stream should be a DFSStripedOutputStream");
+    DFSOutputStream spyDFSOutputStream = Mockito.spy(dfsOutputStream);
+    doThrow(new IOException("Emulated IOException in close"))
+        .when(spyDFSOutputStream).completeFile(Mockito.any());
+    try {
+      spyDFSOutputStream.close();
+      fail();
+    } catch (IOException ioe) {
+      assertFalse(spyDFSOutputStream.isLeaseRecovered());
+      try {
+        waitForFileClosed("/testExceptionInCloseECFileWithoutRecoverLease");
+      } catch (TimeoutException e) {
+        assertFalse(isFileClosed("/testExceptionInCloseECFileWithoutRecoverLease"));
+      }
+    }
+  }
+
+  private boolean isFileClosed(String path) throws IOException {
+    return cluster.getFileSystem().isFileClosed(new Path(path));
+  }
+
+  private void waitForFileClosed(String path) throws Exception {
+    GenericTestUtils.waitFor(() -> {
+      boolean closed;
+      try {
+        closed = isFileClosed(path);
+      } catch (IOException e) {
+        return false;
+      }
+      return closed;
+    }, 1000, 5000);
   }
 }

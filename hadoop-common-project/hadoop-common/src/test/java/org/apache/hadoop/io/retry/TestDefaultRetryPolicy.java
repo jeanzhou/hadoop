@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * <p/>
+ * <p>
  * http://www.apache.org/licenses/LICENSE-2.0
- * <p/>
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -21,31 +21,28 @@ package org.apache.hadoop.io.retry;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.RetriableException;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test the behavior of the default retry policy.
  */
+@Timeout(30)
 public class TestDefaultRetryPolicy {
-  @Rule
-  public Timeout timeout = new Timeout(30000);
 
   /** Verify FAIL < RETRY < FAILOVER_AND_RETRY. */
   @Test
   public void testRetryDecisionOrdering() throws Exception {
-    Assert.assertTrue(RetryPolicy.RetryAction.RetryDecision.FAIL.compareTo(
+    assertTrue(RetryPolicy.RetryAction.RetryDecision.FAIL.compareTo(
         RetryPolicy.RetryAction.RetryDecision.RETRY) < 0);
-    Assert.assertTrue(RetryPolicy.RetryAction.RetryDecision.RETRY.compareTo(
+    assertTrue(RetryPolicy.RetryAction.RetryDecision.RETRY.compareTo(
         RetryPolicy.RetryAction.RetryDecision.FAILOVER_AND_RETRY) < 0);
-    Assert.assertTrue(RetryPolicy.RetryAction.RetryDecision.FAIL.compareTo(
+    assertTrue(RetryPolicy.RetryAction.RetryDecision.FAIL.compareTo(
         RetryPolicy.RetryAction.RetryDecision.FAILOVER_AND_RETRY) < 0);
   }
 
@@ -65,8 +62,8 @@ public class TestDefaultRetryPolicy {
         null);
     RetryPolicy.RetryAction action = policy.shouldRetry(
         new RetriableException("Dummy exception"), 0, 0, true);
-    assertThat(action.action,
-        is(RetryPolicy.RetryAction.RetryDecision.RETRY));
+    assertThat(action.action)
+        .isEqualTo(RetryPolicy.RetryAction.RetryDecision.RETRY);
   }
 
   /**
@@ -87,8 +84,8 @@ public class TestDefaultRetryPolicy {
     RetryPolicy.RetryAction action = policy.shouldRetry(
         new RemoteException(RetriableException.class.getName(),
             "Dummy exception"), 0, 0, true);
-    assertThat(action.action,
-        is(RetryPolicy.RetryAction.RetryDecision.RETRY));
+    assertThat(action.action)
+        .isEqualTo(RetryPolicy.RetryAction.RetryDecision.RETRY);
   }
 
   /**
@@ -107,7 +104,7 @@ public class TestDefaultRetryPolicy {
         null);
     RetryPolicy.RetryAction action = policy.shouldRetry(
         new RetriableException("Dummy exception"), 0, 0, true);
-    assertThat(action.action,
-        is(RetryPolicy.RetryAction.RetryDecision.FAIL));
+    assertThat(action.action).isEqualTo(
+        RetryPolicy.RetryAction.RetryDecision.FAIL);
   }
 }

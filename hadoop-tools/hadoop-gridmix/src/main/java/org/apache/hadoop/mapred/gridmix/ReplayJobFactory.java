@@ -22,16 +22,17 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.tools.rumen.JobStory;
 import org.apache.hadoop.tools.rumen.JobStoryProducer;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
  class ReplayJobFactory extends JobFactory<Statistics.ClusterStats> {
-  public static final Log LOG = LogFactory.getLog(ReplayJobFactory.class);
+  public static final Logger LOG = LoggerFactory.getLogger(ReplayJobFactory.class);
 
   /**
    * Creating a new instance does not start the thread.
@@ -64,14 +65,14 @@ import java.util.concurrent.TimeUnit;
    public void update(Statistics.ClusterStats item) {
    }
 
-   private class ReplayReaderThread extends Thread {
+   private class ReplayReaderThread extends SubjectInheritingThread {
 
     public ReplayReaderThread(String threadName) {
       super(threadName);
     }
 
 
-    public void run() {
+    public void work() {
       try {
         startFlag.await();
         if (Thread.currentThread().isInterrupted()) {
@@ -112,7 +113,7 @@ import java.util.concurrent.TimeUnit;
       } catch (InterruptedException e) {
         // exit thread; ignore any jobs remaining in the trace
       } finally {
-        IOUtils.cleanup(null, jobProducer);
+        IOUtils.cleanupWithLogger(null, jobProducer);
       }
     }
   }

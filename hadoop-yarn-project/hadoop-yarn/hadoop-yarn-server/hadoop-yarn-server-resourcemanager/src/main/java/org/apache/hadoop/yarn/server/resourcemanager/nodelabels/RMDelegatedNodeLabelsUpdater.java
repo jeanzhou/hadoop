@@ -27,8 +27,8 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.yarn.api.records.NodeId;
@@ -36,7 +36,7 @@ import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Update nodes labels map for ResourceManager periodically. It collects
@@ -47,8 +47,8 @@ import com.google.common.annotations.VisibleForTesting;
  */
 public class RMDelegatedNodeLabelsUpdater extends CompositeService {
 
-  private static final Log LOG = LogFactory
-      .getLog(RMDelegatedNodeLabelsUpdater.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(RMDelegatedNodeLabelsUpdater.class);
 
   public static final long DISABLE_DELEGATED_NODE_LABELS_UPDATE = -1;
 
@@ -56,7 +56,7 @@ public class RMDelegatedNodeLabelsUpdater extends CompositeService {
   private Timer nodeLabelsScheduler;
   // 30 seconds
   @VisibleForTesting
-  public long nodeLabelsUpdateInterval = 30 * 1000;
+  public long nodeLabelsUpdateInterval;
 
   private Set<NodeId> newlyRegisteredNodes = new HashSet<NodeId>();
   // Lock to protect newlyRegisteredNodes
@@ -78,6 +78,9 @@ public class RMDelegatedNodeLabelsUpdater extends CompositeService {
     allNodesLabelUpdateInterval = conf.getLong(
         YarnConfiguration.RM_NODE_LABELS_PROVIDER_FETCH_INTERVAL_MS,
         YarnConfiguration.DEFAULT_RM_NODE_LABELS_PROVIDER_FETCH_INTERVAL_MS);
+    nodeLabelsUpdateInterval =
+        conf.getLong(YarnConfiguration.RM_NODE_LABELS_PROVIDER_UPDATE_NEWLY_REGISTERED_INTERVAL_MS,
+            YarnConfiguration.DEFAULT_RM_NODE_LABELS_PROVIDER_UPDATE_NEWLY_REGISTERED_INTERVAL_MS);
     rmNodeLabelsMappingProvider = createRMNodeLabelsMappingProvider(conf);
     addService(rmNodeLabelsMappingProvider);
     super.serviceInit(conf);
@@ -99,7 +102,8 @@ public class RMDelegatedNodeLabelsUpdater extends CompositeService {
 
   /**
    * Terminate the timer.
-   * @throws Exception
+   *
+   * @throws Exception exception occurs.
    */
   @Override
   protected void serviceStop() throws Exception {
@@ -191,9 +195,9 @@ public class RMDelegatedNodeLabelsUpdater extends CompositeService {
           + "delegated-centralized node label configuration is enabled";
       LOG.error(msg);
       throw new IOException(msg);
-    } else if (LOG.isDebugEnabled()) {
-      LOG.debug("RM Node labels mapping provider class is : "
-          + nodeLabelsMappingProvider.getClass().toString());
+    } else {
+      LOG.debug("RM Node labels mapping provider class is : {}",
+          nodeLabelsMappingProvider.getClass());
     }
 
     return nodeLabelsMappingProvider;

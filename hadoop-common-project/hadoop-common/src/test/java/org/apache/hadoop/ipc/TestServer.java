@@ -18,21 +18,31 @@
 
 package org.apache.hadoop.ipc;
 
-import static org.junit.Assert.*;
-import static org.mockito.Matchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import java.io.IOException;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.ipc.Server.Call;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
+
+import static org.apache.hadoop.test.MockitoUtil.verifyZeroInteractions;
 
 /**
  * This is intended to be a set of unit tests for the 
@@ -117,7 +127,7 @@ public class TestServer {
       } finally {
         socket2.close();
       }
-      assertTrue("Failed to catch the expected bind exception",caught);
+      assertTrue(caught, "Failed to catch the expected bind exception");
     } finally {
       socket.close();
     }
@@ -132,7 +142,8 @@ public class TestServer {
   static class TestException3 extends Exception {
   }
 
-  @Test (timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testLogExceptions() throws Exception {
     final Configuration conf = new Configuration();
     final Call dummyCall = new Call(0, 0, null, null);
@@ -154,12 +165,12 @@ public class TestServer {
 
     // No stack trace should be logged for a terse exception.
     server.logException(logger, new TestException2(), dummyCall);
-    verify(logger, times(1)).info(anyObject());
+    verify(logger, times(1)).info(any());
 
     // Full stack trace should be logged for other exceptions.
     final Throwable te3 = new TestException3();
     server.logException(logger, te3, dummyCall);
-    verify(logger, times(1)).info(anyObject(), eq(te3));
+    verify(logger, times(1)).info(any(), eq(te3));
   }
 
   @Test
@@ -184,5 +195,24 @@ public class TestServer {
     assertTrue(handler.isSuppressedLog(RpcServerException.class));
     assertTrue(handler.isSuppressedLog(IpcException.class));
     assertFalse(handler.isSuppressedLog(RpcClientException.class));
+  }
+
+  @Test
+  @Timeout(value = 300)
+  public void testPurgeIntervalNanosConf() throws Exception {
+    Configuration conf = new Configuration();
+    conf.setInt(CommonConfigurationKeysPublic.
+        IPC_SERVER_PURGE_INTERVAL_MINUTES_KEY, 3);
+    Server server = new Server("0.0.0.0", 0, LongWritable.class,
+            1, conf) {
+      @Override
+      public Writable call(
+              RPC.RpcKind rpcKind, String protocol, Writable param,
+              long receiveTime) throws Exception {
+        return null;
+      }
+    };
+    long purgeInterval = TimeUnit.NANOSECONDS.convert(3, TimeUnit.MINUTES);
+    assertEquals(server.getPurgeIntervalNanos(), purgeInterval);
   }
 }

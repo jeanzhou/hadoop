@@ -22,13 +22,12 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.io.IOUtils;
-
-import com.google.common.base.Charsets;
 
 /**
  * Class that represents a file on disk which persistently stores
@@ -37,7 +36,7 @@ import com.google.common.base.Charsets;
  */
 @InterfaceAudience.Private
 public class PersistentLongFile {
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       PersistentLongFile.class);
 
   private final File file;
@@ -77,7 +76,7 @@ public class PersistentLongFile {
   public static void writeFile(File file, long val) throws IOException {
     AtomicFileOutputStream fos = new AtomicFileOutputStream(file);
     try {
-      fos.write(String.valueOf(val).getBytes(Charsets.UTF_8));
+      fos.write(String.valueOf(val).getBytes(StandardCharsets.UTF_8));
       fos.write('\n');
       fos.close();
       fos = null;
@@ -93,13 +92,15 @@ public class PersistentLongFile {
     if (file.exists()) {
       BufferedReader br = 
           new BufferedReader(new InputStreamReader(new FileInputStream(
-              file), Charsets.UTF_8));
+              file), StandardCharsets.UTF_8));
       try {
         val = Long.parseLong(br.readLine());
         br.close();
         br = null;
+      } catch (NumberFormatException e) {
+        throw new IOException(e);
       } finally {
-        IOUtils.cleanup(LOG, br);
+        IOUtils.cleanupWithLogger(LOG, br);
       }
     }
     return val;

@@ -17,52 +17,43 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.checker;
 
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyObject;
-import static org.mockito.Matchers.anySet;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.timeout;
-import static org.mockito.Mockito.verify;
-
-import com.google.common.base.Optional;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.HdfsConfiguration;
-import org.apache.hadoop.hdfs.LogVerificationAppender;
-import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
+import org.apache.hadoop.test.TestName;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.FutureCallback;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Futures;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListenableFuture;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.MoreExecutors;
 import org.apache.hadoop.util.FakeTimer;
-import org.apache.log4j.Logger;
-import org.apache.log4j.spi.LoggingEvent;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.*;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.LoggerFactory;
 
-import java.util.Set;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@Timeout(300)
 public class TestThrottledAsyncCheckerTimeout {
   public static final org.slf4j.Logger LOG =
       LoggerFactory.getLogger(TestThrottledAsyncCheckerTimeout.class);
 
-  @Rule
+  @SuppressWarnings("checkstyle:VisibilityModifier")
+  @RegisterExtension
   public TestName testName = new TestName();
-  @Rule
-  public Timeout testTimeout = new Timeout(300_000);
 
   private static final long DISK_CHECK_TIMEOUT = 10;
   private ReentrantLock lock;
@@ -71,7 +62,7 @@ public class TestThrottledAsyncCheckerTimeout {
     return new ScheduledThreadPoolExecutor(1);
   }
 
-  @Before
+  @BeforeEach
   public void initializeLock() {
     lock = new ReentrantLock();
   }
@@ -112,7 +103,7 @@ public class TestThrottledAsyncCheckerTimeout {
         numCallbackInvocationsFailure.incrementAndGet();
         callbackResult.set(true);
       }
-    });
+    }, MoreExecutors.directExecutor());
 
     while (!callbackResult.get()) {
       // Wait for the callback
@@ -121,9 +112,9 @@ public class TestThrottledAsyncCheckerTimeout {
 
     lock.unlock();
 
-    assertThat(numCallbackInvocationsFailure.get(), is(1L));
-    assertThat(numCallbackInvocationsSuccess.get(), is(0L));
-    assertTrue(throwable[0] instanceof TimeoutException);
+    assertThat(numCallbackInvocationsFailure.get()).isEqualTo(1L);
+    assertThat(numCallbackInvocationsSuccess.get()).isEqualTo(0L);
+    assertInstanceOf(TimeoutException.class, throwable[0]);
   }
 
   @Test
@@ -144,7 +135,8 @@ public class TestThrottledAsyncCheckerTimeout {
         .schedule(target, true);
 
     assertTrue(olf1.isPresent());
-    Futures.addCallback(olf1.get(), futureCallback);
+    Futures.addCallback(olf1.get(), futureCallback,
+        MoreExecutors.directExecutor());
 
     // Verify that timeout results in only 1 onFailure call and 0 onSuccess
     // calls.
@@ -160,7 +152,8 @@ public class TestThrottledAsyncCheckerTimeout {
         .schedule(target, true);
 
     assertTrue(olf2.isPresent());
-    Futures.addCallback(olf2.get(), futureCallback);
+    Futures.addCallback(olf2.get(), futureCallback,
+        MoreExecutors.directExecutor());
 
     // Verify that normal check (dummy) results in only 1 onSuccess call.
     // Number of times onFailure is invoked should remain the same i.e. 1.
@@ -198,14 +191,14 @@ public class TestThrottledAsyncCheckerTimeout {
         throwable[0] = t;
         callbackResult.set(true);
       }
-    });
+    }, MoreExecutors.directExecutor());
 
     while (!callbackResult.get()) {
       // Wait for the callback
       Thread.sleep(DISK_CHECK_TIMEOUT);
     }
 
-    assertTrue(throwable[0] == null);
+    assertNull(throwable[0]);
   }
 
   /**

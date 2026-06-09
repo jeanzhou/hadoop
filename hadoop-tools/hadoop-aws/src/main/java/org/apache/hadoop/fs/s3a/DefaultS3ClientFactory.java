@@ -18,216 +18,482 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import com.amazonaws.ClientConfiguration;
-import com.amazonaws.Protocol;
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
-import com.amazonaws.services.s3.S3ClientOptions;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.conf.Configured;
-import org.apache.hadoop.util.VersionInfo;
-import org.slf4j.Logger;
-
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-import static org.apache.hadoop.fs.s3a.Constants.*;
-import static org.apache.hadoop.fs.s3a.S3AUtils.createAWSCredentialProviderSet;
-import static org.apache.hadoop.fs.s3a.S3AUtils.intOption;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.fs.s3a.impl.AWSClientConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import software.amazon.awssdk.awscore.util.AwsHostNameUtils;
+import software.amazon.awssdk.core.checksums.RequestChecksumCalculation;
+import software.amazon.awssdk.core.checksums.ResponseChecksumValidation;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.client.config.SdkAdvancedClientOption;
+import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
+import software.amazon.awssdk.core.retry.RetryPolicy;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.http.auth.spi.scheme.AuthScheme;
+import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
+import software.amazon.awssdk.identity.spi.AwsCredentialsIdentity;
+import software.amazon.awssdk.metrics.LoggingMetricPublisher;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.s3accessgrants.plugin.S3AccessGrantsPlugin;
+import software.amazon.awssdk.services.s3.LegacyMd5Plugin;
+import software.amazon.awssdk.services.s3.S3AsyncClient;
+import software.amazon.awssdk.services.s3.S3AsyncClientBuilder;
+import software.amazon.awssdk.services.s3.S3BaseClientBuilder;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.multipart.MultipartConfiguration;
+import software.amazon.awssdk.transfer.s3.S3TransferManager;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.fs.s3a.statistics.impl.AwsStatisticsCollector;
+import org.apache.hadoop.fs.store.LogExactlyOnce;
+
+import static org.apache.hadoop.fs.s3a.Constants.AWS_REGION;
+import static org.apache.hadoop.fs.s3a.Constants.AWS_S3_ACCESS_GRANTS_ENABLED;
+import static org.apache.hadoop.fs.s3a.Constants.AWS_S3_ACCESS_GRANTS_FALLBACK_TO_IAM_ENABLED;
+import static org.apache.hadoop.fs.s3a.Constants.AWS_S3_CROSS_REGION_ACCESS_ENABLED;
+import static org.apache.hadoop.fs.s3a.Constants.AWS_S3_CROSS_REGION_ACCESS_ENABLED_DEFAULT;
+import static org.apache.hadoop.fs.s3a.Constants.AWS_S3_DEFAULT_REGION;
+import static org.apache.hadoop.fs.s3a.Constants.CENTRAL_ENDPOINT;
+import static org.apache.hadoop.fs.s3a.Constants.FIPS_ENDPOINT;
+import static org.apache.hadoop.fs.s3a.Constants.HTTP_SIGNER_CLASS_NAME;
+import static org.apache.hadoop.fs.s3a.Constants.HTTP_SIGNER_ENABLED;
+import static org.apache.hadoop.fs.s3a.Constants.HTTP_SIGNER_ENABLED_DEFAULT;
+import static org.apache.hadoop.fs.s3a.Constants.DEFAULT_SECURE_CONNECTIONS;
+import static org.apache.hadoop.fs.s3a.Constants.SECURE_CONNECTIONS;
+import static org.apache.hadoop.fs.s3a.Constants.AWS_SERVICE_IDENTIFIER_S3;
+import static org.apache.hadoop.fs.s3a.auth.SignerFactory.createHttpSigner;
+import static org.apache.hadoop.fs.s3a.impl.AWSHeaders.REQUESTER_PAYS_HEADER;
+import static org.apache.hadoop.fs.s3a.impl.InternalConstants.AUTH_SCHEME_AWS_SIGV_4;
+import static org.apache.hadoop.util.Preconditions.checkArgument;
+
 
 /**
- * The default factory implementation, which calls the AWS SDK to configure
- * and create an {@link AmazonS3Client} that communicates with the S3 service.
+ * The default {@link S3ClientFactory} implementation.
+ * This calls the AWS SDK to configure and create an
+ * {@code AmazonS3Client} that communicates with the S3 service.
  */
-public class DefaultS3ClientFactory extends Configured implements
-    S3ClientFactory {
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
+public class DefaultS3ClientFactory extends Configured
+    implements S3ClientFactory {
 
-  protected static final Logger LOG = S3AFileSystem.LOG;
+  private static final String REQUESTER_PAYS_HEADER_VALUE = "requester";
+
+  private static final String S3_SERVICE_NAME = "s3";
+
+  private static final Pattern VPC_ENDPOINT_PATTERN =
+          Pattern.compile("^(?:.+\\.)?([a-z0-9-]+)\\.vpce\\.amazonaws\\.(?:com|com\\.cn)$");
+
+  /**
+   * Subclasses refer to this.
+   */
+  protected static final Logger LOG =
+      LoggerFactory.getLogger(DefaultS3ClientFactory.class);
+
+  /**
+   * A one-off warning of default region chains in use.
+   */
+  private static final LogExactlyOnce WARN_OF_DEFAULT_REGION_CHAIN =
+      new LogExactlyOnce(LOG);
+
+  /**
+   * Warning message printed when the SDK Region chain is in use.
+   */
+  private static final String SDK_REGION_CHAIN_IN_USE =
+      "S3A filesystem client is using"
+          + " the SDK region resolution chain.";
+
+
+  /** Exactly once log to inform about ignoring the AWS-SDK Warnings for CSE. */
+  private static final LogExactlyOnce IGNORE_CSE_WARN = new LogExactlyOnce(LOG);
+
+  /**
+   * Error message when an endpoint is set with FIPS enabled: {@value}.
+   */
+  @VisibleForTesting
+  public static final String ERROR_ENDPOINT_WITH_FIPS =
+      "Non central endpoint cannot be set when " + FIPS_ENDPOINT + " is true";
+
+  /**
+   * A one-off log stating whether S3 Access Grants are enabled.
+   */
+  private static final LogExactlyOnce LOG_S3AG_ENABLED = new LogExactlyOnce(LOG);
 
   @Override
-  public AmazonS3 createS3Client(URI name) throws IOException {
+  public S3Client createS3Client(
+      final URI uri,
+      final S3ClientCreationParameters parameters) throws IOException {
+
     Configuration conf = getConf();
-    AWSCredentialsProvider credentials =
-        createAWSCredentialProviderSet(name, conf);
-    final ClientConfiguration awsConf = createAwsConf(getConf());
-    AmazonS3 s3 = newAmazonS3Client(credentials, awsConf);
-    return createAmazonS3Client(s3, conf, credentials, awsConf);
+    String bucket = uri.getHost();
+
+    ApacheHttpClient.Builder httpClientBuilder = AWSClientConfig
+        .createHttpClientBuilder(conf)
+        .proxyConfiguration(AWSClientConfig.createProxyConfiguration(conf, bucket));
+    return configureClientBuilder(S3Client.builder(), parameters, conf, bucket)
+        .httpClientBuilder(httpClientBuilder)
+        .build();
   }
 
-  /**
-   * Create a new {@link ClientConfiguration}.
-   * @param conf The Hadoop configuration
-   * @return new AWS client configuration
-   */
-  public static ClientConfiguration createAwsConf(Configuration conf) {
-    final ClientConfiguration awsConf = new ClientConfiguration();
-    initConnectionSettings(conf, awsConf);
-    initProxySupport(conf, awsConf);
-    initUserAgent(conf, awsConf);
-    return awsConf;
-  }
+  @Override
+  public S3AsyncClient createS3AsyncClient(
+      final URI uri,
+      final S3ClientCreationParameters parameters) throws IOException {
 
-  /**
-   * Wrapper around constructor for {@link AmazonS3} client.  Override this to
-   * provide an extended version of the client
-   * @param credentials credentials to use
-   * @param awsConf  AWS configuration
-   * @return  new AmazonS3 client
-   */
-  protected AmazonS3 newAmazonS3Client(
-      AWSCredentialsProvider credentials, ClientConfiguration awsConf) {
-    return new AmazonS3Client(credentials, awsConf);
-  }
+    Configuration conf = getConf();
+    String bucket = uri.getHost();
 
-  /**
-   * Initializes all AWS SDK settings related to connection management.
-   *
-   * @param conf Hadoop configuration
-   * @param awsConf AWS SDK configuration
-   */
-  private static void initConnectionSettings(Configuration conf,
-      ClientConfiguration awsConf) {
-    awsConf.setMaxConnections(intOption(conf, MAXIMUM_CONNECTIONS,
-        DEFAULT_MAXIMUM_CONNECTIONS, 1));
-    boolean secureConnections = conf.getBoolean(SECURE_CONNECTIONS,
-        DEFAULT_SECURE_CONNECTIONS);
-    awsConf.setProtocol(secureConnections ?  Protocol.HTTPS : Protocol.HTTP);
-    awsConf.setMaxErrorRetry(intOption(conf, MAX_ERROR_RETRIES,
-        DEFAULT_MAX_ERROR_RETRIES, 0));
-    awsConf.setConnectionTimeout(intOption(conf, ESTABLISH_TIMEOUT,
-        DEFAULT_ESTABLISH_TIMEOUT, 0));
-    awsConf.setSocketTimeout(intOption(conf, SOCKET_TIMEOUT,
-        DEFAULT_SOCKET_TIMEOUT, 0));
-    int sockSendBuffer = intOption(conf, SOCKET_SEND_BUFFER,
-        DEFAULT_SOCKET_SEND_BUFFER, 2048);
-    int sockRecvBuffer = intOption(conf, SOCKET_RECV_BUFFER,
-        DEFAULT_SOCKET_RECV_BUFFER, 2048);
-    awsConf.setSocketBufferSizeHints(sockSendBuffer, sockRecvBuffer);
-    String signerOverride = conf.getTrimmed(SIGNING_ALGORITHM, "");
-    if (!signerOverride.isEmpty()) {
-      LOG.debug("Signer override = {}", signerOverride);
-      awsConf.setSignerOverride(signerOverride);
+    NettyNioAsyncHttpClient.Builder httpClientBuilder = AWSClientConfig
+        .createAsyncHttpClientBuilder(conf)
+        .proxyConfiguration(AWSClientConfig.createAsyncProxyConfiguration(conf, bucket));
+
+    MultipartConfiguration multipartConfiguration = MultipartConfiguration.builder()
+        .minimumPartSizeInBytes(parameters.getMinimumPartSize())
+        .thresholdInBytes(parameters.getMultiPartThreshold())
+        .build();
+
+    S3AsyncClientBuilder s3AsyncClientBuilder =
+            configureClientBuilder(S3AsyncClient.builder(), parameters, conf, bucket)
+                .httpClientBuilder(httpClientBuilder);
+
+    // multipart upload pending with HADOOP-19326.
+    if (!parameters.isClientSideEncryptionEnabled() &&
+        !parameters.isAnalyticsAcceleratorEnabled()) {
+      s3AsyncClientBuilder.multipartConfiguration(multipartConfiguration)
+              .multipartEnabled(parameters.isMultipartCopy());
     }
+
+    return s3AsyncClientBuilder.build();
+  }
+
+  @Override
+  public S3TransferManager createS3TransferManager(final S3AsyncClient s3AsyncClient) {
+    return S3TransferManager.builder()
+        .s3Client(s3AsyncClient)
+        .build();
   }
 
   /**
-   * Initializes AWS SDK proxy support if configured.
-   *
-   * @param conf Hadoop configuration
-   * @param awsConf AWS SDK configuration
-   * @throws IllegalArgumentException if misconfigured
+   * Configure a sync or async S3 client builder.
+   * This method handles all shared configuration, including
+   * path style access, credentials and whether or not to use S3Express
+   * CreateSession.
+   * @param builder S3 client builder
+   * @param parameters parameter object
+   * @param conf configuration object
+   * @param bucket bucket name
+   * @return the builder object
+   * @param <BuilderT> S3 client builder type
+   * @param <ClientT> S3 client type
    */
-  private static void initProxySupport(Configuration conf,
-      ClientConfiguration awsConf) throws IllegalArgumentException {
-    String proxyHost = conf.getTrimmed(PROXY_HOST, "");
-    int proxyPort = conf.getInt(PROXY_PORT, -1);
-    if (!proxyHost.isEmpty()) {
-      awsConf.setProxyHost(proxyHost);
-      if (proxyPort >= 0) {
-        awsConf.setProxyPort(proxyPort);
-      } else {
-        if (conf.getBoolean(SECURE_CONNECTIONS, DEFAULT_SECURE_CONNECTIONS)) {
-          LOG.warn("Proxy host set without port. Using HTTPS default 443");
-          awsConf.setProxyPort(443);
-        } else {
-          LOG.warn("Proxy host set without port. Using HTTP default 80");
-          awsConf.setProxyPort(80);
+  private <BuilderT extends S3BaseClientBuilder<BuilderT, ClientT>, ClientT> BuilderT configureClientBuilder(
+      BuilderT builder, S3ClientCreationParameters parameters, Configuration conf, String bucket)
+      throws IOException {
+
+    configureEndpointAndRegion(builder, parameters, conf);
+
+    // add a plugin to add a Content-MD5 header.
+    // this is required when performing some operations with third party stores
+    // (for example: bulk delete), and is somewhat harmless when working with AWS S3.
+    if (parameters.isMd5HeaderEnabled()) {
+      LOG.debug("MD5 header enabled");
+      builder.addPlugin(LegacyMd5Plugin.create());
+    }
+
+    //when to calculate request checksums.
+    final RequestChecksumCalculation checksumCalculation =
+        parameters.isChecksumCalculationEnabled()
+            ? RequestChecksumCalculation.WHEN_SUPPORTED
+            : RequestChecksumCalculation.WHEN_REQUIRED;
+    LOG.debug("Using checksum calculation policy: {}", checksumCalculation);
+    builder.requestChecksumCalculation(checksumCalculation);
+
+    // response checksum validation. Slow, even with CRC32 checksums.
+    final ResponseChecksumValidation checksumValidation;
+    checksumValidation = parameters.isChecksumValidationEnabled()
+        ? ResponseChecksumValidation.WHEN_SUPPORTED
+        : ResponseChecksumValidation.WHEN_REQUIRED;
+    LOG.debug("Using checksum validation policy: {}", checksumValidation);
+    builder.responseChecksumValidation(checksumValidation);
+
+    maybeApplyS3AccessGrantsConfigurations(builder, conf);
+
+    S3Configuration serviceConfiguration = S3Configuration.builder()
+        .pathStyleAccessEnabled(parameters.isPathStyleAccess())
+        .build();
+
+    final ClientOverrideConfiguration.Builder override =
+        createClientOverrideConfiguration(parameters, conf);
+
+    S3BaseClientBuilder<BuilderT, ClientT> s3BaseClientBuilder = builder
+        .overrideConfiguration(override.build())
+        .credentialsProvider(parameters.getCredentialSet())
+        .disableS3ExpressSessionAuth(!parameters.isExpressCreateSession())
+        .serviceConfiguration(serviceConfiguration);
+
+    if (LOG.isTraceEnabled()) {
+      // if this log is set to "trace" then we turn on logging of SDK metrics.
+      // The metrics itself will log at info; it is just that reflection work
+      // would be needed to change that setting safely for shaded and unshaded aws artifacts.
+      s3BaseClientBuilder.overrideConfiguration(o ->
+          o.addMetricPublisher(LoggingMetricPublisher.create()));
+    }
+
+    if (conf.getBoolean(HTTP_SIGNER_ENABLED, HTTP_SIGNER_ENABLED_DEFAULT)) {
+      // use an http signer through an AuthScheme
+      final AuthScheme<AwsCredentialsIdentity> signer =
+          createHttpSigner(conf, AUTH_SCHEME_AWS_SIGV_4, HTTP_SIGNER_CLASS_NAME);
+      builder.putAuthScheme(signer);
+    }
+    return (BuilderT) s3BaseClientBuilder;
+  }
+
+  /**
+   * Create an override configuration for an S3 client.
+   * @param parameters parameter object
+   * @param conf configuration object
+   * @throws IOException any IOE raised, or translated exception
+   * @throws RuntimeException some failures creating an http signer
+   * @return the override configuration
+   * @throws IOException any IOE raised, or translated exception
+   */
+  protected ClientOverrideConfiguration.Builder createClientOverrideConfiguration(
+      S3ClientCreationParameters parameters, Configuration conf) throws IOException {
+    final ClientOverrideConfiguration.Builder clientOverrideConfigBuilder =
+        AWSClientConfig.createClientConfigBuilder(conf, AWS_SERVICE_IDENTIFIER_S3);
+
+    // add any headers
+    parameters.getHeaders().forEach((h, v) -> clientOverrideConfigBuilder.putHeader(h, v));
+
+    if (parameters.isRequesterPays()) {
+      // All calls must acknowledge requester will pay via header.
+      clientOverrideConfigBuilder.putHeader(REQUESTER_PAYS_HEADER, REQUESTER_PAYS_HEADER_VALUE);
+    }
+
+    if (!StringUtils.isEmpty(parameters.getUserAgentSuffix())) {
+      clientOverrideConfigBuilder.putAdvancedOption(SdkAdvancedClientOption.USER_AGENT_SUFFIX,
+          parameters.getUserAgentSuffix());
+    }
+
+    if (parameters.getExecutionInterceptors() != null) {
+      for (ExecutionInterceptor interceptor : parameters.getExecutionInterceptors()) {
+        clientOverrideConfigBuilder.addExecutionInterceptor(interceptor);
+      }
+    }
+
+    if (parameters.getMetrics() != null) {
+      clientOverrideConfigBuilder.addMetricPublisher(
+          new AwsStatisticsCollector(parameters.getMetrics()));
+    }
+
+    final RetryPolicy.Builder retryPolicyBuilder = AWSClientConfig.createRetryPolicyBuilder(conf);
+    clientOverrideConfigBuilder.retryPolicy(retryPolicyBuilder.build());
+
+    return clientOverrideConfigBuilder;
+  }
+
+  /**
+   * This method configures the endpoint and region for a S3 client.
+   * The order of configuration is:
+   *
+   * <ol>
+   * <li>If region is configured via fs.s3a.endpoint.region, use it.</li>
+   * <li>If endpoint is configured via via fs.s3a.endpoint, set it.
+   *     If no region is configured, try to parse region from endpoint. </li>
+   * <li> If no region is configured, and it could not be parsed from the endpoint,
+   *     set the default region as US_EAST_2</li>
+   * <li> If configured region is empty, fallback to SDK resolution chain. </li>
+   * <li> S3 cross region is enabled by default irrespective of region or endpoint
+   *      is set or not.</li>
+   * </ol>
+   *
+   * @param builder S3 client builder.
+   * @param parameters parameter object
+   * @param conf  conf configuration object
+   * @param <BuilderT> S3 client builder type
+   * @param <ClientT> S3 client type
+   * @throws IllegalArgumentException if endpoint is set when FIPS is enabled.
+   */
+  private <BuilderT extends S3BaseClientBuilder<BuilderT, ClientT>, ClientT> void configureEndpointAndRegion(
+      BuilderT builder, S3ClientCreationParameters parameters, Configuration conf) {
+    final String endpointStr = parameters.getEndpoint();
+    final URI endpoint = getS3Endpoint(endpointStr, conf);
+
+    final String configuredRegion = parameters.getRegion();
+    Region region = null;
+    String origin = "";
+
+    // If the region was configured, set it.
+    if (configuredRegion != null && !configuredRegion.isEmpty()) {
+      origin = AWS_REGION;
+      region = Region.of(configuredRegion);
+    }
+
+    // FIPs? Log it, then reject any attempt to set an endpoint
+    final boolean fipsEnabled = parameters.isFipsEnabled();
+    if (fipsEnabled) {
+      LOG.debug("Enabling FIPS mode");
+    }
+    // always setting it guarantees the value is non-null,
+    // which tests expect.
+    builder.fipsEnabled(fipsEnabled);
+
+    if (endpoint != null) {
+      boolean endpointEndsWithCentral =
+          endpointStr.endsWith(CENTRAL_ENDPOINT);
+      checkArgument(!fipsEnabled || endpointEndsWithCentral, "%s : %s",
+          ERROR_ENDPOINT_WITH_FIPS,
+          endpoint);
+
+      // No region was configured,
+      // determine the region from the endpoint.
+      if (region == null) {
+        region = getS3RegionFromEndpoint(endpointStr,
+            endpointEndsWithCentral);
+        if (region != null) {
+          origin = "endpoint";
         }
       }
-      String proxyUsername = conf.getTrimmed(PROXY_USERNAME);
-      String proxyPassword = conf.getTrimmed(PROXY_PASSWORD);
-      if ((proxyUsername == null) != (proxyPassword == null)) {
-        String msg = "Proxy error: " + PROXY_USERNAME + " or " +
-            PROXY_PASSWORD + " set without the other.";
-        LOG.error(msg);
-        throw new IllegalArgumentException(msg);
+
+      // No need to override endpoint with "s3.amazonaws.com".
+      // Let the client take care of endpoint resolution. Overriding
+      // the endpoint with "s3.amazonaws.com" causes 400 Bad Request
+      // errors for non-existent buckets and objects.
+      // ref: https://github.com/aws/aws-sdk-java-v2/issues/4846
+      if (!endpointEndsWithCentral) {
+        builder.endpointOverride(endpoint);
+        LOG.debug("Setting endpoint to {}", endpoint);
+      } else {
+        origin = "central endpoint with cross region access";
+        LOG.debug("Enabling cross region access for endpoint {}",
+            endpointStr);
       }
-      awsConf.setProxyUsername(proxyUsername);
-      awsConf.setProxyPassword(proxyPassword);
-      awsConf.setProxyDomain(conf.getTrimmed(PROXY_DOMAIN));
-      awsConf.setProxyWorkstation(conf.getTrimmed(PROXY_WORKSTATION));
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Using proxy server {}:{} as user {} with password {} on " +
-                "domain {} as workstation {}", awsConf.getProxyHost(),
-            awsConf.getProxyPort(),
-            String.valueOf(awsConf.getProxyUsername()),
-            awsConf.getProxyPassword(), awsConf.getProxyDomain(),
-            awsConf.getProxyWorkstation());
-      }
-    } else if (proxyPort >= 0) {
-      String msg =
-          "Proxy error: " + PROXY_PORT + " set without " + PROXY_HOST;
-      LOG.error(msg);
-      throw new IllegalArgumentException(msg);
+    }
+
+    if (region != null) {
+      builder.region(region);
+    } else if (configuredRegion == null) {
+      // no region is configured, and none could be determined from the endpoint.
+      // Use US_EAST_2 as default.
+      region = Region.of(AWS_S3_DEFAULT_REGION);
+      builder.region(region);
+      origin = "cross region access fallback";
+    } else if (configuredRegion.isEmpty()) {
+      // region configuration was set to empty string.
+      // allow this if people really want it; it is OK to rely on this
+      // when deployed in EC2.
+      WARN_OF_DEFAULT_REGION_CHAIN.warn(SDK_REGION_CHAIN_IN_USE);
+      LOG.debug(SDK_REGION_CHAIN_IN_USE);
+      origin = "SDK region chain";
+    }
+    boolean isCrossRegionAccessEnabled = conf.getBoolean(AWS_S3_CROSS_REGION_ACCESS_ENABLED,
+        AWS_S3_CROSS_REGION_ACCESS_ENABLED_DEFAULT);
+    // s3 cross region access
+    if (isCrossRegionAccessEnabled) {
+      builder.crossRegionAccessEnabled(true);
+    }
+    LOG.debug("Setting region to {} from {} with cross region access {}",
+        region, origin, isCrossRegionAccessEnabled);
+  }
+
+  /**
+   * Given a endpoint string, create the endpoint URI.
+   *
+   * @param endpoint possibly null endpoint.
+   * @param conf config to build the URI from.
+   * @return an endpoint uri
+   */
+  protected static URI getS3Endpoint(String endpoint, final Configuration conf) {
+
+    boolean secureConnections = conf.getBoolean(SECURE_CONNECTIONS, DEFAULT_SECURE_CONNECTIONS);
+
+    String protocol = secureConnections ? "https" : "http";
+
+    if (endpoint == null || endpoint.isEmpty()) {
+      // don't set an endpoint if none is configured, instead let the SDK figure it out.
+      return null;
+    }
+
+    if (!endpoint.contains("://")) {
+      endpoint = String.format("%s://%s", protocol, endpoint);
+    }
+
+    try {
+      return new URI(endpoint);
+    } catch (URISyntaxException e) {
+      throw new IllegalArgumentException(e);
     }
   }
 
   /**
-   * Initializes the User-Agent header to send in HTTP requests to the S3
-   * back-end.  We always include the Hadoop version number.  The user also
-   * may set an optional custom prefix to put in front of the Hadoop version
-   * number.  The AWS SDK interally appends its own information, which seems
-   * to include the AWS SDK version, OS and JVM version.
+   * Parses the endpoint to get the region.
+   * If endpoint is the central one, use US_EAST_2.
    *
-   * @param conf Hadoop configuration
-   * @param awsConf AWS SDK configuration
+   * @param endpoint the configure endpoint.
+   * @param endpointEndsWithCentral true if the endpoint is configured as central.
+   * @return the S3 region, null if unable to resolve from endpoint.
    */
-  private static void initUserAgent(Configuration conf,
-      ClientConfiguration awsConf) {
-    String userAgent = "Hadoop " + VersionInfo.getVersion();
-    String userAgentPrefix = conf.getTrimmed(USER_AGENT_PREFIX, "");
-    if (!userAgentPrefix.isEmpty()) {
-      userAgent = userAgentPrefix + ", " + userAgent;
-    }
-    LOG.debug("Using User-Agent: {}", userAgent);
-    awsConf.setUserAgentPrefix(userAgent);
-  }
+  @VisibleForTesting
+  static Region getS3RegionFromEndpoint(final String endpoint,
+      final boolean endpointEndsWithCentral) {
 
-  /**
-   * Creates an {@link AmazonS3Client} from the established configuration.
-   *
-   * @param conf Hadoop configuration
-   * @param credentials AWS credentials
-   * @param awsConf AWS SDK configuration
-   * @return S3 client
-   * @throws IllegalArgumentException if misconfigured
-   */
-  private static AmazonS3 createAmazonS3Client(AmazonS3 s3, Configuration conf,
-      AWSCredentialsProvider credentials, ClientConfiguration awsConf)
-      throws IllegalArgumentException {
-    String endPoint = conf.getTrimmed(ENDPOINT, "");
-    if (!endPoint.isEmpty()) {
-      try {
-        s3.setEndpoint(endPoint);
-      } catch (IllegalArgumentException e) {
-        String msg = "Incorrect endpoint: "  + e.getMessage();
-        LOG.error(msg);
-        throw new IllegalArgumentException(msg, e);
+    if (!endpointEndsWithCentral) {
+      // S3 VPC endpoint parsing
+      Matcher matcher = VPC_ENDPOINT_PATTERN.matcher(endpoint);
+      if (matcher.find()) {
+        LOG.debug("Mapping to VPCE");
+        LOG.debug("Endpoint {} is vpc endpoint; parsing region as {}", endpoint, matcher.group(1));
+        return Region.of(matcher.group(1));
       }
+
+      LOG.debug("Endpoint {} is not the default; parsing", endpoint);
+      return AwsHostNameUtils.parseSigningRegion(endpoint, S3_SERVICE_NAME).orElse(null);
     }
-    enablePathStyleAccessIfRequired(s3, conf);
-    return s3;
+
+    // Select default region here to enable cross-region access.
+    // If both "fs.s3a.endpoint" and "fs.s3a.endpoint.region" are empty,
+    // Spark sets "fs.s3a.endpoint" to "s3.amazonaws.com".
+    // This applies to Spark versions with the changes of SPARK-35878.
+    // ref:
+    // https://github.com/apache/spark/blob/v3.5.0/core/
+    // src/main/scala/org/apache/spark/deploy/SparkHadoopUtil.scala#L528
+    // If we do not allow cross region access, Spark would not be able to
+    // access any bucket that is not present in the given region.
+    // Hence, we should use default region us-east-2 to allow cross-region
+    // access.
+    return Region.of(AWS_S3_DEFAULT_REGION);
   }
 
-  /**
-   * Enables path-style access to S3 buckets if configured.  By default, the
-   * behavior is to use virtual hosted-style access with URIs of the form
-   * http://bucketname.s3.amazonaws.com.  Enabling path-style access and a
-   * region-specific endpoint switches the behavior to use URIs of the form
-   * http://s3-eu-west-1.amazonaws.com/bucketname.
-   *
-   * @param s3 S3 client
-   * @param conf Hadoop configuration
-   */
-  private static void enablePathStyleAccessIfRequired(AmazonS3 s3,
-      Configuration conf) {
-    final boolean pathStyleAccess = conf.getBoolean(PATH_STYLE_ACCESS, false);
-    if (pathStyleAccess) {
-      LOG.debug("Enabling path style access!");
-      s3.setS3ClientOptions(S3ClientOptions.builder()
-          .setPathStyleAccess(true)
-          .build());
+  private static <BuilderT extends S3BaseClientBuilder<BuilderT, ClientT>, ClientT> void
+  maybeApplyS3AccessGrantsConfigurations(BuilderT builder, Configuration conf) {
+    boolean isS3AccessGrantsEnabled = conf.getBoolean(AWS_S3_ACCESS_GRANTS_ENABLED, false);
+    if (!isS3AccessGrantsEnabled){
+      LOG.debug("S3 Access Grants plugin is not enabled.");
+      return;
     }
+
+    boolean isFallbackEnabled =
+        conf.getBoolean(AWS_S3_ACCESS_GRANTS_FALLBACK_TO_IAM_ENABLED, false);
+    S3AccessGrantsPlugin accessGrantsPlugin =
+        S3AccessGrantsPlugin.builder()
+            .enableFallback(isFallbackEnabled)
+            .build();
+    builder.addPlugin(accessGrantsPlugin);
+    LOG_S3AG_ENABLED.info(
+        "S3 Access Grants plugin is enabled with IAM fallback set to {}", isFallbackEnabled);
   }
+
 }

@@ -19,10 +19,16 @@ package org.apache.hadoop.hdfs.server.federation.resolver;
 
 import java.io.IOException;
 
+import org.apache.hadoop.hdfs.server.federation.store.protocol.AddMountTableEntriesRequest;
+import org.apache.hadoop.hdfs.server.federation.store.protocol.AddMountTableEntriesResponse;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.AddMountTableEntryRequest;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.AddMountTableEntryResponse;
+import org.apache.hadoop.hdfs.server.federation.store.protocol.GetDestinationRequest;
+import org.apache.hadoop.hdfs.server.federation.store.protocol.GetDestinationResponse;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetMountTableEntriesRequest;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetMountTableEntriesResponse;
+import org.apache.hadoop.hdfs.server.federation.store.protocol.RefreshMountTableEntriesRequest;
+import org.apache.hadoop.hdfs.server.federation.store.protocol.RefreshMountTableEntriesResponse;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.RemoveMountTableEntryRequest;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.RemoveMountTableEntryResponse;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.UpdateMountTableEntryRequest;
@@ -43,6 +49,17 @@ public interface MountTableManager {
    */
   AddMountTableEntryResponse addMountTableEntry(
       AddMountTableEntryRequest request) throws IOException;
+
+  /**
+   * Add multiple entries to the mount table.
+   *
+   * @param request Request object with fully populated list of mount point entries.
+   * @return True if all the mount table entries were successfully committed to the
+   * data store.
+   * @throws IOException Throws exception if the data store is not initialized.
+   */
+  AddMountTableEntriesResponse addMountTableEntries(
+      AddMountTableEntriesRequest request) throws IOException;
 
   /**
    * Updates an existing entry in the mount table.
@@ -77,4 +94,28 @@ public interface MountTableManager {
    */
   GetMountTableEntriesResponse getMountTableEntries(
       GetMountTableEntriesRequest request) throws IOException;
+
+  /**
+   * Refresh mount table entries cache from the state store. Cache is updated
+   * periodically but with this API cache can be refreshed immediately. This API
+   * is primarily meant to be called from the Admin Server. Admin Server will
+   * call this API and refresh mount table cache of all the routers while
+   * changing mount table entries.
+   *
+   * @param request Fully populated request object.
+   * @return True the mount table entry was updated without any error.
+   * @throws IOException Throws exception if the data store is not initialized.
+   */
+  RefreshMountTableEntriesResponse refreshMountTableEntries(
+      RefreshMountTableEntriesRequest request) throws IOException;
+
+  /**
+   * Get the destination subcluster (namespace) of a file/directory.
+   *
+   * @param request Fully populated request object including the file to check.
+   * @return The response including the subcluster where the input file is.
+   * @throws IOException Throws exception if the data store is not initialized.
+   */
+  GetDestinationResponse getDestination(
+      GetDestinationRequest request) throws IOException;
 }

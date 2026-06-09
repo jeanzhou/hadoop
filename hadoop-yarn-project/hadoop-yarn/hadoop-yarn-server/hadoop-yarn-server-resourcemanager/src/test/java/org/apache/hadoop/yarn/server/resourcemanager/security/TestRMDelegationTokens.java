@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.security;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -26,13 +28,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import java.util.function.Supplier;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.ExitUtil;
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.api.protocolrecords.GetDelegationTokenRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetDelegationTokenResponse;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -46,21 +51,18 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
 import org.apache.hadoop.yarn.util.ConverterUtils;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestRMDelegationTokens {
 
   private YarnConfiguration testConf;
 
-  @Before
+  @BeforeEach
   public void setup() {
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
     ExitUtil.disableSystemExit();
     testConf = new YarnConfiguration();
     testConf
@@ -69,8 +71,25 @@ public class TestRMDelegationTokens {
     UserGroupInformation.setConfiguration(testConf);
   }
 
+  private static void assertMasterKeysAreSaved(
+      Set<DelegationKey> rmDTMasterKeyState,
+      RMDelegationTokenSecretManager dtSecretManager) {
+    dtSecretManager.getAllMasterKeys().forEach(managerKey -> {
+      int keyId = managerKey.getKeyId();
+      boolean found = false;
+      for (DelegationKey stateKey: rmDTMasterKeyState) {
+        if (stateKey.getKeyId() == keyId) {
+          found = true;
+          break;
+        }
+      }
+      assertTrue(found, "Master key not found: " + keyId);
+    });
+  }
+
   // Test the DT mast key in the state-store when the mast key is being rolled.
-  @Test(timeout = 15000)
+  @Test
+  @Timeout(value = 15)
   public void testRMDTMasterKeyStateOnRollingMasterKey() throws Exception {
     Configuration conf = new Configuration(testConf);
     conf.set("hadoop.security.authentication", "kerberos");
@@ -96,8 +115,8 @@ public class TestRMDelegationTokens {
 
     RMDelegationTokenSecretManager dtSecretManager =
         rm1.getRMContext().getRMDelegationTokenSecretManager();
-    // assert all master keys are saved
-    Assert.assertEquals(dtSecretManager.getAllMasterKeys(), rmDTMasterKeyState);
+
+    assertMasterKeysAreSaved(rmDTMasterKeyState, dtSecretManager);
 
     // request to generate a RMDelegationToken
     GetDelegationTokenRequest request = mock(GetDelegationTokenRequest.class);
@@ -130,7 +149,8 @@ public class TestRMDelegationTokens {
   }
 
   // Test all expired keys are removed from state-store.
-  @Test(timeout = 15000)
+  @Test
+  @Timeout(value = 15)
   public void testRemoveExpiredMasterKeyInRMStateStore() throws Exception {
     MemoryRMStateStore memStore = new MockMemoryRMStateStore();
     memStore.init(testConf);
@@ -144,8 +164,7 @@ public class TestRMDelegationTokens {
     RMDelegationTokenSecretManager dtSecretManager =
         rm1.getRMContext().getRMDelegationTokenSecretManager();
 
-    // assert all master keys are saved
-    Assert.assertEquals(dtSecretManager.getAllMasterKeys(), rmDTMasterKeyState);
+    assertMasterKeysAreSaved(rmDTMasterKeyState, dtSecretManager);
     Set<DelegationKey> expiringKeys = new HashSet<DelegationKey>();
     expiringKeys.addAll(dtSecretManager.getAllMasterKeys());
 
@@ -161,6 +180,67 @@ public class TestRMDelegationTokens {
         break;
       Thread.sleep(500);
     }
+    rm1.stop();
+  }
+
+  // Test removing token without key from state-store.
+  @Test
+  @Timeout(value = 15)
+  public void testUnknownKeyTokensOnRecover() throws Exception {
+    final int masterID = 1234;
+    final int sequenceNumber = 1000;
+
+    MemoryRMStateStore memStore = new MockMemoryRMStateStore();
+    memStore.init(testConf);
+    // Need RM to get the secret manager and call recover
+    MockRM rm1 = new MyMockRM(testConf, memStore);
+    rm1.start();
+    RMDelegationTokenSecretManager dtSecretManager =
+        rm1.getRMContext().getRMDelegationTokenSecretManager();
+    RMState rmState = memStore.getState();
+    // short cut to generate a basic token with unknown key
+    RMDelegationTokenIdentifier rmDT = new RMDelegationTokenIdentifier(
+        new Text("owner"), new Text("renewer"), new Text("realuser"));
+    // set a master key which is not used
+    rmDT.setMasterKeyId(masterID);
+    rmDT.setSequenceNumber(sequenceNumber);
+    final long tokenTime = Time.now() + 60000;
+    rmDT.setMaxDate(tokenTime);
+    dtSecretManager.storeNewToken(rmDT, tokenTime);
+    // give it time to process
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      public Boolean get() {
+        return rmState.getRMDTSecretManagerState().getTokenState().
+            containsKey(rmDT);
+      }
+    }, 10, 2000);
+    // Cannot recover while running: stop and clear
+    dtSecretManager.stopThreads();
+    dtSecretManager.reset();
+    assertEquals(dtSecretManager.getAllTokens().size(), 0,
+        "Secret manager should have no tokens");
+    assertEquals(dtSecretManager.getAllMasterKeys().size(), 0,
+        "Secret manager should have no keys");
+    dtSecretManager.recover(rmState);
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      public Boolean get() {
+        return
+            rmState.getRMDTSecretManagerState().getTokenState().
+                containsKey(rmDT);
+      }
+    }, 10, 2000);
+    assertEquals(0L, dtSecretManager.getRenewDate(rmDT),
+        "Token should have been expired but is not");
+    // The remover thread should immediately do its work,
+    // still give it some time to process
+    dtSecretManager.startThreads();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      public Boolean get() {
+        return
+            !rmState.getRMDTSecretManagerState().getTokenState().
+                containsKey(rmDT);
+      }
+    }, 10, 2000);
     rm1.stop();
   }
 
@@ -221,7 +301,7 @@ public class TestRMDelegationTokens {
               break;
             }
           }
-          Assert.assertTrue(found);
+          assertTrue(found);
           return currentKey;
         }
       }

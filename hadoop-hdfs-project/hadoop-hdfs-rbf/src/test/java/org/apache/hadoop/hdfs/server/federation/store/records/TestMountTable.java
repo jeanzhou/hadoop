@@ -17,11 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.federation.store.records;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -36,7 +37,7 @@ import org.apache.hadoop.hdfs.server.federation.resolver.order.DestinationOrder;
 import org.apache.hadoop.hdfs.server.federation.router.RouterQuotaUsage;
 import org.apache.hadoop.hdfs.server.federation.store.driver.StateStoreSerializer;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test the Mount Table entry in the State Store.
@@ -50,8 +51,8 @@ public class TestMountTable {
   private static final String DST_PATH_1 = "/path/path2";
   private static final List<RemoteLocation> DST = new LinkedList<>();
   static {
-    DST.add(new RemoteLocation(DST_NS_0, DST_PATH_0));
-    DST.add(new RemoteLocation(DST_NS_1, DST_PATH_1));
+    DST.add(new RemoteLocation(DST_NS_0, DST_PATH_0, SRC));
+    DST.add(new RemoteLocation(DST_NS_1, DST_PATH_1, SRC));
   }
   private static final Map<String, String> DST_MAP = new LinkedHashMap<>();
   static {
@@ -84,9 +85,9 @@ public class TestMountTable {
 
     RouterQuotaUsage quota = record.getQuota();
     assertEquals(0, quota.getFileAndDirectoryCount());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quota.getQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quota.getQuota());
     assertEquals(0, quota.getSpaceConsumed());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quota.getSpaceQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quota.getSpaceQuota());
 
     MountTable record2 =
         MountTable.newInstance(SRC, DST_MAP, DATE_CREATED, DATE_MOD);
@@ -162,6 +163,24 @@ public class TestMountTable {
     assertEquals(DATE_CREATED, record2.getDateCreated());
     assertEquals(DATE_MOD, record2.getDateModified());
     assertTrue(record2.isReadOnly());
+  }
+
+  @Test
+  public void testFaultTolerant() throws IOException {
+
+    Map<String, String> dest = new LinkedHashMap<>();
+    dest.put(DST_NS_0, DST_PATH_0);
+    dest.put(DST_NS_1, DST_PATH_1);
+    MountTable record0 = MountTable.newInstance(SRC, dest);
+    assertFalse(record0.isFaultTolerant());
+
+    MountTable record1 = MountTable.newInstance(SRC, dest);
+    assertFalse(record1.isFaultTolerant());
+    assertEquals(record0, record1);
+
+    record1.setFaultTolerant(true);
+    assertTrue(record1.isFaultTolerant());
+    assertNotEquals(record0, record1);
   }
 
   @Test
@@ -247,7 +266,7 @@ public class TestMountTable {
       fail("Mount table entry should be created failed.");
     } catch (Exception e) {
       GenericTestUtils.assertExceptionContains(
-          MountTable.ERROR_MSG_INVAILD_DEST_NS, e);
+          MountTable.ERROR_MSG_INVALID_DEST_NS, e);
     }
 
     destinations.clear();

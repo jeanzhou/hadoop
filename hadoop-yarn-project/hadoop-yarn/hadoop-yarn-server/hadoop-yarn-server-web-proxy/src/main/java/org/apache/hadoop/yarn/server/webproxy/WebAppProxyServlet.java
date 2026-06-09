@@ -30,6 +30,7 @@ import java.net.SocketException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Enumeration;
@@ -37,6 +38,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServlet;
@@ -45,6 +47,7 @@ import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.core.UriBuilder;
 import javax.ws.rs.core.UriBuilderException;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -63,15 +66,14 @@ import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.apache.http.Header;
 import org.apache.http.HttpResponse;
 import org.apache.http.NameValuePair;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpRequestBase;
-import org.apache.http.client.params.ClientPNames;
-import org.apache.http.client.params.CookiePolicy;
 import org.apache.http.client.utils.URLEncodedUtils;
-import org.apache.http.conn.params.ConnRoutePNames;
 import org.apache.http.entity.StringEntity;
-import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -95,15 +97,13 @@ public class WebAppProxyServlet extends HttpServlet {
   public static final String PROXY_USER_COOKIE_NAME = "proxy-user";
 
   private transient List<TrackingUriPlugin> trackingUriPlugins;
-  private final String rmAppPageUrlBase;
-  private final String ahsAppPageUrlBase;
   private final String failurePageUrlBase;
   private transient YarnConfiguration conf;
 
   /**
    * HTTP methods.
    */
-  private enum HTTP { GET, POST, HEAD, PUT, DELETE };
+  private enum HTTP { GET, POST, HEAD, PUT, DELETE }
 
   /**
    * Empty Hamlet class.
@@ -122,6 +122,9 @@ public class WebAppProxyServlet extends HttpServlet {
     }
   }
 
+  protected void setConf(YarnConfiguration conf){
+    this.conf = conf;
+  }
   /**
    * Default constructor
    */
@@ -131,16 +134,21 @@ public class WebAppProxyServlet extends HttpServlet {
     this.trackingUriPlugins =
         conf.getInstances(YarnConfiguration.YARN_TRACKING_URL_GENERATOR,
             TrackingUriPlugin.class);
-    this.rmAppPageUrlBase =
-        StringHelper.pjoin(WebAppUtils.getResolvedRMWebAppURLWithScheme(conf),
-          "cluster", "app");
     this.failurePageUrlBase =
         StringHelper.pjoin(WebAppUtils.getResolvedRMWebAppURLWithScheme(conf),
           "cluster", "failure");
-    this.ahsAppPageUrlBase =
-        StringHelper.pjoin(WebAppUtils.getHttpSchemePrefix(conf)
-          + WebAppUtils.getAHSWebAppURLWithoutScheme(conf),
-          "applicationhistory", "app");
+  }
+
+  private String getRmAppPageUrlBase(ApplicationId id) throws YarnException, IOException {
+    ServletContext context = getServletContext();
+    AppReportFetcher af = (AppReportFetcher) context.getAttribute(WebAppProxy.FETCHER_ATTRIBUTE);
+    return af.getRmAppPageUrlBase(id);
+  }
+
+  private String getAhsAppPageUrlBase() {
+    ServletContext context = getServletContext();
+    AppReportFetcher af = (AppReportFetcher) context.getAttribute(WebAppProxy.FETCHER_ATTRIBUTE);
+    return af.getAhsAppPageUrlBase();
   }
 
   /**
@@ -177,6 +185,39 @@ public class WebAppProxyServlet extends HttpServlet {
         __().
         __();
   }
+
+  /**
+   * Show the user a page that says that HTTPS must be used but was not.
+   * @param resp the http response
+   * @param link the link to point to
+   * @return true if HTTPS must be used but was not, false otherwise
+   * @throws IOException on any error.
+   */
+  @VisibleForTesting
+  static boolean checkHttpsStrictAndNotProvided(
+      HttpServletResponse resp, URI link, YarnConfiguration conf)
+      throws IOException {
+    String httpsPolicy = conf.get(
+        YarnConfiguration.RM_APPLICATION_HTTPS_POLICY,
+        YarnConfiguration.DEFAULT_RM_APPLICATION_HTTPS_POLICY);
+    boolean required = httpsPolicy.equals("STRICT");
+    boolean provided = link.getScheme().equals("https");
+    if (required && !provided) {
+      resp.setContentType(MimeType.HTML);
+      Page p = new Page(resp.getWriter());
+      p.html().
+          h1("HTTPS must be used").
+          h3().
+          __(YarnConfiguration.RM_APPLICATION_HTTPS_POLICY,
+              "is set to STRICT, which means that the tracking URL ",
+              "must be an HTTPS URL, but it is not.").
+          __("The tracking URL is: ", link).
+          __().
+          __();
+      return true;
+    }
+    return false;
+  }
   
   /**
    * Download link and have it be the response.
@@ -186,26 +227,57 @@ public class WebAppProxyServlet extends HttpServlet {
    * @param c the cookie to set if any
    * @param proxyHost the proxy host
    * @param method the http method
+   * @param appId the ApplicationID
    * @throws IOException on any error.
    */
-  private static void proxyLink(final HttpServletRequest req,
+  private void proxyLink(final HttpServletRequest req,
       final HttpServletResponse resp, final URI link, final Cookie c,
-      final String proxyHost, final HTTP method) throws IOException {
-    DefaultHttpClient client = new DefaultHttpClient();
-    client
-        .getParams()
-        .setParameter(ClientPNames.COOKIE_POLICY,
-            CookiePolicy.BROWSER_COMPATIBILITY)
-        .setBooleanParameter(ClientPNames.ALLOW_CIRCULAR_REDIRECTS, true);
+      final String proxyHost, final HTTP method, final ApplicationId appId)
+      throws IOException {
+    HttpClientBuilder httpClientBuilder = HttpClientBuilder.create();
+
+    String httpsPolicy = conf.get(YarnConfiguration.RM_APPLICATION_HTTPS_POLICY,
+        YarnConfiguration.DEFAULT_RM_APPLICATION_HTTPS_POLICY);
+
+    boolean connectionTimeoutEnabled =
+        conf.getBoolean(YarnConfiguration.RM_PROXY_TIMEOUT_ENABLED,
+        YarnConfiguration.DEFALUT_RM_PROXY_TIMEOUT_ENABLED);
+    int connectionTimeout =
+        conf.getInt(YarnConfiguration.RM_PROXY_CONNECTION_TIMEOUT,
+            YarnConfiguration.DEFAULT_RM_PROXY_CONNECTION_TIMEOUT);
+
+    if (httpsPolicy.equals("LENIENT") || httpsPolicy.equals("STRICT")) {
+      ProxyCA proxyCA = getProxyCA();
+      // ProxyCA could be null when the Proxy is run outside the RM
+      if (proxyCA != null) {
+        try {
+          httpClientBuilder.setSSLContext(proxyCA.createSSLContext(appId));
+          httpClientBuilder.setSSLHostnameVerifier(
+              proxyCA.getHostnameVerifier());
+        } catch (Exception e) {
+          throw new IOException(e);
+        }
+      }
+    }
+
     // Make sure we send the request from the proxy address in the config
     // since that is what the AM filter checks against. IP aliasing or
     // similar could cause issues otherwise.
     InetAddress localAddress = InetAddress.getByName(proxyHost);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("local InetAddress for proxy host: {}", localAddress);
-    }
-    client.getParams()
-        .setParameter(ConnRoutePNames.LOCAL_ADDRESS, localAddress);
+    LOG.debug("local InetAddress for proxy host: {}", localAddress);
+    httpClientBuilder.setDefaultRequestConfig(
+        connectionTimeoutEnabled ?
+            RequestConfig.custom()
+                .setCircularRedirectsAllowed(true)
+                .setLocalAddress(localAddress)
+                .setConnectionRequestTimeout(connectionTimeout)
+                .setSocketTimeout(connectionTimeout)
+                .setConnectTimeout(connectionTimeout)
+                .build() :
+            RequestConfig.custom()
+                .setCircularRedirectsAllowed(true)
+                .setLocalAddress(localAddress)
+                .build());
 
     HttpRequestBase base = null;
     if (method.equals(HTTP.GET)) {
@@ -216,7 +288,7 @@ public class WebAppProxyServlet extends HttpServlet {
       StringBuilder sb = new StringBuilder();
       BufferedReader reader =
           new BufferedReader(
-              new InputStreamReader(req.getInputStream(), "UTF-8"));
+              new InputStreamReader(req.getInputStream(), StandardCharsets.UTF_8));
       String line;
       while ((line = reader.readLine()) != null) {
         sb.append(line);
@@ -234,9 +306,7 @@ public class WebAppProxyServlet extends HttpServlet {
       String name = names.nextElement();
       if (PASS_THROUGH_HEADERS.contains(name)) {
         String value = req.getHeader(name);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("REQ HEADER: {} : {}", name, value);
-        }
+        LOG.debug("REQ HEADER: {} : {}", name, value);
         base.setHeader(name, value);
       }
     }
@@ -247,6 +317,7 @@ public class WebAppProxyServlet extends HttpServlet {
           PROXY_USER_COOKIE_NAME + "=" + URLEncoder.encode(user, "ASCII"));
     }
     OutputStream out = resp.getOutputStream();
+    HttpClient client = httpClientBuilder.build();
     try {
       HttpResponse httpResp = client.execute(base);
       resp.setStatus(httpResp.getStatusLine().getStatusCode());
@@ -271,6 +342,7 @@ public class WebAppProxyServlet extends HttpServlet {
   
   private static Cookie makeCheckCookie(ApplicationId id, boolean isSet) {
     Cookie c = new Cookie(getCheckCookieName(id),String.valueOf(isSet));
+    c.setHttpOnly(true);
     c.setPath(ProxyUriUtils.getPath(id));
     c.setMaxAge(60 * 60 * 2); //2 hours in seconds
     return c;
@@ -286,6 +358,10 @@ public class WebAppProxyServlet extends HttpServlet {
       throws IOException, YarnException {
     return ((AppReportFetcher) getServletContext()
         .getAttribute(WebAppProxy.FETCHER_ATTRIBUTE)).getApplicationReport(id);
+  }
+
+  private ProxyCA getProxyCA() {
+    return ((ProxyCA) getServletContext().getAttribute(WebAppProxy.PROXY_CA));
   }
   
   private String getProxyHost() throws IOException {
@@ -420,6 +496,10 @@ public class WebAppProxyServlet extends HttpServlet {
         return;
       }
 
+      if (checkHttpsStrictAndNotProvided(resp, trackingUri, conf)) {
+        return;
+      }
+
       String runningUser = applicationReport.getUser();
 
       if (checkUser && !runningUser.equals(remoteUser)) {
@@ -449,11 +529,43 @@ public class WebAppProxyServlet extends HttpServlet {
         default:
           // fall out of the switch
       }
+
+      /*
+       * If the application registered its tracking URL with the configured
+       * redirect flag, the proxy should not attempt
+       * to fetch the resource itself. Instead, it performs an HTTP redirect
+       * to the tracking URL.
+       *
+       * This is required for deployments where the tracking URL is served
+       * behind an external reverse proxy (for example Apache Knox) that is
+       * responsible for routing requests to multiple backend services
+       * such as Spark History Server instances in an HA setup.
+       *
+       * In such environments the YARN WebAppProxy cannot correctly proxy the
+       * request because the reverse proxy expects the request to originate
+       * directly from the user's browser and may require authentication
+       * context (e.g. a JWT) that the YARN proxy must not forward for
+       * security reasons.
+       *
+       * By redirecting the user instead of proxying the request, the browser
+       * sends a new request to the external reverse proxy which can then
+       * handle authentication and route the request to the appropriate
+       * backend service.
+       */
+      String toFetchQuery = toFetch.getQuery();
+      if (toFetchQuery != null) {
+        String redirectFlagName = conf.get(YarnConfiguration.PROXY_REDIRECT_FLAG, "");
+        if (!redirectFlagName.isBlank() && toFetchQuery.contains(redirectFlagName + "=true")) {
+          ProxyUtils.sendRedirect(req, resp, toFetch.toString());
+          return;
+        }
+      }
+
       Cookie c = null;
       if (userWasWarned && userApproved) {
         c = makeCheckCookie(id, true);
       }
-      proxyLink(req, resp, toFetch, c, getProxyHost(), method);
+      proxyLink(req, resp, toFetch, c, getProxyHost(), method, id);
 
     } catch(URISyntaxException | YarnException e) {
       throw new IOException(e); 
@@ -503,7 +615,7 @@ public class WebAppProxyServlet extends HttpServlet {
    */
   private URI getTrackingUri(HttpServletRequest req, HttpServletResponse resp,
       ApplicationId id, String originalUri, AppReportSource appReportSource)
-      throws IOException, URISyntaxException {
+      throws IOException, URISyntaxException, YarnException {
     URI trackingUri = null;
 
     if ((originalUri == null) ||
@@ -514,15 +626,15 @@ public class WebAppProxyServlet extends HttpServlet {
         // and Application Report was fetched from RM
         LOG.debug("Original tracking url is '{}'. Redirecting to RM app page",
             originalUri == null ? "NULL" : originalUri);
-        ProxyUtils.sendRedirect(req, resp,
-            StringHelper.pjoin(rmAppPageUrlBase, id.toString()));
+        ProxyUtils.sendRedirect(req, resp, StringHelper.pjoin(getRmAppPageUrlBase(id),
+            id.toString()));
       } else if (appReportSource == AppReportSource.AHS) {
         // fallback to Application History Server app page if the application
         // report was fetched from AHS
         LOG.debug("Original tracking url is '{}'. Redirecting to AHS app page",
             originalUri == null ? "NULL" : originalUri);
-        ProxyUtils.sendRedirect(req, resp,
-            StringHelper.pjoin(ahsAppPageUrlBase, id.toString()));
+        ProxyUtils.sendRedirect(req, resp, StringHelper.pjoin(getAhsAppPageUrlBase(),
+            id.toString()));
       }
     } else if (ProxyUriUtils.getSchemeFromUrl(originalUri).isEmpty()) {
       trackingUri =
@@ -565,7 +677,6 @@ public class WebAppProxyServlet extends HttpServlet {
    * again... If this method returns true, there was a redirect, and
    * it was handled by redirecting the current request to an error page.
    *
-   * @param path the part of the request path after the app id
    * @param id the app id
    * @param req the request object
    * @param resp the response object

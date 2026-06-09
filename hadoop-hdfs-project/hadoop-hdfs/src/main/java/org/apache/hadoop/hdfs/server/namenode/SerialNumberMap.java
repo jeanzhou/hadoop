@@ -17,6 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,11 +38,22 @@ import org.apache.hadoop.classification.InterfaceAudience;
  */
 @InterfaceAudience.Private
 public class SerialNumberMap<T> {
-  private final AtomicInteger max = new AtomicInteger(1);
+  private String name;
+  private final int max;
+  private final AtomicInteger current = new AtomicInteger(1);
   private final ConcurrentMap<T, Integer> t2i =
       new ConcurrentHashMap<T, Integer>();
   private final ConcurrentMap<Integer, T> i2t =
       new ConcurrentHashMap<Integer, T>();
+
+  SerialNumberMap(SerialNumberManager snm) {
+    this(snm.name(), snm.getLength());
+  }
+
+  SerialNumberMap(String name, int bitLength) {
+    this.name = name;
+    this.max = (1 << bitLength) - 1;
+  }
 
   public int get(T t) {
     if (t == null) {
@@ -47,15 +61,22 @@ public class SerialNumberMap<T> {
     }
     Integer sn = t2i.get(t);
     if (sn == null) {
-      sn = max.getAndIncrement();
-      if (sn < 0) {
-        throw new IllegalStateException("Too many elements!");
+      synchronized (this) {
+        sn = t2i.get(t);
+        if (sn == null) {
+          sn = current.getAndIncrement();
+          if (sn > max) {
+            current.getAndDecrement();
+            throw new IllegalStateException(name + ": serial number map is full");
+          }
+          Integer old = t2i.putIfAbsent(t, sn);
+          if (old != null) {
+            current.getAndDecrement();
+            return old;
+          }
+          i2t.put(sn, t);
+        }
       }
-      Integer old = t2i.putIfAbsent(t, sn);
-      if (old != null) {
-        return old;
-      }
-      i2t.put(sn, t);
     }
     return sn;
   }
@@ -66,14 +87,27 @@ public class SerialNumberMap<T> {
     }
     T t = i2t.get(i);
     if (t == null) {
-      throw new IllegalStateException("!i2t.containsKey(" + i
-          + "), this=" + this);
+      throw new IllegalStateException(
+          name + ": serial number " + i + " does not exist");
     }
     return t;
   }
 
+  int getMax() {
+    return max;
+  }
+
+  Set<Map.Entry<Integer, T>> entrySet() {
+    return new HashSet<>(i2t.entrySet());
+  }
+
+  public int size() {
+    return i2t.size();
+  }
+
   @Override
   public String toString() {
-    return "max=" + max + ",\n  t2i=" + t2i + ",\n  i2t=" + i2t;
+    return "current=" + current + ",\n" +
+           "max=" + max + ",\n  t2i=" + t2i + ",\n  i2t=" + i2t;
   }
 }

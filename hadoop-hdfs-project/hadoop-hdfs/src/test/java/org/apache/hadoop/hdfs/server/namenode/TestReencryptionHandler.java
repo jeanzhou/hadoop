@@ -27,15 +27,16 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.KMSUtil;
 import org.apache.hadoop.util.StopWatch;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.Whitebox;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
@@ -44,22 +45,21 @@ import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_REENCRYPT_THROTTLE_LIMIT_HANDLER_RATIO_KEY;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test class for ReencryptionHandler.
  */
+@Timeout(180)
 public class TestReencryptionHandler {
 
   protected static final org.slf4j.Logger LOG =
       LoggerFactory.getLogger(TestReencryptionHandler.class);
 
-  @Rule
-  public Timeout globalTimeout = new Timeout(180 * 1000);
 
-  @Before
+  @BeforeEach
   public void setup() {
     GenericTestUtils.setLogLevel(ReencryptionHandler.LOG, Level.TRACE);
   }
@@ -67,14 +67,20 @@ public class TestReencryptionHandler {
   private ReencryptionHandler mockReencryptionhandler(final Configuration conf)
       throws IOException {
     // mock stuff to create a mocked ReencryptionHandler
+    FileSystemTestHelper helper = new FileSystemTestHelper();
+    Path targetFile = new Path(new File(helper.getTestRootDir())
+        .getAbsolutePath(), "test.jks");
     conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
-        JavaKeyStoreProvider.SCHEME_NAME + "://file" + new Path(
-            new FileSystemTestHelper().getTestRootDir(), "test.jks").toUri());
+        JavaKeyStoreProvider.SCHEME_NAME + "://file" + targetFile.toUri());
     final EncryptionZoneManager ezm = Mockito.mock(EncryptionZoneManager.class);
     final KeyProvider kp = KMSUtil.createKeyProvider(conf,
         CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH);
     Mockito.when(ezm.getProvider()).thenReturn(
         KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp));
+    FSDirectory fsd = Mockito.mock(FSDirectory.class);
+    FSNamesystem fns = Mockito.mock(FSNamesystem.class);
+    Mockito.when(fsd.getFSNamesystem()).thenReturn(fns);
+    Mockito.when(ezm.getFSDirectory()).thenReturn(fsd);
     return new ReencryptionHandler(ezm, conf);
   }
 
@@ -99,12 +105,11 @@ public class TestReencryptionHandler {
     Whitebox.setInternalState(rh, "throttleTimerLocked", mockLocked);
     Whitebox.setInternalState(rh, "taskQueue", queue);
     final StopWatch sw = new StopWatch().start();
-    rh.throttle();
+    rh.getTraverser().throttle();
     sw.stop();
-    assertTrue("should have throttled for at least 8 second",
-        sw.now(TimeUnit.MILLISECONDS) > 8000);
-    assertTrue("should have throttled for at most 12 second",
-        sw.now(TimeUnit.MILLISECONDS) < 12000);
+    assertTrue(sw.now(TimeUnit.MILLISECONDS) > 8000, "should have throttled for at least 8 second");
+    assertTrue(sw.now(TimeUnit.MILLISECONDS) < 12000,
+        "should have throttled for at most 12 second");
   }
 
   @Test
@@ -130,10 +135,9 @@ public class TestReencryptionHandler {
         submissions = new HashMap<>();
     Whitebox.setInternalState(rh, "submissions", submissions);
     StopWatch sw = new StopWatch().start();
-    rh.throttle();
+    rh.getTraverser().throttle();
     sw.stop();
-    assertTrue("should not have throttled",
-        sw.now(TimeUnit.MILLISECONDS) < 1000);
+    assertTrue(sw.now(TimeUnit.MILLISECONDS) < 1000, "should not have throttled");
   }
 
   @Test
@@ -174,8 +178,8 @@ public class TestReencryptionHandler {
       zst.addTask(mock);
     }
 
-    Thread removeTaskThread = new Thread() {
-      public void run() {
+    SubjectInheritingThread removeTaskThread = new SubjectInheritingThread() {
+      public void work() {
         try {
           Thread.sleep(3000);
         } catch (InterruptedException ie) {
@@ -189,10 +193,10 @@ public class TestReencryptionHandler {
     Whitebox.setInternalState(rh, "submissions", submissions);
     final StopWatch sw = new StopWatch().start();
     removeTaskThread.start();
-    rh.throttle();
+    rh.getTraverser().throttle();
     sw.stop();
     LOG.info("Throttle completed, consumed {}", sw.now(TimeUnit.MILLISECONDS));
-    assertTrue("should have throttled for at least 3 second",
-        sw.now(TimeUnit.MILLISECONDS) >= 3000);
+    assertTrue(sw.now(TimeUnit.MILLISECONDS) >= 3000,
+        "should have throttled for at least 3 second");
   }
 }

@@ -13,32 +13,16 @@
  */
 package org.apache.hadoop.security.authentication.util;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 import java.security.SecureRandom;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
-import javax.security.auth.login.AppConfigurationEntry;
-import javax.security.auth.login.Configuration;
 import javax.servlet.ServletContext;
-import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
-import org.apache.curator.framework.CuratorFrameworkFactory;
-import org.apache.curator.framework.api.ACLProvider;
-import org.apache.curator.framework.imps.DefaultACLProvider;
-import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.ZooDefs.Perms;
-import org.apache.zookeeper.client.ZooKeeperSaslClient;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Id;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,6 +79,16 @@ public class ZKSignerSecretProvider extends RolloverSignerSecretProvider {
    */
   public static final String ZOOKEEPER_KERBEROS_PRINCIPAL =
           CONFIG_PREFIX + "kerberos.principal";
+
+  public static final String ZOOKEEPER_SSL_ENABLED = CONFIG_PREFIX + "ssl.enabled";
+  public static final String ZOOKEEPER_SSL_KEYSTORE_LOCATION =
+      CONFIG_PREFIX + "ssl.keystore.location";
+  public static final String ZOOKEEPER_SSL_KEYSTORE_PASSWORD =
+      CONFIG_PREFIX + "ssl.keystore.password";
+  public static final String ZOOKEEPER_SSL_TRUSTSTORE_LOCATION =
+      CONFIG_PREFIX + "ssl.truststore.location";
+  public static final String ZOOKEEPER_SSL_TRUSTSTORE_PASSWORD =
+      CONFIG_PREFIX + "ssl.truststore.password";
 
   /**
    * Constant for the property that specifies whether or not the Curator client
@@ -354,138 +348,33 @@ public class ZKSignerSecretProvider extends RolloverSignerSecretProvider {
    * This method creates the Curator client and connects to ZooKeeper.
    * @param config configuration properties
    * @return A Curator client
-   * @throws Exception thrown if an error occurred
    */
-  protected CuratorFramework createCuratorClient(Properties config)
-          throws Exception {
-    String connectionString = config.getProperty(
-            ZOOKEEPER_CONNECTION_STRING, "localhost:2181");
-
-    RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
-    ACLProvider aclProvider;
+  protected CuratorFramework createCuratorClient(Properties config) {
+    String connectionString = config.getProperty(ZOOKEEPER_CONNECTION_STRING, "localhost:2181");
     String authType = config.getProperty(ZOOKEEPER_AUTH_TYPE, "none");
-    if (authType.equals("sasl")) {
-      LOG.info("Connecting to ZooKeeper with SASL/Kerberos"
-              + "and using 'sasl' ACLs");
-      String principal = setJaasConfiguration(config);
-      System.setProperty(ZooKeeperSaslClient.LOGIN_CONTEXT_NAME_KEY,
-              JAAS_LOGIN_ENTRY_NAME);
-      System.setProperty("zookeeper.authProvider.1",
-              "org.apache.zookeeper.server.auth.SASLAuthenticationProvider");
-      aclProvider = new SASLOwnerACLProvider(principal);
-    } else {  // "none"
-      LOG.info("Connecting to ZooKeeper without authentication");
-      aclProvider = new DefaultACLProvider();     // open to everyone
-    }
-    CuratorFramework cf = CuratorFrameworkFactory.builder()
-            .connectString(connectionString)
-            .retryPolicy(retryPolicy)
-            .aclProvider(aclProvider)
-            .build();
-    cf.start();
-    return cf;
-  }
+    String keytab = config.getProperty(ZOOKEEPER_KERBEROS_KEYTAB, "").trim();
+    String principal = config.getProperty(ZOOKEEPER_KERBEROS_PRINCIPAL, "").trim();
 
-  private String setJaasConfiguration(Properties config) throws Exception {
-    String keytabFile = config.getProperty(ZOOKEEPER_KERBEROS_KEYTAB).trim();
-    if (keytabFile == null || keytabFile.length() == 0) {
-      throw new IllegalArgumentException(ZOOKEEPER_KERBEROS_KEYTAB
-              + " must be specified");
-    }
-    String principal = config.getProperty(ZOOKEEPER_KERBEROS_PRINCIPAL)
-            .trim();
-    if (principal == null || principal.length() == 0) {
-      throw new IllegalArgumentException(ZOOKEEPER_KERBEROS_PRINCIPAL
-              + " must be specified");
-    }
+    boolean sslEnabled = Boolean.parseBoolean(config.getProperty(ZOOKEEPER_SSL_ENABLED, "false"));
+    String keystoreLocation = config.getProperty(ZOOKEEPER_SSL_KEYSTORE_LOCATION, "");
+    String keystorePassword = config.getProperty(ZOOKEEPER_SSL_KEYSTORE_PASSWORD, "");
+    String truststoreLocation = config.getProperty(ZOOKEEPER_SSL_TRUSTSTORE_LOCATION, "");
+    String truststorePassword = config.getProperty(ZOOKEEPER_SSL_TRUSTSTORE_PASSWORD, "");
 
-    // This is equivalent to writing a jaas.conf file and setting the system
-    // property, "java.security.auth.login.config", to point to it
-    JaasConfiguration jConf =
-            new JaasConfiguration(JAAS_LOGIN_ENTRY_NAME, principal, keytabFile);
-    Configuration.setConfiguration(jConf);
-    return principal.split("[/@]")[0];
-  }
-
-  /**
-   * Simple implementation of an {@link ACLProvider} that simply returns an ACL
-   * that gives all permissions only to a single principal.
-   */
-  private static class SASLOwnerACLProvider implements ACLProvider {
-
-    private final List<ACL> saslACL;
-
-    private SASLOwnerACLProvider(String principal) {
-      this.saslACL = Collections.singletonList(
-              new ACL(Perms.ALL, new Id("sasl", principal)));
-    }
-
-    @Override
-    public List<ACL> getDefaultAcl() {
-      return saslACL;
-    }
-
-    @Override
-    public List<ACL> getAclForPath(String path) {
-      return saslACL;
-    }
-  }
-
-  /**
-   * Creates a programmatic version of a jaas.conf file. This can be used
-   * instead of writing a jaas.conf file and setting the system property,
-   * "java.security.auth.login.config", to point to that file. It is meant to be
-   * used for connecting to ZooKeeper.
-   */
-  @InterfaceAudience.Private
-  public static class JaasConfiguration extends Configuration {
-
-    private final javax.security.auth.login.Configuration baseConfig =
-        javax.security.auth.login.Configuration.getConfiguration();
-    private static AppConfigurationEntry[] entry;
-    private String entryName;
-
-    /**
-     * Add an entry to the jaas configuration with the passed in name,
-     * principal, and keytab. The other necessary options will be set for you.
-     *
-     * @param entryName The name of the entry (e.g. "Client")
-     * @param principal The principal of the user
-     * @param keytab The location of the keytab
-     */
-    public JaasConfiguration(String entryName, String principal, String keytab) {
-      this.entryName = entryName;
-      Map<String, String> options = new HashMap<String, String>();
-      options.put("keyTab", keytab);
-      options.put("principal", principal);
-      options.put("useKeyTab", "true");
-      options.put("storeKey", "true");
-      options.put("useTicketCache", "false");
-      options.put("refreshKrb5Config", "true");
-      String jaasEnvVar = System.getenv("HADOOP_JAAS_DEBUG");
-      if (jaasEnvVar != null && "true".equalsIgnoreCase(jaasEnvVar)) {
-        options.put("debug", "true");
-      }
-      entry = new AppConfigurationEntry[]{
-                  new AppConfigurationEntry(getKrb5LoginModuleName(),
-                  AppConfigurationEntry.LoginModuleControlFlag.REQUIRED,
-                  options)};
-    }
-
-    @Override
-    public AppConfigurationEntry[] getAppConfigurationEntry(String name) {
-      return (entryName.equals(name)) ? entry : ((baseConfig != null)
-        ? baseConfig.getAppConfigurationEntry(name) : null);
-    }
-
-    private String getKrb5LoginModuleName() {
-      String krb5LoginModuleName;
-      if (System.getProperty("java.vendor").contains("IBM")) {
-        krb5LoginModuleName = "com.ibm.security.auth.module.Krb5LoginModule";
-      } else {
-        krb5LoginModuleName = "com.sun.security.auth.module.Krb5LoginModule";
-      }
-      return krb5LoginModuleName;
-    }
+    CuratorFramework zkClient =
+        ZookeeperClient.configure()
+            .withConnectionString(connectionString)
+            .withAuthType(authType)
+            .withKeytab(keytab)
+            .withPrincipal(principal)
+            .withJaasLoginEntryName(JAAS_LOGIN_ENTRY_NAME)
+            .enableSSL(sslEnabled)
+            .withKeystore(keystoreLocation)
+            .withKeystorePassword(keystorePassword)
+            .withTruststore(truststoreLocation)
+            .withTruststorePassword(truststorePassword)
+            .create();
+    zkClient.start();
+    return zkClient;
   }
 }

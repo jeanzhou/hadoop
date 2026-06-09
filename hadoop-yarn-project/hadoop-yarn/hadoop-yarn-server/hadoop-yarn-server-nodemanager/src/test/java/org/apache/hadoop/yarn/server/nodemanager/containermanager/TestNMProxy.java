@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.SocketException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -28,6 +29,7 @@ import org.apache.hadoop.io.retry.UnreliableInterface;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.test.LambdaTestUtils;
 import org.apache.hadoop.yarn.api.ContainerManagementProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesResponse;
@@ -45,9 +47,12 @@ import org.apache.hadoop.yarn.security.NMTokenIdentifier;
 import org.apache.hadoop.yarn.server.nodemanager.DeletionService;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class TestNMProxy extends BaseContainerManagerTest {
 
@@ -57,7 +62,7 @@ public class TestNMProxy extends BaseContainerManagerTest {
 
   int retryCount = 0;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     containerManager.start();
   }
@@ -65,8 +70,8 @@ public class TestNMProxy extends BaseContainerManagerTest {
   @Override
   protected ContainerManagerImpl
       createContainerManager(DeletionService delSrvc) {
-    return new ContainerManagerImpl(context, exec, delSrvc, nodeStatusUpdater,
-      metrics, dirsHandler) {
+    return new ContainerManagerImpl(context, exec, delSrvc,
+        getNodeStatusUpdater(), metrics, dirsHandler) {
 
       @Override
       public StartContainersResponse startContainers(
@@ -112,8 +117,9 @@ public class TestNMProxy extends BaseContainerManagerTest {
     };
   }
 
-  @Test(timeout = 20000)
-   public void testNMProxyRetry() throws Exception {
+  @Test
+  @Timeout(value = 20)
+  public void testNMProxyRetry() throws Exception {
      conf.setLong(YarnConfiguration.CLIENT_NM_CONNECT_MAX_WAIT_MS, 10000);
      conf.setLong(YarnConfiguration.CLIENT_NM_CONNECT_RETRY_INTERVAL_MS, 100);
      StartContainersRequest allRequests =
@@ -122,32 +128,36 @@ public class TestNMProxy extends BaseContainerManagerTest {
     ContainerManagementProtocol proxy = getNMProxy(conf);
 
     proxy.startContainers(allRequests);
-    Assert.assertEquals(5, retryCount);
+    assertEquals(5, retryCount);
 
     retryCount = 0;
     proxy.stopContainers(Records.newRecord(StopContainersRequest.class));
-    Assert.assertEquals(5, retryCount);
+    assertEquals(5, retryCount);
 
     retryCount = 0;
     proxy.getContainerStatuses(Records
       .newRecord(GetContainerStatusesRequest.class));
-    Assert.assertEquals(5, retryCount);
+    assertEquals(5, retryCount);
   }
 
-  @Test(timeout = 20000, expected = IOException.class)
+  @Test
+  @Timeout(value = 20)
   public void testShouldNotRetryForeverForNonNetworkExceptionsOnNMConnections()
       throws Exception {
-    conf.setLong(YarnConfiguration.CLIENT_NM_CONNECT_MAX_WAIT_MS, -1);
-    StartContainersRequest allRequests =
-        Records.newRecord(StartContainersRequest.class);
+    assertThrows(IOException.class, ()->{
+      conf.setLong(YarnConfiguration.CLIENT_NM_CONNECT_MAX_WAIT_MS, -1);
+      StartContainersRequest allRequests =
+          Records.newRecord(StartContainersRequest.class);
 
-    ContainerManagementProtocol proxy = getNMProxy(conf);
+      ContainerManagementProtocol proxy = getNMProxy(conf);
 
-    retryCount = 0;
-    proxy.startContainers(allRequests);
+      retryCount = 0;
+      proxy.startContainers(allRequests);
+    });
   }
 
-  @Test(timeout = 20000)
+  @Test
+  @Timeout(value = 20)
   public void testNMProxyRPCRetry() throws Exception {
     conf.setLong(YarnConfiguration.CLIENT_NM_CONNECT_MAX_WAIT_MS, 1000);
     conf.setLong(YarnConfiguration.CLIENT_NM_CONNECT_RETRY_INTERVAL_MS, 100);
@@ -161,15 +171,10 @@ public class TestNMProxy extends BaseContainerManagerTest {
         IPC_CLIENT_CONNECT_MAX_RETRIES_ON_SOCKET_TIMEOUTS_KEY, 100);
     // connect to some dummy address so that it can trigger
     // connection failure and RPC level retires.
-    newConf.set(YarnConfiguration.NM_ADDRESS, "1234");
+    newConf.set(YarnConfiguration.NM_ADDRESS, "127.0.0.1:1");
     ContainerManagementProtocol proxy = getNMProxy(newConf);
-    try {
-      proxy.startContainers(allRequests);
-      Assert.fail("should get socket exception");
-    } catch (IOException e) {
-      // socket exception should be thrown immediately, without RPC retries.
-      Assert.assertTrue(e instanceof java.net.SocketException);
-    }
+    LambdaTestUtils.intercept(SocketException.class,
+        () -> proxy.startContainers(allRequests));
   }
 
   private ContainerManagementProtocol getNMProxy(Configuration conf) {

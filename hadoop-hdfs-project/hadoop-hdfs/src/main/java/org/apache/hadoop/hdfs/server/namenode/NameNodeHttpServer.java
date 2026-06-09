@@ -22,40 +22,49 @@ import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_WEBHDFS_RES
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
-import java.util.Map.Entry;
+import java.util.HashMap;
 
 import javax.servlet.ServletContext;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.apache.hadoop.hdfs.server.aliasmap.InMemoryAliasMap;
 import org.apache.hadoop.hdfs.server.common.JspHelper;
+import org.apache.hadoop.hdfs.server.common.TokenVerifier;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
 import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
-import org.apache.hadoop.hdfs.web.AuthFilter;
+import org.apache.hadoop.hdfs.web.ParamFilter;
 import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
 import org.apache.hadoop.hdfs.web.resources.AclPermissionParam;
+import org.apache.hadoop.hdfs.web.resources.ExceptionHandler;
 import org.apache.hadoop.hdfs.web.resources.Param;
 import org.apache.hadoop.hdfs.web.resources.UserParam;
+import org.apache.hadoop.hdfs.web.resources.UserProvider;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.net.NetUtils;
-import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.http.RestCsrfPreventionFilter;
+
+import org.glassfish.jersey.internal.inject.AbstractBinder;
+import org.glassfish.jersey.server.ResourceConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Encapsulates the HTTP server started by the NameNode. 
  */
 @InterfaceAudience.Private
 public class NameNodeHttpServer {
+
+  private static final Logger LOG = LoggerFactory.getLogger(NameNodeHttpServer.class);
+
   private HttpServer2 httpServer;
   private final Configuration conf;
   private final NameNode nn;
@@ -68,6 +77,7 @@ public class NameNodeHttpServer {
   public static final String FSIMAGE_ATTRIBUTE_KEY = "name.system.image";
   protected static final String NAMENODE_ATTRIBUTE_KEY = "name.node";
   public static final String STARTUP_PROGRESS_ATTRIBUTE_KEY = "startup.progress";
+  public static final String ALIASMAP_ATTRIBUTE_KEY = "name.system.aliasmap";
 
   NameNodeHttpServer(Configuration conf, NameNode nn,
       InetSocketAddress bindAddress) {
@@ -76,7 +86,8 @@ public class NameNodeHttpServer {
     this.bindAddress = bindAddress;
   }
 
-  private void initWebHdfs(Configuration conf) throws IOException {
+  public static void initWebHdfs(Configuration conf, HttpServer2 httpServer2,
+      String jerseyResourcePackage) throws IOException {
     // set user pattern based on configuration file
     UserParam.setUserPattern(conf.get(
         HdfsClientConfigKeys.DFS_WEBHDFS_USER_PATTERN_KEY,
@@ -85,18 +96,7 @@ public class NameNodeHttpServer {
         HdfsClientConfigKeys.DFS_WEBHDFS_ACL_PERMISSION_PATTERN_KEY,
         HdfsClientConfigKeys.DFS_WEBHDFS_ACL_PERMISSION_PATTERN_DEFAULT));
 
-    // add authentication filter for webhdfs
-    final String className = conf.get(
-        DFSConfigKeys.DFS_WEBHDFS_AUTHENTICATION_FILTER_KEY,
-        DFSConfigKeys.DFS_WEBHDFS_AUTHENTICATION_FILTER_DEFAULT);
-    final String name = className;
-
     final String pathSpec = WebHdfsFileSystem.PATH_PREFIX + "/*";
-    Map<String, String> params = getAuthFilterParams(conf);
-    HttpServer2.defineFilter(httpServer.getWebAppContext(), name, className,
-        params, new String[] { pathSpec });
-    HttpServer2.LOG.info("Added filter '" + name + "' (class=" + className
-        + ")");
 
     // add REST CSRF prevention filter
     if (conf.getBoolean(DFS_WEBHDFS_REST_CSRF_ENABLED_KEY,
@@ -104,14 +104,29 @@ public class NameNodeHttpServer {
       Map<String, String> restCsrfParams = RestCsrfPreventionFilter
           .getFilterParams(conf, "dfs.webhdfs.rest-csrf.");
       String restCsrfClassName = RestCsrfPreventionFilter.class.getName();
-      HttpServer2.defineFilter(httpServer.getWebAppContext(), restCsrfClassName,
-          restCsrfClassName, restCsrfParams, new String[] {pathSpec});
+      HttpServer2.defineFilter(httpServer2.getWebAppContext(),
+          restCsrfClassName, restCsrfClassName, restCsrfParams,
+          new String[] {pathSpec});
     }
 
+    // add a filter to change parameter names to lower cases
+    HttpServer2.defineFilter(httpServer2.getWebAppContext(),
+        ParamFilter.class.getName(), ParamFilter.class.getName(), null,
+        new String[] {pathSpec});
+
     // add webhdfs packages
-    httpServer.addJerseyResourcePackage(NamenodeWebHdfsMethods.class
-        .getPackage().getName() + ";" + Param.class.getPackage().getName(),
-        pathSpec);
+    final Map<String, String> params = new HashMap<>();
+    ResourceConfig config = new ResourceConfig();
+    config.register(ExceptionHandler.class);
+    config.packages(jerseyResourcePackage, Param.class.getPackage().getName());
+    config.register(new AbstractBinder() {
+      // add a factory to generate UserGroupInformation
+      @Override
+      protected void configure() {
+        bindFactory(UserProvider.class).to(UserGroupInformation.class);
+      }
+    });
+    httpServer2.addJerseyResourceConfig(config, pathSpec, params);
   }
 
   /**
@@ -139,7 +154,7 @@ public class NameNodeHttpServer {
       }
     }
 
-    HttpServer2.Builder builder = DFSUtil.httpServerTemplateForNNAndJN(conf,
+    HttpServer2.Builder builder = DFSUtil.getHttpServerTemplate(conf,
         httpAddr, httpsAddr, "hdfs",
         DFSConfigKeys.DFS_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
         DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY);
@@ -165,72 +180,31 @@ public class NameNodeHttpServer {
           datanodeSslPort.getPort());
     }
 
-    initWebHdfs(conf);
+    initWebHdfs(conf, httpServer, NamenodeWebHdfsMethods.class.getPackage().getName());
 
     httpServer.setAttribute(NAMENODE_ATTRIBUTE_KEY, nn);
     httpServer.setAttribute(JspHelper.CURRENT_CONF, conf);
-    setupServlets(httpServer, conf);
+    setupServlets(httpServer);
     httpServer.start();
 
     int connIdx = 0;
     if (policy.isHttpEnabled()) {
       httpAddress = httpServer.getConnectorAddress(connIdx++);
-      conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY,
-          NetUtils.getHostPortString(httpAddress));
+      if (httpAddress != null) {
+        conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY,
+            NetUtils.getHostPortString(httpAddress));
+        LOG.info("Listening for HTTP traffic on {}", httpAddress);
+      }
     }
 
     if (policy.isHttpsEnabled()) {
       httpsAddress = httpServer.getConnectorAddress(connIdx);
-      conf.set(DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_KEY,
-          NetUtils.getHostPortString(httpsAddress));
-    }
-  }
-  
-  private Map<String, String> getAuthFilterParams(Configuration conf)
-      throws IOException {
-    Map<String, String> params = new HashMap<String, String>();
-    // Select configs beginning with 'dfs.web.authentication.'
-    Iterator<Map.Entry<String, String>> iterator = conf.iterator();
-    while (iterator.hasNext()) {
-      Entry<String, String> kvPair = iterator.next();
-      if (kvPair.getKey().startsWith(AuthFilter.CONF_PREFIX)) {
-        params.put(kvPair.getKey(), kvPair.getValue());
+      if (httpsAddress != null) {
+        conf.set(DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_KEY,
+            NetUtils.getHostPortString(httpsAddress));
+        LOG.info("Listening for HTTPS traffic on {}", httpsAddress);
       }
     }
-    String principalInConf = conf
-        .get(DFSConfigKeys.DFS_WEB_AUTHENTICATION_KERBEROS_PRINCIPAL_KEY);
-    if (principalInConf != null && !principalInConf.isEmpty()) {
-      params
-          .put(
-              DFSConfigKeys.DFS_WEB_AUTHENTICATION_KERBEROS_PRINCIPAL_KEY,
-              SecurityUtil.getServerPrincipal(principalInConf,
-                                              bindAddress.getHostName()));
-    } else if (UserGroupInformation.isSecurityEnabled()) {
-      HttpServer2.LOG.error(
-          "WebHDFS and security are enabled, but configuration property '" +
-          DFSConfigKeys.DFS_WEB_AUTHENTICATION_KERBEROS_PRINCIPAL_KEY +
-          "' is not set.");
-    }
-    String httpKeytab = conf.get(DFSUtil.getSpnegoKeytabKey(conf,
-        DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY));
-    if (httpKeytab != null && !httpKeytab.isEmpty()) {
-      params.put(
-          DFSConfigKeys.DFS_WEB_AUTHENTICATION_KERBEROS_KEYTAB_KEY,
-          httpKeytab);
-    } else if (UserGroupInformation.isSecurityEnabled()) {
-      HttpServer2.LOG.error(
-          "WebHDFS and security are enabled, but configuration property '" +
-          DFSConfigKeys.DFS_WEB_AUTHENTICATION_KERBEROS_KEYTAB_KEY +
-          "' is not set.");
-    }
-    String anonymousAllowed = conf
-      .get(DFSConfigKeys.DFS_WEB_AUTHENTICATION_SIMPLE_ANONYMOUS_ALLOWED);
-    if (anonymousAllowed != null && !anonymousAllowed.isEmpty()) {
-    params.put(
-        DFSConfigKeys.DFS_WEB_AUTHENTICATION_SIMPLE_ANONYMOUS_ALLOWED,
-        anonymousAllowed);
-    }
-    return params;
   }
 
   /**
@@ -284,13 +258,27 @@ public class NameNodeHttpServer {
     httpServer.setAttribute(STARTUP_PROGRESS_ATTRIBUTE_KEY, prog);
   }
 
-  private static void setupServlets(HttpServer2 httpServer, Configuration conf) {
+  /**
+   * Sets the aliasmap URI.
+   *
+   * @param aliasMap the alias map used.
+   */
+  void setAliasMap(InMemoryAliasMap aliasMap) {
+    httpServer.setAttribute(ALIASMAP_ATTRIBUTE_KEY, aliasMap);
+  }
+
+  private static void setupServlets(HttpServer2 httpServer) {
     httpServer.addInternalServlet("startupProgress",
         StartupProgressServlet.PATH_SPEC, StartupProgressServlet.class);
     httpServer.addInternalServlet("fsck", "/fsck", FsckServlet.class,
         true);
     httpServer.addInternalServlet("imagetransfer", ImageServlet.PATH_SPEC,
         ImageServlet.class, true);
+    httpServer.addInternalServlet(IsNameNodeActiveServlet.SERVLET_NAME,
+        IsNameNodeActiveServlet.PATH_SPEC,
+        IsNameNodeActiveServlet.class);
+    httpServer.addInternalServlet(NetworkTopologyServlet.SERVLET_NAME,
+        NetworkTopologyServlet.PATH_SPEC, NetworkTopologyServlet.class);
   }
 
   static FSImage getFsImageFromContext(ServletContext context) {
@@ -301,8 +289,17 @@ public class NameNodeHttpServer {
     return (NameNode)context.getAttribute(NAMENODE_ATTRIBUTE_KEY);
   }
 
+  public static TokenVerifier
+      getTokenVerifierFromContext(ServletContext context) {
+    return (TokenVerifier) context.getAttribute(NAMENODE_ATTRIBUTE_KEY);
+  }
+
   static Configuration getConfFromContext(ServletContext context) {
     return (Configuration)context.getAttribute(JspHelper.CURRENT_CONF);
+  }
+
+  static InMemoryAliasMap getAliasMapFromContext(ServletContext context) {
+    return (InMemoryAliasMap) context.getAttribute(ALIASMAP_ATTRIBUTE_KEY);
   }
 
   public static InetSocketAddress getNameNodeAddressFromContext(

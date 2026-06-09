@@ -17,7 +17,6 @@
  */
 package org.apache.hadoop.hdfs.server.balancer;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static org.apache.hadoop.hdfs.protocol.BlockType.CONTIGUOUS;
 
 import java.io.IOException;
@@ -29,15 +28,26 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import javax.management.ObjectName;
+
+import org.apache.commons.lang3.builder.ToStringBuilder;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hadoop.metrics2.source.JvmMetrics;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.hdfs.DFSUtilClient;
+import org.apache.hadoop.net.NetworkTopology;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
@@ -58,6 +68,7 @@ import org.apache.hadoop.hdfs.server.namenode.UnsupportedActionException;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -67,7 +78,8 @@ import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.util.VersionInfo;
 
 /** <p>The balancer is a tool that balances disk space usage on an HDFS cluster
  * when some datanodes become full or when new empty nodes join the cluster.
@@ -78,7 +90,7 @@ import com.google.common.base.Preconditions;
  * <p>SYNOPSIS
  * <pre>
  * To start:
- *      bin/start-balancer.sh [-threshold <threshold>]
+ *      bin/start-balancer.sh [-threshold {@literal <threshold>}]
  *      Example: bin/ start-balancer.sh 
  *                     start the balancer with a default threshold of 10%
  *               bin/ start-balancer.sh -threshold 5
@@ -113,13 +125,14 @@ import com.google.common.base.Preconditions;
  * <p>A system property that limits the balancer's use of bandwidth is 
  * defined in the default configuration file:
  * <pre>
- * <property>
- *   <name>dfs.datanode.balance.bandwidthPerSec</name>
- *   <value>1048576</value>
- * <description>  Specifies the maximum bandwidth that each datanode 
+ * &lt;property&gt;
+ *   &lt;name&gt;dfs.datanode.balance.bandwidthPerSec&lt;/name&gt;
+ *   &lt;value&gt;1048576&lt;/value&gt;
+ * &lt;description&gt;  Specifies the maximum bandwidth that each datanode
  * can utilize for the balancing purpose in term of the number of bytes 
- * per second. </description>
- * </property>
+ * per second.
+ * &lt;/description&gt;
+ * &lt;/property&gt;
  * </pre>
  * 
  * <p>This property determines the maximum speed at which a block will be 
@@ -171,8 +184,8 @@ import com.google.common.base.Preconditions;
  */
 
 @InterfaceAudience.Private
-public class Balancer {
-  static final Log LOG = LogFactory.getLog(Balancer.class);
+public class Balancer implements BalancerMXBean {
+  static final Logger LOG = LoggerFactory.getLogger(Balancer.class);
 
   static final Path BALANCER_ID_PATH = new Path("/system/balancer.id");
 
@@ -187,6 +200,12 @@ public class Balancer {
       + "\tIncludes only the specified datanodes."
       + "\n\t[-source [-f <hosts-file> | <comma-separated list of hosts>]]"
       + "\tPick only the specified datanodes as source nodes."
+      + "\n\t[-excludeSource [-f <hosts-file> | <comma-separated list of hosts>]]"
+      + "\tExcludes the specified datanodes to be selected as a source."
+      + "\n\t[-target [-f <hosts-file> | <comma-separated list of hosts>]]"
+      + "\tPick only the specified datanodes as target nodes."
+      + "\n\t[-excludeTarget [-f <hosts-file> | <comma-separated list of hosts>]]"
+      + "\tExcludes the specified datanodes from being selected as a target."
       + "\n\t[-blockpools <comma-separated list of blockpool ids>]"
       + "\tThe balancer will only run on blockpools included in this list."
       + "\n\t[-idleiterations <idleiterations>]"
@@ -195,16 +214,38 @@ public class Balancer {
       + "\n\t[-runDuringUpgrade]"
       + "\tWhether to run the balancer during an ongoing HDFS upgrade."
       + "This is usually not desired since it will not affect used space "
-      + "on over-utilized machines.";
+      + "on over-utilized machines."
+      + "\n\t[-asService]\tRun as a long running service."
+      + "\n\t[-sortTopNodes]"
+      + "\tSort datanodes based on the utilization so "
+      + "that highly utilized datanodes get scheduled first."
+      + "\n\t[-limitOverUtilizedNum <specified maximum number of overUtilized datanodes>]"
+      + "\tLimit the maximum number of overUtilized datanodes."
+      + "\n\t[-hotBlockTimeInterval]\tprefer to move cold blocks.";
+
+  @VisibleForTesting
+  private static volatile boolean serviceRunning = false;
+
+  private static final AtomicInteger EXCEPTIONS_SINCE_LAST_BALANCE =
+      new AtomicInteger(0);
+  private static final AtomicInteger
+      FAILED_TIMES_SINCE_LAST_SUCCESSFUL_BALANCE = new AtomicInteger(0);
 
   private final Dispatcher dispatcher;
   private final NameNodeConnector nnc;
   private final BalancingPolicy policy;
   private final Set<String> sourceNodes;
+  private final Set<String> excludedSourceNodes;
+  private final Set<String> targetNodes;
+  private final Set<String> excludedTargetNodes;
   private final boolean runDuringUpgrade;
   private final double threshold;
   private final long maxSizeToMove;
   private final long defaultBlockSize;
+  private final boolean sortTopNodes;
+  private final int limitOverUtilizedNum;
+  private final BalancerMetrics metrics;
+  private ObjectName balancerInfoBeanName;
 
   // all data node lists
   private final Collection<Source> overUtilized = new LinkedList<Source>();
@@ -220,7 +261,7 @@ public class Balancer {
   private static void checkReplicationPolicyCompatibility(Configuration conf
       ) throws UnsupportedActionException {
     BlockPlacementPolicies placementPolicies =
-        new BlockPlacementPolicies(conf, null, null, null);
+        new BlockPlacementPolicies(conf, null, NetworkTopology.getInstance(conf), null);
     if (!(placementPolicies.getPolicy(CONTIGUOUS) instanceof
         BlockPlacementPolicyDefault)) {
       throw new UnsupportedActionException(
@@ -255,6 +296,14 @@ public class Balancer {
     return v;
   }
 
+  static int getExceptionsSinceLastBalance() {
+    return EXCEPTIONS_SINCE_LAST_BALANCE.get();
+  }
+
+  static int getFailedTimesSinceLastSuccessfulBalance() {
+    return FAILED_TIMES_SINCE_LAST_SUCCESSFUL_BALANCE.get();
+  }
+
   /**
    * Construct a balancer.
    * Initialize balancer. It sets the value of the threshold, and 
@@ -264,6 +313,9 @@ public class Balancer {
    */
   Balancer(NameNodeConnector theblockpool, BalancerParameters p,
       Configuration conf) {
+    // NameNode configuration parameters for balancing
+    getInt(conf, DFSConfigKeys.DFS_NAMENODE_GETBLOCKS_MAX_QPS_KEY,
+        DFSConfigKeys.DFS_NAMENODE_GETBLOCKS_MAX_QPS_DEFAULT);
     final long movedWinWidth = getLong(conf,
         DFSConfigKeys.DFS_BALANCER_MOVEDWINWIDTH_KEY,
         DFSConfigKeys.DFS_BALANCER_MOVEDWINWIDTH_DEFAULT);
@@ -273,10 +325,6 @@ public class Balancer {
     final int dispatcherThreads = getInt(conf,
         DFSConfigKeys.DFS_BALANCER_DISPATCHERTHREADS_KEY,
         DFSConfigKeys.DFS_BALANCER_DISPATCHERTHREADS_DEFAULT);
-    final int maxConcurrentMovesPerNode = getInt(conf,
-        DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY,
-        DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_DEFAULT);
-
     final long getBlocksSize = getLongBytes(conf,
         DFSConfigKeys.DFS_BALANCER_GETBLOCKS_SIZE_KEY,
         DFSConfigKeys.DFS_BALANCER_GETBLOCKS_SIZE_DEFAULT);
@@ -289,17 +337,43 @@ public class Balancer {
     final int maxNoMoveInterval = conf.getInt(
         DFSConfigKeys.DFS_BALANCER_MAX_NO_MOVE_INTERVAL_KEY,
         DFSConfigKeys.DFS_BALANCER_MAX_NO_MOVE_INTERVAL_DEFAULT);
+    final long maxIterationTime = conf.getLong(
+        DFSConfigKeys.DFS_BALANCER_MAX_ITERATION_TIME_KEY,
+        DFSConfigKeys.DFS_BALANCER_MAX_ITERATION_TIME_DEFAULT);
+    /**
+     * Balancer prefer to get blocks which are belong to the cold files
+     * created before this time period.
+     */
+    final long hotBlockTimeInterval =
+        p.getHotBlockTimeInterval() != 0L ? p.getHotBlockTimeInterval() :
+            conf.getTimeDuration(
+            DFSConfigKeys.DFS_BALANCER_GETBLOCKS_HOT_TIME_INTERVAL_KEY,
+            DFSConfigKeys.DFS_BALANCER_GETBLOCKS_HOT_TIME_INTERVAL_DEFAULT,
+            TimeUnit.MILLISECONDS);
+
+    // DataNode configuration parameters for balancing
+    final int maxConcurrentMovesPerNode = getInt(conf,
+        DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY,
+        DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_DEFAULT);
+    getLongBytes(conf, DFSConfigKeys.DFS_DATANODE_BALANCE_BANDWIDTHPERSEC_KEY,
+        DFSConfigKeys.DFS_DATANODE_BALANCE_BANDWIDTHPERSEC_DEFAULT);
 
     this.nnc = theblockpool;
     this.dispatcher =
         new Dispatcher(theblockpool, p.getIncludedNodes(),
             p.getExcludedNodes(), movedWinWidth, moverThreads,
             dispatcherThreads, maxConcurrentMovesPerNode, getBlocksSize,
-            getBlocksMinBlockSize, blockMoveTimeout, maxNoMoveInterval, conf);
+            getBlocksMinBlockSize, blockMoveTimeout, maxNoMoveInterval,
+            maxIterationTime, hotBlockTimeInterval, conf);
     this.threshold = p.getThreshold();
     this.policy = p.getBalancingPolicy();
     this.sourceNodes = p.getSourceNodes();
+    this.excludedSourceNodes = p.getExcludedSourceNodes();
+    this.targetNodes = p.getTargetNodes();
+    this.excludedTargetNodes = p.getExcludedTargetNodes();
     this.runDuringUpgrade = p.getRunDuringUpgrade();
+    this.sortTopNodes = p.getSortTopNodes();
+    this.limitOverUtilizedNum = p.getLimitOverUtilizedNum();
 
     this.maxSizeToMove = getLongBytes(conf,
         DFSConfigKeys.DFS_BALANCER_MAX_SIZE_TO_MOVE_KEY,
@@ -307,6 +381,9 @@ public class Balancer {
     this.defaultBlockSize = getLongBytes(conf,
         DFSConfigKeys.DFS_BLOCK_SIZE_KEY,
         DFSConfigKeys.DFS_BLOCK_SIZE_DEFAULT);
+    this.metrics = BalancerMetrics.create(this);
+
+    registerBalancerMXBean();
   }
   
   private static long getCapacity(DatanodeStorageReport report, StorageType t) {
@@ -346,24 +423,34 @@ public class Balancer {
       policy.accumulateSpaces(r);
     }
     policy.initAvgUtilization();
+    // Store the capacity % of over utilized nodes for sorting, if needed.
+    Map<Source, Double> overUtilizedPercentage = new HashMap<>();
 
     // create network topology and classify utilization collections: 
     //   over-utilized, above-average, below-average and under-utilized.
     long overLoadedBytes = 0L, underLoadedBytes = 0L;
     for(DatanodeStorageReport r : reports) {
       final DDatanode dn = dispatcher.newDatanode(r.getDatanodeInfo());
-      final boolean isSource = Util.isIncluded(sourceNodes, dn.getDatanodeInfo());
+      final boolean isValidSource = Util.isIncluded(sourceNodes, dn.getDatanodeInfo()) &&
+          !Util.isExcluded(excludedSourceNodes, dn.getDatanodeInfo());
+      final boolean isValidTarget = Util.isIncluded(targetNodes, dn.getDatanodeInfo()) &&
+          !Util.isExcluded(excludedTargetNodes, dn.getDatanodeInfo());
       for(StorageType t : StorageType.getMovableTypes()) {
         final Double utilization = policy.getUtilization(r, t);
-        if (utilization == null) { // datanode does not have such storage type 
+        if (utilization == null) { // datanode does not have such storage type
           continue;
         }
         
         final double average = policy.getAvgUtilization(t);
-        if (utilization >= average && !isSource) {
-          LOG.info(dn + "[" + t + "] has utilization=" + utilization
-              + " >= average=" + average
-              + " but it is not specified as a source; skipping it.");
+        if (utilization >= average && !isValidSource) {
+          LOG.info("{} [{}] utilization {} >= average {}, but it's either not specified"
+                  + " or excluded as a source; skipping.", dn, t, utilization, average);
+          continue;
+        }
+        if (utilization <= average && !isValidTarget) {
+          LOG.info("{} [{}] utilization {} <= average {}, but it's either not specified"
+                  + " or excluded as a target; skipping.",
+              dn, t, utilization, average);
           continue;
         }
 
@@ -381,6 +468,7 @@ public class Balancer {
           } else {
             overLoadedBytes += percentage2bytes(thresholdDiff, capacity);
             overUtilized.add(s);
+            overUtilizedPercentage.put(s, utilization);
           }
           g = s;
         } else {
@@ -396,15 +484,57 @@ public class Balancer {
       }
     }
 
+    if (sortTopNodes) {
+      sortOverUtilized(overUtilizedPercentage);
+    }
+
+    // Limit the maximum number of overUtilized datanodes
+    // If excludedOverUtilizedNum is greater than 0, The overUtilized nodes num is limited
+    int excludedOverUtilizedNum = Math.max(overUtilized.size() - limitOverUtilizedNum, 0);
+    if (excludedOverUtilizedNum > 0) {
+      limitOverUtilizedNum();
+    }
+
     logUtilizationCollections();
+    metrics.setNumOfOverUtilizedNodes(overUtilized.size());
+    metrics.setNumOfUnderUtilizedNodes(underUtilized.size());
     
-    Preconditions.checkState(dispatcher.getStorageGroupMap().size()
+    Preconditions.checkState(dispatcher.getStorageGroupMap().size() - excludedOverUtilizedNum
         == overUtilized.size() + underUtilized.size() + aboveAvgUtilized.size()
            + belowAvgUtilized.size(),
         "Mismatched number of storage groups");
     
     // return number of bytes to be moved in order to make the cluster balanced
     return Math.max(overLoadedBytes, underLoadedBytes);
+  }
+
+  private void sortOverUtilized(Map<Source, Double> overUtilizedPercentage) {
+    Preconditions.checkState(overUtilized instanceof List,
+        "Collection overUtilized is not a List.");
+
+    LOG.info("Sorting over-utilized nodes by capacity" +
+        " to bring down top used datanode capacity faster");
+
+    List<Source> list = (List<Source>) overUtilized;
+    list.sort(
+        (Source source1, Source source2) ->
+            (Double.compare(overUtilizedPercentage.get(source2),
+                overUtilizedPercentage.get(source1)))
+    );
+  }
+
+  private void limitOverUtilizedNum() {
+    Preconditions.checkState(overUtilized instanceof LinkedList,
+        "Collection overUtilized is not a LinkedList.");
+    LinkedList<Source> list = (LinkedList<Source>) overUtilized;
+
+    LOG.info("Limiting over-utilized nodes num, if using the '-sortTopNodes' param," +
+        " the overUtilized nodes of top will be retained");
+
+    int size = overUtilized.size();
+    for (int i = 0; i < size - limitOverUtilizedNum; i++) {
+      list.removeLast();
+    }
   }
 
   private static long computeMaxSize2Move(final long capacity, final long remaining,
@@ -557,6 +687,13 @@ public class Balancer {
             left.getDatanodeInfo(), right.getDatanodeInfo());
   }
 
+  /**
+   * Register BalancerMXBean.
+   */
+  private void registerBalancerMXBean() {
+    balancerInfoBeanName = MBeans.register("Balancer", "BalancerInfo", this);
+  }
+
   /* reset all fields in a balancer preparing for the next iteration */
   void resetData(Configuration conf) {
     this.overUtilized.clear();
@@ -564,48 +701,110 @@ public class Balancer {
     this.belowAvgUtilized.clear();
     this.underUtilized.clear();
     this.policy.reset();
-    dispatcher.reset(conf);;
+    this.dispatcher.reset(conf);
+    DefaultMetricsSystem.removeSourceName(metrics.getName());
+    if (balancerInfoBeanName != null) {
+      MBeans.unregister(balancerInfoBeanName);
+      balancerInfoBeanName = null;
+    }
+  }
+
+  NameNodeConnector getNnc() {
+    return nnc;
+  }
+
+  @Override
+  public String getVersion() {
+    return VersionInfo.getVersion() + ", r" + VersionInfo.getRevision();
+  }
+
+  @Override
+  public String getSoftwareVersion() {
+    return VersionInfo.getVersion();
+  }
+
+  @Override
+  public String getCompileInfo() {
+    return VersionInfo.getDate() + " by " + VersionInfo.getUser() + " from "
+        + VersionInfo.getBranch();
   }
 
   static class Result {
-    final ExitStatus exitStatus;
-    final long bytesLeftToMove;
-    final long bytesBeingMoved;
-    final long bytesAlreadyMoved;
+    private final ExitStatus exitStatus;
+    private final long bytesLeftToMove;
+    private final long bytesBeingMoved;
+    private final long bytesAlreadyMoved;
+    private final long blocksMoved;
 
     Result(ExitStatus exitStatus, long bytesLeftToMove, long bytesBeingMoved,
-        long bytesAlreadyMoved) {
+           long bytesAlreadyMoved, long blocksMoved) {
       this.exitStatus = exitStatus;
       this.bytesLeftToMove = bytesLeftToMove;
       this.bytesBeingMoved = bytesBeingMoved;
       this.bytesAlreadyMoved = bytesAlreadyMoved;
+      this.blocksMoved = blocksMoved;
     }
 
-    void print(int iteration, PrintStream out) {
-      out.printf("%-24s %10d  %19s  %18s  %17s%n",
+    public ExitStatus getExitStatus() {
+      return exitStatus;
+    }
+
+    public long getBytesLeftToMove() {
+      return bytesLeftToMove;
+    }
+
+    public long getBytesBeingMoved() {
+      return bytesBeingMoved;
+    }
+
+    public long getBytesAlreadyMoved() {
+      return bytesAlreadyMoved;
+    }
+
+    public long getBlocksMoved() {
+      return blocksMoved;
+    }
+
+    void print(int iteration, NameNodeConnector nnc, PrintStream out) {
+      out.printf("%-24s %10d  %19s  %18s  %17s  %17s  %s%n",
           DateFormat.getDateTimeInstance().format(new Date()), iteration,
           StringUtils.byteDesc(bytesAlreadyMoved),
           StringUtils.byteDesc(bytesLeftToMove),
-          StringUtils.byteDesc(bytesBeingMoved));
+          StringUtils.byteDesc(bytesBeingMoved),
+          blocksMoved,
+          nnc.getNameNodeUri());
+    }
+
+    @Override
+    public String toString() {
+      return new ToStringBuilder(this)
+          .append("exitStatus", exitStatus)
+          .append("bytesLeftToMove", bytesLeftToMove)
+          .append("bytesBeingMoved", bytesBeingMoved)
+          .append("bytesAlreadyMoved", bytesAlreadyMoved)
+          .append("blocksMoved", blocksMoved)
+          .toString();
     }
   }
 
   Result newResult(ExitStatus exitStatus, long bytesLeftToMove, long bytesBeingMoved) {
     return new Result(exitStatus, bytesLeftToMove, bytesBeingMoved,
-        dispatcher.getBytesMoved());
+        dispatcher.getBytesMoved(), dispatcher.getBlocksMoved());
   }
 
   Result newResult(ExitStatus exitStatus) {
-    return new Result(exitStatus, -1, -1, dispatcher.getBytesMoved());
+    return new Result(exitStatus, -1, -1, dispatcher.getBytesMoved(),
+        dispatcher.getBlocksMoved());
   }
 
   /** Run an iteration for all datanodes. */
   Result runOneIteration() {
     try {
+      metrics.setIterateRunning(true);
       final List<DatanodeStorageReport> reports = dispatcher.init();
       final long bytesLeftToMove = init(reports);
+      metrics.setBytesLeftToMove(bytesLeftToMove);
       if (bytesLeftToMove == 0) {
-        System.out.println("The cluster is balanced. Exiting...");
         return newResult(ExitStatus.SUCCESS, bytesLeftToMove, 0);
       } else {
         LOG.info( "Need to move "+ StringUtils.byteDesc(bytesLeftToMove)
@@ -632,8 +831,10 @@ public class Balancer {
         System.out.println("No block can be moved. Exiting...");
         return newResult(ExitStatus.NO_MOVE_BLOCK, bytesLeftToMove, bytesBeingMoved);
       } else {
-        LOG.info( "Will move " + StringUtils.byteDesc(bytesBeingMoved) +
-            " in this iteration");
+        LOG.info("Will move {}  in this iteration for {}",
+            StringUtils.byteDesc(bytesBeingMoved), nnc.toString());
+        LOG.info("Total target DataNodes in this iteration: {}",
+            dispatcher.moveTasksTotal());
       }
 
       /* For each pair of <source, target>, start a thread that repeatedly 
@@ -657,6 +858,7 @@ public class Balancer {
       System.out.println(e + ".  Exiting ...");
       return newResult(ExitStatus.INTERRUPTED);
     } finally {
+      metrics.setIterateRunning(false);
       dispatcher.shutdownNow();
     }
   }
@@ -667,30 +869,36 @@ public class Balancer {
    * for each namenode,
    * execute a {@link Balancer} to work through all datanodes once.  
    */
-  static int run(Collection<URI> namenodes, final BalancerParameters p,
-      Configuration conf) throws IOException, InterruptedException {
+  static private int doBalance(Collection<URI> namenodes,
+      Collection<String> nsIds, final BalancerParameters p, Configuration conf)
+      throws IOException, InterruptedException {
     final long sleeptime =
         conf.getTimeDuration(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY,
             DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_DEFAULT,
-            TimeUnit.SECONDS) * 2000 +
+            TimeUnit.SECONDS, TimeUnit.MILLISECONDS) * 2 +
         conf.getTimeDuration(
             DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
             DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_DEFAULT,
-            TimeUnit.SECONDS) * 1000;
+            TimeUnit.SECONDS, TimeUnit.MILLISECONDS);
     LOG.info("namenodes  = " + namenodes);
     LOG.info("parameters = " + p);
     LOG.info("included nodes = " + p.getIncludedNodes());
     LOG.info("excluded nodes = " + p.getExcludedNodes());
     LOG.info("source nodes = " + p.getSourceNodes());
+    LOG.info("excluded source nodes = " + p.getExcludedSourceNodes());
+    LOG.info("target nodes = " + p.getTargetNodes());
+    LOG.info("excluded target nodes = " + p.getExcludedTargetNodes());
     checkKeytabAndInit(conf);
-    System.out.println("Time Stamp               Iteration#  Bytes Already Moved  Bytes Left To Move  Bytes Being Moved");
+    System.out.println("Time Stamp               Iteration#"
+        + "  Bytes Already Moved  Bytes Left To Move  Bytes Being Moved"
+        + "  NameNode");
     
     List<NameNodeConnector> connectors = Collections.emptyList();
+    BalancerHttpServer balancerHttpServer = startBalancerHttpServer(conf);
     try {
-      connectors = NameNodeConnector.newNameNodeConnectors(namenodes, 
-              Balancer.class.getSimpleName(), BALANCER_ID_PATH, conf,
-              p.getMaxIdleIteration());
-
+      connectors = NameNodeConnector.newNameNodeConnectors(namenodes, nsIds,
+          Balancer.class.getSimpleName(), BALANCER_ID_PATH, conf,
+          p.getMaxIdleIteration());
       boolean done = false;
       for(int iteration = 0; !done; iteration++) {
         done = true;
@@ -699,8 +907,11 @@ public class Balancer {
           if (p.getBlockPools().size() == 0
               || p.getBlockPools().contains(nnc.getBlockpoolID())) {
             final Balancer b = new Balancer(nnc, p, conf);
+            if (balancerHttpServer != null) {
+              balancerHttpServer.setBalancerAttribute(b);
+            }
             final Result r = b.runOneIteration();
-            r.print(iteration, System.out);
+            r.print(iteration, nnc, System.out);
 
             // clean all lists
             b.resetData(conf);
@@ -713,6 +924,9 @@ public class Balancer {
           } else {
             LOG.info("Skipping blockpool " + nnc.getBlockpoolID());
           }
+          if (done) {
+            System.out.println("The cluster is balanced. Exiting...");
+          }
         }
         if (!done) {
           Thread.sleep(sleeptime);
@@ -720,10 +934,92 @@ public class Balancer {
       }
     } finally {
       for(NameNodeConnector nnc : connectors) {
-        IOUtils.cleanup(LOG, nnc);
+        IOUtils.cleanupWithLogger(LOG, nnc);
+      }
+      if (balancerHttpServer != null) {
+        balancerHttpServer.stop();
       }
     }
     return ExitStatus.SUCCESS.getExitCode();
+  }
+
+  static int run(Collection<URI> namenodes, final BalancerParameters p,
+                 Configuration conf) throws IOException, InterruptedException {
+    return run(namenodes, null, p, conf);
+  }
+
+  static int run(Collection<URI> namenodes, Collection<String> nsIds,
+      final BalancerParameters p, Configuration conf)
+      throws IOException, InterruptedException {
+    DefaultMetricsSystem.initialize("Balancer");
+    JvmMetrics.create("Balancer",
+        conf.get(DFSConfigKeys.DFS_METRICS_SESSION_ID_KEY),
+        DefaultMetricsSystem.instance());
+    if (!p.getRunAsService()) {
+      return doBalance(namenodes, nsIds, p, conf);
+    }
+    if (!serviceRunning) {
+      serviceRunning = true;
+    } else {
+      LOG.warn("Balancer already running as a long-service!");
+      return ExitStatus.ALREADY_RUNNING.getExitCode();
+    }
+
+    long scheduleInterval = conf.getTimeDuration(
+          DFSConfigKeys.DFS_BALANCER_SERVICE_INTERVAL_KEY,
+          DFSConfigKeys.DFS_BALANCER_SERVICE_INTERVAL_DEFAULT,
+          TimeUnit.MILLISECONDS);
+    int retryOnException =
+          conf.getInt(DFSConfigKeys.DFS_BALANCER_SERVICE_RETRIES_ON_EXCEPTION,
+              DFSConfigKeys.DFS_BALANCER_SERVICE_RETRIES_ON_EXCEPTION_DEFAULT);
+
+    while (serviceRunning) {
+      try {
+        int retCode = doBalance(namenodes, nsIds, p, conf);
+        if (retCode < 0) {
+          LOG.info("Balance failed, error code: " + retCode);
+          FAILED_TIMES_SINCE_LAST_SUCCESSFUL_BALANCE.incrementAndGet();
+        } else {
+          LOG.info("Balance succeed!");
+          FAILED_TIMES_SINCE_LAST_SUCCESSFUL_BALANCE.set(0);
+        }
+        EXCEPTIONS_SINCE_LAST_BALANCE.set(0);
+      } catch (Exception e) {
+        if (EXCEPTIONS_SINCE_LAST_BALANCE.incrementAndGet()
+            > retryOnException) {
+          // The caller will process and log the exception
+          throw e;
+        }
+        LOG.warn(
+            "Encounter exception while do balance work. Already tried {} times",
+            EXCEPTIONS_SINCE_LAST_BALANCE, e);
+      }
+
+      // sleep for next round, will retry for next round when it's interrupted
+      LOG.info("Finished one round, will wait for {} for next round",
+          time2Str(scheduleInterval));
+      Thread.sleep(scheduleInterval);
+    }
+    DefaultMetricsSystem.shutdown();
+
+    // normal stop
+    return 0;
+  }
+
+  static void stop() {
+    serviceRunning = false;
+  }
+
+  private static BalancerHttpServer startBalancerHttpServer(Configuration conf) throws IOException {
+    boolean httpServerEnabled = conf.getBoolean(DFSConfigKeys.DFS_BALANCER_HTTPSERVER_ENABLED_KEY,
+        DFSConfigKeys.DFS_BALANCER_HTTPSERVER_ENABLED_DEFAULT);
+    if (httpServerEnabled) {
+      BalancerHttpServer balancerHttpServer = new BalancerHttpServer(conf);
+      balancerHttpServer.start();
+      return balancerHttpServer;
+    } else {
+      return null;
+    }
   }
 
   private static void checkKeytabAndInit(Configuration conf)
@@ -778,7 +1074,8 @@ public class Balancer {
         checkReplicationPolicyCompatibility(conf);
 
         final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
-        return Balancer.run(namenodes, parse(args), conf);
+        final Collection<String> nsIds = DFSUtilClient.getNameServiceIds(conf);
+        return Balancer.run(namenodes, nsIds, parse(args), conf);
       } catch (IOException e) {
         System.out.println(e + ".  Exiting ...");
         return ExitStatus.IO_EXCEPTION.getExitCode();
@@ -797,13 +1094,17 @@ public class Balancer {
     static BalancerParameters parse(String[] args) {
       Set<String> excludedNodes = null;
       Set<String> includedNodes = null;
+      Set<String> sourceNodes = null;
+      Set<String> excludedSourceNodes = null;
+      Set<String> targetNodes = null;
+      Set<String> excludedTargetNodes = null;
       BalancerParameters.Builder b = new BalancerParameters.Builder();
 
       if (args != null) {
         try {
           for(int i = 0; i < args.length; i++) {
             if ("-threshold".equalsIgnoreCase(args[i])) {
-              checkArgument(++i < args.length,
+              Preconditions.checkArgument(++i < args.length,
                 "Threshold value is missing: args = " + Arrays.toString(args));
               try {
                 double threshold = Double.parseDouble(args[i]);
@@ -820,7 +1121,7 @@ public class Balancer {
                 throw e;
               }
             } else if ("-policy".equalsIgnoreCase(args[i])) {
-              checkArgument(++i < args.length,
+              Preconditions.checkArgument(++i < args.length,
                 "Policy value is missing: args = " + Arrays.toString(args));
               try {
                 b.setBalancingPolicy(BalancingPolicy.parse(args[i]));
@@ -837,11 +1138,23 @@ public class Balancer {
               i = processHostList(args, i, "include", includedNodes);
               b.setIncludedNodes(includedNodes);
             } else if ("-source".equalsIgnoreCase(args[i])) {
-              Set<String> sourceNodes = new HashSet<>();
+              sourceNodes = new HashSet<>();
               i = processHostList(args, i, "source", sourceNodes);
               b.setSourceNodes(sourceNodes);
+            } else if ("-excludeSource".equalsIgnoreCase(args[i])) {
+              excludedSourceNodes = new HashSet<>();
+              i = processHostList(args, i, "exclude source", excludedSourceNodes);
+              b.setExcludedSourceNodes(excludedSourceNodes);
+            } else if ("-target".equalsIgnoreCase(args[i])) {
+              targetNodes = new HashSet<>();
+              i = processHostList(args, i, "target", targetNodes);
+              b.setTargetNodes(targetNodes);
+            } else if ("-excludeTarget".equalsIgnoreCase(args[i])) {
+              excludedTargetNodes = new HashSet<>();
+              i = processHostList(args, i, "exclude target", excludedTargetNodes);
+              b.setExcludedTargetNodes(excludedTargetNodes);
             } else if ("-blockpools".equalsIgnoreCase(args[i])) {
-              checkArgument(
+              Preconditions.checkArgument(
                   ++i < args.length,
                   "blockpools value is missing: args = "
                       + Arrays.toString(args));
@@ -850,7 +1163,7 @@ public class Balancer {
                   + blockpools.toString());
               b.setBlockpools(blockpools);
             } else if ("-idleiterations".equalsIgnoreCase(args[i])) {
-              checkArgument(++i < args.length,
+              Preconditions.checkArgument(++i < args.length,
                   "idleiterations value is missing: args = " + Arrays
                       .toString(args));
               int maxIdleIteration = Integer.parseInt(args[i]);
@@ -862,13 +1175,40 @@ public class Balancer {
                   + "upgrade. Most users will not want to run the balancer "
                   + "during an upgrade since it will not affect used space "
                   + "on over-utilized machines.");
+            } else if ("-asService".equalsIgnoreCase(args[i])) {
+              b.setRunAsService(true);
+              LOG.info("Balancer will run as a long running service");
+            } else if ("-hotBlockTimeInterval".equalsIgnoreCase(args[i])) {
+              Preconditions.checkArgument(++i < args.length,
+                  "hotBlockTimeInterval value is missing: args = "
+                  + Arrays.toString(args));
+              long hotBlockTimeInterval = Long.parseLong(args[i]);
+              LOG.info("Using a hotBlockTimeInterval of "
+                  + hotBlockTimeInterval);
+              b.setHotBlockTimeInterval(hotBlockTimeInterval);
+            } else if ("-sortTopNodes".equalsIgnoreCase(args[i])) {
+              b.setSortTopNodes(true);
+              LOG.info("Balancer will sort nodes by" +
+                  " capacity usage percentage to prioritize top used nodes");
+            } else if ("-limitOverUtilizedNum".equalsIgnoreCase(args[i])) {
+              Preconditions.checkArgument(++i < args.length,
+                  "limitOverUtilizedNum value is missing: args = " + Arrays.toString(args));
+              int limitNum = Integer.parseInt(args[i]);
+              Preconditions.checkArgument(limitNum >= 0,
+                  "limitOverUtilizedNum must be non-negative");
+              LOG.info("Using a limitOverUtilizedNum of {}", limitNum);
+              b.setLimitOverUtilizedNum(limitNum);
             } else {
               throw new IllegalArgumentException("args = "
                   + Arrays.toString(args));
             }
           }
-          checkArgument(excludedNodes == null || includedNodes == null,
+          Preconditions.checkArgument(excludedNodes == null || includedNodes == null,
               "-exclude and -include options cannot be specified together.");
+          Preconditions.checkArgument(excludedSourceNodes == null || sourceNodes == null,
+              "-excludeSource and -source options cannot be specified together.");
+          Preconditions.checkArgument(excludedTargetNodes == null || targetNodes == null,
+              "-excludeTarget and -target options cannot be specified together.");
         } catch(RuntimeException e) {
           printUsage(System.err);
           throw e;

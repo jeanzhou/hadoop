@@ -21,21 +21,21 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
 
 /**
  * DeSelectFields make the <code>/apps</code> api more flexible.
- * It can be used to strip off more fields if there's such use case in future.
+ * It can be used to strip off more fields if there's such use case in the future.
  * You can simply extend it via two steps:
  * <br> 1. add a <code>DeSelectType</code> enum with a string literals
  * <br> 2. write your logical based on
  * the return of method contains(DeSelectType)
  */
 public class DeSelectFields {
-  private static final Log LOG =
-      LogFactory.getLog(DeSelectFields.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(DeSelectFields.class.getName());
 
   private final Set<DeSelectType> types;
 
@@ -60,10 +60,10 @@ public class DeSelectFields {
             if (type == null) {
               LOG.warn("Invalid deSelects string " + literals.trim());
               DeSelectType[] typeArray = DeSelectType.values();
-              String allSuppportLiterals = Arrays.toString(typeArray);
+              String allSupportLiterals = Arrays.toString(typeArray);
               throw new BadRequestException("Invalid deSelects string "
                   + literals.trim() + " specified. It should be one of "
-                  + allSuppportLiterals);
+                  + allSupportLiterals);
             } else {
               this.types.add(type);
             }
@@ -74,7 +74,7 @@ public class DeSelectFields {
   }
 
   /**
-   * Determine the deselect type should be handled or not.
+   * Determine to deselect type should be handled or not.
    * @param type deselected type
    * @return true if the deselect type should be handled
    */
@@ -83,7 +83,7 @@ public class DeSelectFields {
   }
 
   /**
-   * Deselect field type, can be boost in future.
+   * Deselect field type, can be boosted in the future.
    */
   public enum DeSelectType {
 

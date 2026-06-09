@@ -29,16 +29,16 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeLifelineProtocol;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
-import org.apache.hadoop.ipc.ProtobufHelper;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.ProtocolMetaInterface;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RpcClientUtil;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 
-import com.google.protobuf.RpcController;
-import com.google.protobuf.ServiceException;
+import org.apache.hadoop.thirdparty.protobuf.RpcController;
+
+import static org.apache.hadoop.ipc.internal.ShadedProtobufHelper.ipc;
 
 /**
  * This class is the client side translator to translate the requests made on
@@ -57,7 +57,7 @@ public class DatanodeLifelineProtocolClientSideTranslatorPB implements
   public DatanodeLifelineProtocolClientSideTranslatorPB(
       InetSocketAddress nameNodeAddr, Configuration conf) throws IOException {
     RPC.setProtocolEngine(conf, DatanodeLifelineProtocolPB.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
     rpcProxy = createNamenode(nameNodeAddr, conf, ugi);
   }
@@ -96,11 +96,7 @@ public class DatanodeLifelineProtocolClientSideTranslatorPB implements
       builder.setVolumeFailureSummary(PBHelper.convertVolumeFailureSummary(
           volumeFailureSummary));
     }
-    try {
-      rpcProxy.sendLifeline(NULL_CONTROLLER, builder.build());
-    } catch (ServiceException se) {
-      throw ProtobufHelper.getRemoteException(se);
-    }
+    ipc(() -> rpcProxy.sendLifeline(NULL_CONTROLLER, builder.build()));
   }
 
   @Override // ProtocolMetaInterface

@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs.server.federation.metrics;
 import static org.apache.hadoop.metrics2.impl.MsInfo.ProcessName;
 import static org.apache.hadoop.metrics2.impl.MsInfo.SessionId;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -30,16 +31,17 @@ import org.apache.hadoop.metrics2.annotation.Metrics;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MutableGaugeInt;
+import org.apache.hadoop.metrics2.lib.MutableGaugeLong;
 import org.apache.hadoop.metrics2.lib.MutableRate;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Implementations of the JMX interface for the State Store metrics.
  */
 @Metrics(name = "StateStoreActivity", about = "Router metrics",
     context = "dfs")
-public final class StateStoreMetrics implements StateStoreMBean {
+public class StateStoreMetrics implements StateStoreMBean {
 
   private final MetricsRegistry registry = new MetricsRegistry("router");
 
@@ -53,6 +55,9 @@ public final class StateStoreMetrics implements StateStoreMBean {
   private MutableRate failures;
 
   private Map<String, MutableGaugeInt> cacheSizes;
+  private final Map<String, MutableRate> cacheLoadMetrics = new HashMap<>();
+
+  protected StateStoreMetrics() {}
 
   private StateStoreMetrics(Configuration conf) {
     registry.tag(SessionId, "RouterSession");
@@ -132,6 +137,45 @@ public final class StateStoreMetrics implements StateStoreMBean {
       cacheSizes.put(counterName, counter);
     }
     counter.set(size);
+  }
+
+  /**
+   * set the count of the location cache access information.
+   * @param name Name of the record.
+   * @param count count of the record.
+   */
+  public void setLocationCache(String name, long count) {
+    MutableGaugeLong counter = (MutableGaugeLong) registry.get(name);
+    if (counter == null) {
+      counter = registry.newGauge(name, name, count);
+    }
+    counter.set(count);
+  }
+
+  /**
+   * Set the cache loading metrics for the state store interface.
+   *
+   * @param name Name of the record of the cache.
+   * @param value The time duration interval as the cache value.
+   */
+  public void setCacheLoading(String name, long value) {
+    String cacheLoad = "Cache" + name + "Load";
+    MutableRate cacheLoadMetric = cacheLoadMetrics.get(cacheLoad);
+    if (cacheLoadMetric == null) {
+      cacheLoadMetric = registry.newRate(cacheLoad, name, false);
+      cacheLoadMetrics.put(cacheLoad, cacheLoadMetric);
+    }
+    cacheLoadMetrics.get(cacheLoad).add(value);
+  }
+
+  /**
+   * Retrieve unmodifiable map of cache loading metrics.
+   *
+   * @return unmodifiable map of cache loading metrics.
+   */
+  @VisibleForTesting
+  public Map<String, MutableRate> getCacheLoadMetrics() {
+    return Collections.unmodifiableMap(cacheLoadMetrics);
   }
 
   @VisibleForTesting

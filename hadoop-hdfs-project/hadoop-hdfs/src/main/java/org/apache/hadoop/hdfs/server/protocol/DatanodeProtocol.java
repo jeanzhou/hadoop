@@ -79,6 +79,8 @@ public interface DatanodeProtocol {
   final static int DNA_CACHE = 9;      // cache blocks
   final static int DNA_UNCACHE = 10;   // uncache blocks
   final static int DNA_ERASURE_CODING_RECONSTRUCTION = 11; // erasure coding reconstruction command
+  int DNA_BLOCK_STORAGE_MOVEMENT = 12; // block storage movement command
+  int DNA_DROP_SPS_WORK_COMMAND = 13; // drop sps work command
 
   /** 
    * Register Datanode.
@@ -99,18 +101,22 @@ public interface DatanodeProtocol {
    * an array of "DatanodeCommand" objects in HeartbeatResponse.
    * A DatanodeCommand tells the DataNode to invalidate local block(s), 
    * or to copy them to other DataNodes, etc.
-   * @param registration datanode registration information
-   * @param reports utilization report per storage
-   * @param xmitsInProgress number of transfers from this datanode to others
-   * @param xceiverCount number of active transceiver threads
-   * @param failedVolumes number of failed volumes
-   * @param volumeFailureSummary info about volume failures
+   * @param registration datanode registration information.
+   * @param reports utilization report per storage.
+   * @param dnCacheCapacity the total cache capacity of the datanode (in bytes).
+   * @param dnCacheUsed the amount of cache used by the datanode (in bytes).
+   * @param xmitsInProgress number of transfers from this datanode to others.
+   * @param xceiverCount number of active transceiver threads.
+   * @param failedVolumes number of failed volumes.
+   * @param volumeFailureSummary info about volume failures.
    * @param requestFullBlockReportLease whether to request a full block
    *                                    report lease.
    * @param slowPeers Details of peer DataNodes that were detected as being
    *                  slow to respond to packet writes. Empty report if no
    *                  slow peers were detected by the DataNode.
-   * @throws IOException on error
+   * @param slowDisks Details of disks on DataNodes that were detected as
+   *                  being slow. Empty report if no slow disks were detected.
+   * @throws IOException on error.
    */
   @Idempotent
   public HeartbeatResponse sendHeartbeat(DatanodeRegistration registration,
@@ -138,6 +144,7 @@ public interface DatanodeProtocol {
    *     Each finalized block is represented as 3 longs. Each under-
    *     construction replica is represented as 4 longs.
    *     This is done instead of Block[] to reduce memory used by block reports.
+   * @param reports report of blocks per storage
    * @param context Context information for this block report.
    *
    * @return - the next command for DN to process.
@@ -156,7 +163,7 @@ public interface DatanodeProtocol {
    * {@link #blockReport(DatanodeRegistration, String, StorageBlockReport[], BlockReportContext)},
    * which is used to communicated blocks stored on disk.
    *
-   * @param            The datanode registration.
+   * @param registration The datanode registration.
    * @param poolId     The block pool ID for the blocks.
    * @param blockIds   A list of block IDs.
    * @return           The DatanodeCommand.

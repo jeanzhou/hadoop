@@ -23,11 +23,11 @@ import java.io.IOException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests if StreamXmlRecordReader will read the next record, _after_ the
@@ -38,7 +38,7 @@ import org.junit.Test;
  */
 public class TestStreamXmlMultipleRecords extends TestStreaming
 {
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       TestStreamXmlMultipleRecords.class);
 
   private boolean hasPerl = false;
@@ -72,7 +72,7 @@ public class TestStreamXmlMultipleRecords extends TestStreaming
   }
 
   @Override
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     super.setUp();
     // Without this closeAll() call, setting of FileSystem block size is

@@ -22,13 +22,13 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -40,7 +40,7 @@ import org.apache.hadoop.mapred.JobConf;
  * An abstract class for distributed tool for file related operations.
  */
 abstract class DistTool implements org.apache.hadoop.util.Tool {
-  protected static final Log LOG = LogFactory.getLog(DistTool.class);
+  protected static final Logger LOG = LoggerFactory.getLogger(DistTool.class);
 
   protected JobConf jobconf;
 
@@ -96,7 +96,7 @@ abstract class DistTool implements org.apache.hadoop.util.Tool {
     List<String> result = new ArrayList<String>();
     FileSystem fs = inputfile.getFileSystem(conf);
     try (BufferedReader input = new BufferedReader(new InputStreamReader(fs.open(inputfile),
-            Charset.forName("UTF-8")))) {
+            StandardCharsets.UTF_8))) {
       for(String line; (line = input.readLine()) != null;) {
         result.add(line);
       }

@@ -18,21 +18,19 @@
 
 package org.apache.hadoop.mapreduce.v2.hs.webapp;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-
 import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
+import java.util.Set;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Response.Status;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -59,9 +57,19 @@ import org.apache.hadoop.security.Groups;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.yarn.api.records.Priority;
+import org.apache.hadoop.yarn.server.webapp.LogServlet;
 import org.apache.hadoop.yarn.webapp.WebApp;
-import org.junit.Before;
-import org.junit.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class TestHsWebServicesAcls {
   private static String FRIENDLY_USER = "friendly";
@@ -74,7 +82,7 @@ public class TestHsWebServicesAcls {
   private String taskAttemptIdStr;
   private HsWebServices hsWebServices;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     this.conf = new JobConf();
     this.conf.set(CommonConfigurationKeys.HADOOP_SECURITY_GROUP_MAPPING,
@@ -84,7 +92,7 @@ public class TestHsWebServicesAcls {
     this.ctx = buildHistoryContext(this.conf);
     WebApp webApp = mock(HsWebApp.class);
     when(webApp.name()).thenReturn("hsmockwebapp");
-    this.hsWebServices= new HsWebServices(ctx, conf, webApp);
+    this.hsWebServices = new HsWebServices(ctx, conf, webApp, null);
     this.hsWebServices.setResponse(mock(HttpServletResponse.class));
 
     Job job = ctx.getAllJobs().values().iterator().next();
@@ -252,6 +260,29 @@ public class TestHsWebServicesAcls {
         this.taskIdStr, this.taskAttemptIdStr);
   }
 
+  @Test
+  public void testLogs() {
+    HttpServletRequest hsr = mock(HttpServletRequest.class);
+    when(hsr.getRemoteUser()).thenReturn(ENEMY_USER);
+    hsWebServices.setLogServlet(mock(LogServlet.class));
+    String cid = "container_e02_" + jobIdStr.substring(4) + "_01_000001";
+    try {
+      hsWebServices.getContainerLogFile(hsr, cid, "syslog",
+          null, null, null, false, false);
+      fail("enemy can access job");
+    } catch (WebApplicationException e) {
+      assertEquals(Status.UNAUTHORIZED,
+          Status.fromStatusCode(e.getResponse().getStatus()));
+    }
+
+    when(hsr.getRemoteUser()).thenReturn(FRIENDLY_USER);
+    hsWebServices.getContainerLogFile(hsr, cid, "syslog",
+        "format", "1024", "nmid", false, false);
+    verify(hsWebServices.getLogServlet(), times(1))
+        .getLogFile(any(), anyString(), anyString(),
+        anyString(), anyString(), anyString(), anyBoolean(), eq(null), anyBoolean());
+  }
+
   private static HistoryContext buildHistoryContext(final Configuration conf)
       throws IOException {
     HistoryContext ctx = new MockHistoryContext(1, 1, 1);
@@ -275,6 +306,11 @@ public class TestHsWebServicesAcls {
 
     @Override
     public void cacheGroupsAdd(List<String> groups) throws IOException {
+    }
+
+    @Override
+    public Set<String> getGroupsSet(String user) throws IOException {
+      return Collections.emptySet();
     }
   }
 

@@ -35,7 +35,10 @@ import java.util.Set;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
-import org.apache.hadoop.util.AutoCloseableLock;
+import org.apache.hadoop.hdfs.server.common.AutoCloseDataSetLock;
+import org.apache.hadoop.hdfs.server.common.DataNodeLockManager;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeImpl;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.MountVolumeMap;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
@@ -192,7 +195,7 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
   FsVolumeReferences getFsVolumeReferences();
 
   /**
-   * Add a new volume to the FsDataset.<p/>
+   * Add a new volume to the FsDataset.
    *
    * If the FSDataset supports block scanning, this function registers
    * the new volume with the block scanner.
@@ -226,7 +229,7 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
   /** @return the volume that contains a replica of the block. */
   V getVolume(ExtendedBlock b);
 
-  /** @return a volume information map (name => info). */
+  /** @return a volume information map (name {@literal =>} info). */
   Map<String, Object> getVolumeInfoMap();
 
   /**
@@ -240,7 +243,7 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
    * Gets a list of references to the finalized blocks for the given block pool.
    * <p>
    * Callers of this function should call
-   * {@link FsDatasetSpi#acquireDatasetLock} to avoid blocks' status being
+   * {@link FsDatasetSpi#acquireDatasetLockManager} to avoid blocks' status being
    * changed during list iteration.
    * </p>
    * @return a list of references to the finalized blocks for the given block
@@ -273,7 +276,8 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
 
   /**
    * Get reference to the replica meta info in the replicasMap. 
-   * To be called from methods that are synchronized on {@link FSDataset}
+   * To be called from methods that are synchronized on
+   * implementations of {@link FsDatasetSpi}
    * @return replica from the replicas map
    */
   @Deprecated
@@ -330,6 +334,16 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
    */
   ReplicaHandler createRbw(StorageType storageType, String storageId,
       ExtendedBlock b, boolean allowLazyPersist) throws IOException;
+
+  /**
+   * Creates a RBW replica and returns the meta info of the replica
+   *
+   * @param b block
+   * @return the meta info of the replica which is being written to
+   * @throws IOException if an error occurs
+   */
+  ReplicaHandler createRbw(StorageType storageType, String storageId,
+      ExtendedBlock b, boolean allowLazyPersist, long newGS) throws IOException;
 
   /**
    * Recovers a RBW replica and returns the meta info of the replica.
@@ -394,7 +408,7 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
    * Finalizes the block previously opened for writing using writeToBlock.
    * The block size is what is in the parameter b and it must match the amount
    *  of data written
-   * @param block Block to be finalized
+   * @param b Block to be finalized
    * @param fsyncDir whether to sync the directory changes to durable device.
    * @throws IOException
    * @throws ReplicaNotFoundException if the replica can not be found when the
@@ -464,7 +478,7 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
   boolean isValidRbw(ExtendedBlock b);
 
   /**
-   * Invalidates the specified blocks
+   * Invalidates the specified blocks.
    * @param bpid Block pool Id
    * @param invalidBlks - the blocks to be invalidated
    * @throws IOException
@@ -472,7 +486,14 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
   void invalidate(String bpid, Block invalidBlks[]) throws IOException;
 
   /**
-   * Caches the specified blocks
+   * Invalidate a block which is not found on disk.
+   * @param bpid the block pool ID.
+   * @param block The block to be invalidated.
+   */
+  void invalidateMissingBlock(String bpid, Block block) throws IOException;
+
+  /**
+   * Caches the specified block
    * @param bpid Block pool id
    * @param blockIds - block ids to cache
    */
@@ -488,14 +509,13 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
   /**
    * Determine if the specified block is cached.
    * @param bpid Block pool id
-   * @param blockIds - block id
+   * @param blockId - block id
    * @return true if the block is cached
    */
   boolean isCached(String bpid, long blockId);
 
     /**
      * Check if all the data directories are healthy
-     * @return A set of unhealthy data directories.
      * @param failedVolumes
      */
   void handleVolumeFailures(Set<FsVolumeSpi> failedVolumes);
@@ -656,8 +676,36 @@ public interface FsDatasetSpi<V extends FsVolumeSpi> extends FSDatasetMBean {
   ReplicaInfo moveBlockAcrossVolumes(final ExtendedBlock block,
       FsVolumeSpi destination) throws IOException;
 
-  /**
-   * Acquire the lock of the data set.
+  /***
+   * Acquire lock Manager for the data set. This prevents other threads from
+   * modifying the volume map structure inside the datanode.
+   * @return The AutoClosable read lock instance.
    */
-  AutoCloseableLock acquireDatasetLock();
+  DataNodeLockManager<? extends AutoCloseDataSetLock> acquireDatasetLockManager();
+
+  /**
+   * Deep copy the replica info belonging to given block pool.
+   * @param bpid Specified block pool id.
+   * @return A set of replica info.
+   * @throws IOException
+   */
+  Set<? extends Replica> deepCopyReplica(String bpid) throws IOException;
+
+  /**
+   * Get relationship between disk mount and FsVolume.
+   * @return Disk mount and FsVolume relationship.
+   * @throws IOException
+   */
+  MountVolumeMap getMountVolumeMap() throws IOException;
+
+  /**
+   * Get the volume list.
+   */
+  List<FsVolumeImpl> getVolumeList();
+
+  /**
+   * Set the last time in milliseconds when the directory scanner successfully ran.
+   * @param time the last time in milliseconds when the directory scanner successfully ran.
+   */
+  default void setLastDirScannerFinishTime(long time) {}
 }

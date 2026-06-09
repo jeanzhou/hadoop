@@ -18,8 +18,8 @@
 package org.apache.hadoop.security;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -30,10 +30,12 @@ import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.ShellBasedIdMapping.PassThroughMap;
 import org.apache.hadoop.security.ShellBasedIdMapping.StaticMapping;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.collect.BiMap;
-import com.google.common.collect.HashBiMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.BiMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.HashBiMap;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestShellBasedIdMapping {
   
@@ -295,18 +297,19 @@ public class TestShellBasedIdMapping {
   @Test
   public void testUserUpdateSetting() throws IOException {
     ShellBasedIdMapping iug = new ShellBasedIdMapping(new Configuration());
-    assertEquals(iug.getTimeout(),
+    assertThat(iug.getTimeout()).isEqualTo(
         IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT);
 
     Configuration conf = new Configuration();
     conf.setLong(IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY, 0);
     iug = new ShellBasedIdMapping(conf);
-    assertEquals(iug.getTimeout(), IdMappingConstant.USERGROUPID_UPDATE_MILLIS_MIN);
+    assertThat(iug.getTimeout()).isEqualTo(
+        IdMappingConstant.USERGROUPID_UPDATE_MILLIS_MIN);
 
     conf.setLong(IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY,
         IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT * 2);
     iug = new ShellBasedIdMapping(conf);
-    assertEquals(iug.getTimeout(),
+    assertThat(iug.getTimeout()).isEqualTo(
         IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT * 2);
   }
   

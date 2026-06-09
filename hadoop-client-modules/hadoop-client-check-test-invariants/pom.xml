@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <!--
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -13,16 +13,16 @@
  limitations under the License. See accompanying LICENSE file.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
-    <version>3.2.0-SNAPSHOT</version>
+    <version>3.6.0-SNAPSHOT</version>
     <relativePath>../../hadoop-project</relativePath>
   </parent>
   <artifactId>hadoop-client-check-test-invariants</artifactId>
-  <version>3.2.0-SNAPSHOT</version>
+  <version>3.6.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <description>
@@ -60,7 +60,7 @@
           <dependency>
             <groupId>org.codehaus.mojo</groupId>
             <artifactId>extra-enforcer-rules</artifactId>
-            <version>1.0-beta-3</version>
+            <version>1.5.1</version>
           </dependency>
         </dependencies>
         <executions>
@@ -84,20 +84,25 @@
                          but enforcer still sees it.
                     -->
                     <exclude>org.apache.hadoop:hadoop-annotations</exclude>
-                    <!-- We leave HTrace as an unshaded dependnecy on purpose so that tracing within a JVM will work -->
-                    <exclude>org.apache.htrace:htrace-core4</exclude>
                     <!-- Leave slf4j unshaded so downstream users can configure logging. -->
                     <exclude>org.slf4j:slf4j-api</exclude>
                     <!-- Leave commons-logging unshaded so downstream users can configure logging. -->
                     <exclude>commons-logging:commons-logging</exclude>
-                    <!-- Leave log4j unshaded so downstream users can configure logging. -->
-                    <exclude>log4j:log4j</exclude>
+                    <!-- Leave reload4j unshaded so downstream users can configure logging. -->
+                    <exclude>ch.qos.reload4j:reload4j</exclude>
                     <!-- Leave JUnit unshaded so downstream can use our test helper classes -->
                     <exclude>junit:junit</exclude>
                     <!-- JUnit brings in hamcrest -->
                     <exclude> org.hamcrest:hamcrest-core</exclude>
                     <!-- Leave javax annotations we need exposed -->
                     <exclude>com.google.code.findbugs:jsr305</exclude>
+                    <!-- Leave bouncycastle unshaded because it's signed with a special Oracle certificate so it can be a custom JCE security provider -->
+                    <exclude>org.bouncycastle:*</exclude>
+                    <!-- Leave snappy/zstd-jni that includes native methods which cannot be relocated. -->
+                    <exclude>org.xerial.snappy:*</exclude>
+                    <exclude>com.github.luben:zstd-jni</exclude>
+                    <exclude>org.ehcache:*</exclude>
+                    <exclude>org.glassfish.jersey:*</exclude>
                   </excludes>
                 </banTransitiveDependencies>
                 <banDuplicateClasses>
@@ -162,6 +167,7 @@
               <!-- these two get covered in our non-test invariant check -->
               <excludeArtifactIds>hadoop-client-api,hadoop-client-runtime</excludeArtifactIds>
               <excludeTransitive>true</excludeTransitive>
+              <pathSeparator>;</pathSeparator>
               <outputProperty>hadoop-client-artifacts</outputProperty>
             </configuration>
           </execution>
@@ -187,7 +193,6 @@
             <configuration>
               <executable>${shell-executable}</executable>
               <workingDirectory>${project.build.testOutputDirectory}</workingDirectory>
-              <requiresOnline>false</requiresOnline>
               <arguments>
                 <argument>ensure-jars-have-correct-contents.sh</argument>
                 <argument>${hadoop-client-artifacts}</argument>

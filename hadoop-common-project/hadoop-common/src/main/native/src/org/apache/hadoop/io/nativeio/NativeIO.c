@@ -36,6 +36,10 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#ifdef HADOOP_PMDK_LIBRARY
+#include <libpmem.h>
+#include "pmdk_load.h"
+#endif
 #if !(defined(__FreeBSD__) || defined(__MACH__))
 #include <sys/sendfile.h>
 #endif
@@ -60,6 +64,7 @@
 
 #define NATIVE_IO_POSIX_CLASS "org/apache/hadoop/io/nativeio/NativeIO$POSIX"
 #define NATIVE_IO_STAT_CLASS "org/apache/hadoop/io/nativeio/NativeIO$POSIX$Stat"
+#define NATIVE_IO_POSIX_PMEMREGION_CLASS "org/apache/hadoop/io/nativeio/NativeIO$POSIX$PmemMappedRegion"
 
 #define SET_INT_OR_RETURN(E, C, F) \
   { \
@@ -81,6 +86,12 @@ static jmethodID nioe_ctor;
 // Please see HADOOP-7156 for details.
 jobject pw_lock_object;
 
+#ifdef HADOOP_PMDK_LIBRARY
+// the NativeIO$POSIX$PmemMappedRegion inner class and its constructor
+static jclass pmem_region_clazz = NULL;
+static jmethodID pmem_region_ctor = NULL;
+#endif
+
 /*
  * Throw a java.IO.IOException, generating the message from errno.
  * NB. this is also used form windows_secure_container_executor.c
@@ -91,24 +102,6 @@ extern void throw_ioe(JNIEnv* env, int errnum);
 #ifdef UNIX
 static ssize_t get_pw_buflen();
 #endif
-
-/**
- * Returns non-zero if the user has specified that the system
- * has non-threadsafe implementations of getpwuid_r or getgrgid_r.
- **/
-static int workaround_non_threadsafe_calls(JNIEnv *env, jclass clazz) {
-  jboolean result;
-  jfieldID needs_workaround_field = (*env)->GetStaticFieldID(
-    env, clazz,
-    "workaroundNonThreadSafePasswdCalls",
-    "Z");
-  PASS_EXCEPTIONS_RET(env, 0);
-  assert(needs_workaround_field);
-
-  result = (*env)->GetStaticBooleanField(
-    env, clazz, needs_workaround_field);
-  return result;
-}
 
 /**
  * Sets a static boolean field to the specified value.
@@ -190,10 +183,9 @@ static void consts_init(JNIEnv *env) {
 }
 #endif
 
-static void stat_init(JNIEnv *env, jclass nativeio_class) {
+static void stat_init(JNIEnv *env) {
   jclass clazz = NULL;
-  jclass obj_class = NULL;
-  jmethodID  obj_ctor = NULL;
+  if (stat_ctor2 != NULL) return; //Already inited
   // Init Stat
   clazz = (*env)->FindClass(env, NATIVE_IO_STAT_CLASS);
   if (!clazz) {
@@ -213,6 +205,20 @@ static void stat_init(JNIEnv *env, jclass nativeio_class) {
   if (!stat_ctor2) {
     return; // exception has been raised
   }
+}
+
+static void stat_deinit(JNIEnv *env) {
+  if (stat_clazz != NULL) {
+    (*env)->DeleteGlobalRef(env, stat_clazz);
+    stat_clazz = NULL;
+  }
+}
+
+static void workaround_non_threadsafe_calls_init(JNIEnv *env){
+  jclass obj_class = NULL;
+  jmethodID  obj_ctor = NULL;
+  if (pw_lock_object != NULL) return; // Already inited
+
   obj_class = (*env)->FindClass(env, "java/lang/Object");
   if (!obj_class) {
     return; // exception has been raised
@@ -222,21 +228,13 @@ static void stat_init(JNIEnv *env, jclass nativeio_class) {
   if (!obj_ctor) {
     return; // exception has been raised
   }
-
-  if (workaround_non_threadsafe_calls(env, nativeio_class)) {
-    pw_lock_object = (*env)->NewObject(env, obj_class, obj_ctor);
-    PASS_EXCEPTIONS(env);
-    pw_lock_object = (*env)->NewGlobalRef(env, pw_lock_object);
-
-    PASS_EXCEPTIONS(env);
-  }
+  pw_lock_object = (*env)->NewObject(env, obj_class, obj_ctor);
+  PASS_EXCEPTIONS(env);
+  pw_lock_object = (*env)->NewGlobalRef(env, pw_lock_object);
+  PASS_EXCEPTIONS(env);
 }
 
-static void stat_deinit(JNIEnv *env) {
-  if (stat_clazz != NULL) {  
-    (*env)->DeleteGlobalRef(env, stat_clazz);
-    stat_clazz = NULL;
-  }
+static void workaround_non_threadsafe_calls_deinit(JNIEnv *env){
   if (pw_lock_object != NULL) {
     (*env)->DeleteGlobalRef(env, pw_lock_object);
     pw_lock_object = NULL;
@@ -244,6 +242,7 @@ static void stat_deinit(JNIEnv *env) {
 }
 
 static void nioe_init(JNIEnv *env) {
+  if (nioe_ctor != NULL) return; // Already inited
   // Init NativeIOException
   nioe_clazz = (*env)->FindClass(
     env, "org/apache/hadoop/io/nativeio/NativeIOException");
@@ -269,6 +268,66 @@ static void nioe_deinit(JNIEnv *env) {
   nioe_ctor = NULL;
 }
 
+#ifdef HADOOP_PMDK_LIBRARY
+static int loadPmdkLib(JNIEnv *env) {
+  char errMsg[1024];
+  jclass clazz = (*env)->FindClass(env, NATIVE_IO_POSIX_CLASS);
+  if (clazz == NULL) {
+    return 0; // exception has been raised
+  }
+  load_pmdk_lib(errMsg, sizeof(errMsg));
+  jmethodID mid = (*env)->GetStaticMethodID(env, clazz, "setPmdkSupportState", "(I)V");
+  if (mid == 0) {
+    return 0;
+  }
+
+  if (strlen(errMsg) > 0) {
+    // Set PMDK support state to 1 which represents PMDK_LIB_NOT_FOUND.
+    (*env)->CallStaticVoidMethod(env, clazz, mid, 1);
+    return 0;
+  }
+  // Set PMDK support state to 0 which represents SUPPORTED.
+  (*env)->CallStaticVoidMethod(env, clazz, mid, 0);
+  return 1;
+}
+
+static void pmem_region_init(JNIEnv *env, jclass nativeio_class) {
+
+  jclass clazz = NULL;
+  // Init Stat
+  clazz = (*env)->FindClass(env, NATIVE_IO_POSIX_PMEMREGION_CLASS);
+  if (!clazz) {
+    THROW(env, "java/io/IOException", "Failed to get PmemMappedRegion class");
+    return; // exception has been raised
+  }
+
+  // Init PmemMappedRegion class
+  pmem_region_clazz = (*env)->NewGlobalRef(env, clazz);
+  if (!pmem_region_clazz) {
+    THROW(env, "java/io/IOException", "Failed to new global reference of PmemMappedRegion class");
+    return; // exception has been raised
+  }
+
+  pmem_region_ctor = (*env)->GetMethodID(env, pmem_region_clazz, "<init>", "(JJZ)V");
+  if (!pmem_region_ctor) {
+    THROW(env, "java/io/IOException", "Failed to get PmemMappedRegion constructor");
+    return; // exception has been raised
+  }
+}
+
+static void pmem_region_deinit(JNIEnv *env) {
+  if (pmem_region_ctor != NULL) {
+    (*env)->DeleteGlobalRef(env, pmem_region_ctor);
+    pmem_region_ctor = NULL;
+  }
+
+  if (pmem_region_clazz != NULL) {
+    (*env)->DeleteGlobalRef(env, pmem_region_clazz);
+    pmem_region_clazz = NULL;
+  }
+ }
+#endif
+
 /*
  * private static native void initNative();
  *
@@ -278,13 +337,7 @@ static void nioe_deinit(JNIEnv *env) {
  */
 JNIEXPORT void JNICALL
 Java_org_apache_hadoop_io_nativeio_NativeIO_initNative(
-  JNIEnv *env, jclass clazz) {
-#ifdef UNIX
-  consts_init(env);
-  PASS_EXCEPTIONS_GOTO(env, error);
-#endif
-  stat_init(env, clazz);
-  PASS_EXCEPTIONS_GOTO(env, error);
+  JNIEnv *env, jclass clazz, jboolean doThreadsafeWorkaround) {
   nioe_init(env);
   PASS_EXCEPTIONS_GOTO(env, error);
   fd_init(env);
@@ -293,18 +346,94 @@ Java_org_apache_hadoop_io_nativeio_NativeIO_initNative(
   errno_enum_init(env);
   PASS_EXCEPTIONS_GOTO(env, error);
 #endif
+  if (doThreadsafeWorkaround) {
+    workaround_non_threadsafe_calls_init(env);
+    PASS_EXCEPTIONS_GOTO(env, error);
+  }
+  return;
+error:
+  // these are all idempotent and safe to call even if the
+  // class wasn't inited yet
+  nioe_deinit(env);
+  fd_deinit(env);
+#ifdef UNIX
+  errno_enum_deinit(env);
+#endif
+  if (doThreadsafeWorkaround) {
+    workaround_non_threadsafe_calls_deinit(env);
+  }
+}
+
+/*
+ * private static native void initNativePosix();
+ */
+JNIEXPORT void JNICALL
+Java_org_apache_hadoop_io_nativeio_NativeIO_00024POSIX_initNativePosix(
+  JNIEnv *env, jclass clazz, jboolean doThreadsafeWorkaround) {
+#ifdef UNIX
+  consts_init(env);
+  PASS_EXCEPTIONS_GOTO(env, error);
+#endif
+  stat_init(env);
+  PASS_EXCEPTIONS_GOTO(env, error);
+  nioe_init(env);
+  PASS_EXCEPTIONS_GOTO(env, error);
+  fd_init(env);
+  PASS_EXCEPTIONS_GOTO(env, error);
+  if (doThreadsafeWorkaround) {
+    workaround_non_threadsafe_calls_init(env);
+    PASS_EXCEPTIONS_GOTO(env, error);
+  }
+#ifdef UNIX
+  errno_enum_init(env);
+  PASS_EXCEPTIONS_GOTO(env, error);
+#ifdef HADOOP_PMDK_LIBRARY
+  if (loadPmdkLib(env)) {
+    pmem_region_init(env, clazz);
+  }
+#endif
+#endif
   return;
 error:
   // these are all idempodent and safe to call even if the
   // class wasn't initted yet
-#ifdef UNIX
   stat_deinit(env);
+#ifdef HADOOP_PMDK_LIBRARY
+  pmem_region_deinit(env);
 #endif
   nioe_deinit(env);
   fd_deinit(env);
 #ifdef UNIX
   errno_enum_deinit(env);
 #endif
+  if (doThreadsafeWorkaround) {
+    workaround_non_threadsafe_calls_deinit(env);
+  }
+}
+
+/*
+ * private static native void initNativeWindows();
+ */
+JNIEXPORT void JNICALL
+Java_org_apache_hadoop_io_nativeio_NativeIO_00024Windows_initNativeWindows(
+  JNIEnv *env, jclass clazz, jboolean doThreadsafeWorkaround) {
+  nioe_init(env);
+  PASS_EXCEPTIONS_GOTO(env, error);
+  fd_init(env);
+  PASS_EXCEPTIONS_GOTO(env, error);
+  if (doThreadsafeWorkaround) {
+    workaround_non_threadsafe_calls_init(env);
+    PASS_EXCEPTIONS_GOTO(env, error);
+  }
+  return;
+error:
+  // these are all idempodent and safe to call even if the
+  // class wasn't initted yet
+  nioe_deinit(env);
+  fd_deinit(env);
+  if (doThreadsafeWorkaround) {
+    workaround_non_threadsafe_calls_deinit(env);
+  }
 }
 
 /*
@@ -1383,3 +1512,191 @@ cleanup:
 /**
  * vim: sw=2: ts=2: et:
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * Class:     org_apache_hadoop_io_nativeio_NativeIO_POSIX
+ * Method:    isPmemCheck
+ * Signature: (JJ)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_apache_hadoop_io_nativeio_NativeIO_00024POSIX_isPmemCheck(
+JNIEnv *env, jclass thisClass, jlong address, jlong length) {
+  #if (defined UNIX) && (defined HADOOP_PMDK_LIBRARY)
+    jint is_pmem = pmdkLoader->pmem_is_pmem(address, length);
+    return (is_pmem) ? JNI_TRUE : JNI_FALSE;
+  #else
+    THROW(env, "java/lang/UnsupportedOperationException",
+        "The function isPmemCheck is not supported.");
+    return JNI_FALSE;
+  #endif
+  }
+
+/*
+ * Class:     org_apache_hadoop_io_nativeio_NativeIO_POSIX
+ * Method:    pmemMapFile
+ * Signature: (Ljava/lang/String;J)Lorg/apache/hadoop/io/nativeio/NativeIO/POSIX/PmemMappedRegion;
+ */
+JNIEXPORT jobject JNICALL Java_org_apache_hadoop_io_nativeio_NativeIO_00024POSIX_pmemMapFile(
+JNIEnv *env, jclass thisClass, jstring filePath, jlong fileLength, jboolean isFileExist) {
+  #if (defined UNIX) && (defined HADOOP_PMDK_LIBRARY)
+    /* create a pmem file and memory map it */
+    const char * path = NULL;
+    void * pmemaddr = NULL;
+    size_t mapped_len = 0;
+    int is_pmem = 1;
+    char msg[1000];
+
+    path = (*env)->GetStringUTFChars(env, filePath, NULL);
+    if (!path) {
+      THROW(env, "java/lang/IllegalArgumentException", "File Path cannot be null");
+      return NULL;
+    }
+
+    if (isFileExist) {
+      pmemaddr = pmdkLoader->pmem_map_file(path, 0, 0, 0666, &mapped_len, &is_pmem);
+    } else {
+      if (fileLength <= 0) {
+        (*env)->ReleaseStringUTFChars(env, filePath, path);
+        THROW(env, "java/lang/IllegalArgumentException", "File length should be positive");
+        return NULL;
+      }
+      pmemaddr = pmdkLoader->pmem_map_file(path, fileLength, PMEM_FILE_CREATE|PMEM_FILE_EXCL,
+                0666, &mapped_len, &is_pmem);
+    }
+
+    if (!pmemaddr) {
+      snprintf(msg, sizeof(msg), "Failed to map file on persistent memory.file: %s, length: %x, error msg: %s", path, fileLength, pmem_errormsg());
+      THROW(env, "java/io/IOException", msg);
+      (*env)->ReleaseStringUTFChars(env, filePath, path);
+      return NULL;
+    }
+
+    if (fileLength != mapped_len) {
+      snprintf(msg, sizeof(msg), "Mapped length doesn't match the request length. file :%s, request length:%x, returned length:%x, error msg:%s", path, fileLength, mapped_len, pmem_errormsg());
+      THROW(env, "java/io/IOException", msg);
+      (*env)->ReleaseStringUTFChars(env, filePath, path);
+      return NULL;
+    }
+
+    (*env)->ReleaseStringUTFChars(env, filePath, path);
+
+    if ((!pmem_region_clazz) || (!pmem_region_ctor)) {
+      THROW(env, "java/io/IOException", "PmemMappedRegion class or constructor is NULL");
+      return NULL;
+    }
+
+    jobject ret = (*env)->NewObject(env, pmem_region_clazz, pmem_region_ctor, pmemaddr, mapped_len, (jboolean)is_pmem);
+    return ret;
+
+  #else
+    THROW(env, "java/lang/UnsupportedOperationException",
+        "The function pmemCreateMapFile is not supported.");
+    return NULL;
+  #endif
+  }
+
+/*
+ * Class:     org_apache_hadoop_io_nativeio_NativeIO_POSIX
+ * Method:    pmemUnMap
+ * Signature: (JJ)V
+ */
+JNIEXPORT jboolean JNICALL Java_org_apache_hadoop_io_nativeio_NativeIO_00024POSIX_pmemUnMap(
+JNIEnv *env, jclass thisClass, jlong address, jlong length) {
+  #if (defined UNIX) && (defined HADOOP_PMDK_LIBRARY)
+    int succeed = 0;
+    char msg[1000];
+    succeed = pmdkLoader->pmem_unmap(address, length);
+    // succeed = -1 failure; succeed = 0 success
+    if (succeed != 0) {
+      snprintf(msg, sizeof(msg), "Failed to unmap region. address: %x, length: %x, error msg: %s", address, length, pmem_errormsg());
+      THROW(env, "java/io/IOException", msg);
+      return JNI_FALSE;
+    } else {
+      return JNI_TRUE;
+    }
+  #else
+    THROW(env, "java/lang/UnsupportedOperationException",
+        "The function pmemUnMap is not supported.");
+    return JNI_FALSE;
+  #endif
+  }
+
+/*
+ * Class:     org_apache_hadoop_io_nativeio_NativeIO_POSIX
+ * Method:    pmemCopy
+ * Signature: ([BJJ)V
+ */
+JNIEXPORT void JNICALL Java_org_apache_hadoop_io_nativeio_NativeIO_00024POSIX_pmemCopy(
+JNIEnv *env, jclass thisClass, jbyteArray buf, jlong address, jboolean is_pmem, jlong length) {
+  #if (defined UNIX) && (defined HADOOP_PMDK_LIBRARY)
+    char msg[1000];
+    jbyte* srcBuf = (*env)->GetByteArrayElements(env, buf, 0);
+    snprintf(msg, sizeof(msg), "Pmem copy content. dest: %x, length: %x, src: %x ", address, length, srcBuf);
+    if (is_pmem) {
+      pmdkLoader->pmem_memcpy_nodrain(address, srcBuf, length);
+    } else {
+      memcpy(address, srcBuf, length);
+    }
+    (*env)->ReleaseByteArrayElements(env, buf, srcBuf, 0);
+    return;
+  #else
+    THROW(env, "java/lang/UnsupportedOperationException",
+        "The function pmemCopy is not supported.");
+  #endif
+  }
+
+/*
+ * Class:     org_apache_hadoop_io_nativeio_NativeIO
+ * Method:    pmemDrain
+ * Signature: ()V
+ */
+JNIEXPORT void JNICALL Java_org_apache_hadoop_io_nativeio_NativeIO_00024POSIX_pmemDrain(
+JNIEnv *env, jclass thisClass) {
+  #if (defined UNIX) && (defined HADOOP_PMDK_LIBRARY)
+    pmdkLoader->pmem_drain();
+  #else
+    THROW(env, "java/lang/UnsupportedOperationException",
+        "The function pmemDrain is not supported.");
+  #endif
+  }
+
+  /*
+ * Class:     org_apache_hadoop_io_nativeio_NativeIO_POSIX
+ * Method:    pmemSync
+ * Signature: (JJ)V
+ */
+JNIEXPORT void JNICALL Java_org_apache_hadoop_io_nativeio_NativeIO_00024POSIX_pmemSync
+  (JNIEnv * env, jclass thisClass, jlong address, jlong length) {
+
+  #if (defined UNIX) && (defined HADOOP_PMDK_LIBRARY)
+    int succeed = 0;
+    char msg[1000];
+    succeed = pmdkLoader->pmem_msync(address, length);
+    // succeed = -1 failure
+    if (succeed == -1) {
+      snprintf(msg, sizeof(msg), "Failed to msync region. address: %x, length: %x, error msg: %s", address, length, pmem_errormsg());
+      THROW(env, "java/io/IOException", msg);
+      return;
+    }
+  #else
+    THROW(env, "java/lang/UnsupportedOperationException",
+        "The function pmemSync is not supported.");
+  #endif
+  }
+
+JNIEXPORT jstring JNICALL Java_org_apache_hadoop_io_nativeio_NativeIO_00024POSIX_getPmdkLibPath
+  (JNIEnv * env, jclass thisClass) {
+    jstring libpath = NULL;
+
+    #ifdef HADOOP_PMDK_LIBRARY
+      libpath = (*env)->NewStringUTF(env, HADOOP_PMDK_LIBRARY);
+    #endif
+    return libpath;
+  }
+
+#ifdef __cplusplus
+}
+#endif

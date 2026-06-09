@@ -18,13 +18,14 @@
 
 package org.apache.hadoop.fs.shell;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringWriter;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -33,9 +34,9 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 
 /**
@@ -48,7 +49,7 @@ public class TestHdfsTextCommand {
   private static MiniDFSCluster cluster;
   private static FileSystem fs;
   
-  @Before
+  @BeforeEach
     public void setUp() throws IOException{
     Configuration conf = new HdfsConfiguration();
     cluster = new MiniDFSCluster.Builder(conf).build();
@@ -56,7 +57,7 @@ public class TestHdfsTextCommand {
     fs = cluster.getFileSystem();
   }
 
-  @After
+  @AfterEach
     public void tearDown() throws IOException{
     if(fs != null){
       fs.close();
@@ -106,7 +107,7 @@ public class TestHdfsTextCommand {
 
   private String inputStreamToString(InputStream stream) throws IOException {
     StringWriter writer = new StringWriter();
-    IOUtils.copy(stream, writer);
+    IOUtils.copy(stream, writer, StandardCharsets.UTF_8);
     return writer.toString();
   }
 

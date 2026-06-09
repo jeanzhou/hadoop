@@ -27,22 +27,24 @@ import javax.ws.rs.core.Response;
 import javax.ws.rs.ext.ExceptionMapper;
 import javax.ws.rs.ext.Provider;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hdfs.web.JsonUtil;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.sun.jersey.api.ParamException;
-import com.sun.jersey.api.container.ContainerException;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.glassfish.jersey.server.ContainerException;
+import org.glassfish.jersey.server.ParamException;
+import org.glassfish.hk2.api.MultiException;
 
 /** Handle exceptions. */
 @Provider
 public class ExceptionHandler implements ExceptionMapper<Exception> {
-  public static final Log LOG = LogFactory.getLog(ExceptionHandler.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(ExceptionHandler.class);
 
   private static Exception toCause(Exception e) {
     final Throwable t = e.getCause();    
@@ -93,6 +95,10 @@ public class ExceptionHandler implements ExceptionMapper<Exception> {
     if (e instanceof SecurityException) {
       e = toCause(e);
     }
+
+    if(e instanceof MultiException) {
+      e = toCause(e);
+    }
     
     //Map response status
     final Response.Status s;
@@ -108,6 +114,8 @@ public class ExceptionHandler implements ExceptionMapper<Exception> {
       s = Response.Status.BAD_REQUEST;
     } else if (e instanceof IllegalArgumentException) {
       s = Response.Status.BAD_REQUEST;
+    } else if (e instanceof MultiException) {
+      s = Response.Status.FORBIDDEN;
     } else {
       LOG.warn("INTERNAL_SERVER_ERROR", e);
       s = Response.Status.INTERNAL_SERVER_ERROR;

@@ -22,8 +22,8 @@ import java.util.List;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.util.Lists;
 
 /**
  * This class is used to specify the setup of namenodes when instantiating
@@ -69,6 +69,23 @@ public class MiniDFSNNTopology {
       nameservice.addNN(new MiniDFSNNTopology.NNConf("nn" + i));
     }
     MiniDFSNNTopology topology = new MiniDFSNNTopology().addNameservice(nameservice);
+    return topology;
+  }
+
+  /**
+   * Set up an HA topology with a single HA nameservice.
+   * @param nnCount of namenodes to use with the nameservice
+   * @param basePort for IPC and Http ports of namenodes.
+   */
+  public static MiniDFSNNTopology simpleHATopology(int nnCount, int basePort) {
+    MiniDFSNNTopology.NSConf ns = new MiniDFSNNTopology.NSConf("minidfs-ns");
+    for (int i = 0; i < nnCount; i++) {
+      ns.addNN(new MiniDFSNNTopology.NNConf("nn" + i)
+          .setIpcPort(basePort++)
+          .setHttpPort(basePort++));
+    }
+    MiniDFSNNTopology topology = new MiniDFSNNTopology()
+        .addNameservice(ns);
     return topology;
   }
 
@@ -227,7 +244,7 @@ public class MiniDFSNNTopology {
       this.nnId = nnId;
     }
 
-    String getNnId() {
+    public String getNnId() {
       return nnId;
     }
 

@@ -37,15 +37,18 @@ import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.util.ReflectionUtils;
-import org.junit.Ignore;
-import org.junit.Test;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNotNull;
-@Ignore
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+@Disabled
 public class TestBadRecords extends ClusterMapReduceTestCase {
   
   private static final Logger LOG =
@@ -58,7 +61,12 @@ public class TestBadRecords extends ClusterMapReduceTestCase {
     Arrays.asList("hello08","hello10");
   
   private List<String> input;
-  
+
+  @BeforeAll
+  public static void setupClass() throws Exception {
+    setupClassBase(TestBadRecords.class);
+  }
+
   public TestBadRecords() {
     input = new ArrayList<String>();
     for(int i=1;i<=10;i++) {

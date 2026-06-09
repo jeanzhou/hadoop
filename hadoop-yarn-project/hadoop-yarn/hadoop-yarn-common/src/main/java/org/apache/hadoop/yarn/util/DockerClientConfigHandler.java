@@ -28,17 +28,17 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.yarn.security.DockerCredentialTokenIdentifier;
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.JsonNode;
-import org.codehaus.jackson.JsonParser;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.node.ObjectNode;
+
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 
@@ -87,7 +87,7 @@ public final class DockerClientConfigHandler {
     if (fs != null) {
       FSDataInputStream fileHandle = fs.open(configFile);
       if (fileHandle != null) {
-        contents = IOUtils.toString(fileHandle);
+        contents = IOUtils.toString(fileHandle, StandardCharsets.UTF_8);
       }
     }
     if (contents == null) {
@@ -97,13 +97,13 @@ public final class DockerClientConfigHandler {
 
     // Parse the JSON and create the Tokens/Credentials.
     ObjectMapper mapper = new ObjectMapper();
-    JsonFactory factory = mapper.getJsonFactory();
-    JsonParser parser = factory.createJsonParser(contents);
+    JsonFactory factory = mapper.getFactory();
+    JsonParser parser = factory.createParser(contents);
     JsonNode rootNode = mapper.readTree(parser);
 
     Credentials credentials = new Credentials();
     if (rootNode.has(CONFIG_AUTHS_KEY)) {
-      Iterator<String> iter = rootNode.get(CONFIG_AUTHS_KEY).getFieldNames();
+      Iterator<String> iter = rootNode.get(CONFIG_AUTHS_KEY).fieldNames();
       for (; iter.hasNext();) {
         String registryUrl = iter.next();
         String registryCred = rootNode.get(CONFIG_AUTHS_KEY)
@@ -114,13 +114,12 @@ public final class DockerClientConfigHandler {
             new DockerCredentialTokenIdentifier(registryUrl, applicationId);
         Token<DockerCredentialTokenIdentifier> token =
             new Token<>(tokenId.getBytes(),
-                registryCred.getBytes(Charset.forName("UTF-8")),
+                registryCred.getBytes(StandardCharsets.UTF_8),
                 tokenId.getKind(), new Text(registryUrl));
         credentials.addToken(
             new Text(registryUrl + "-" + applicationId), token);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Added token: " + token.toString());
-        }
+        LOG.info("Token read from Docker client configuration file: "
+                + token.toString());
       }
     }
     return credentials;
@@ -131,6 +130,7 @@ public final class DockerClientConfigHandler {
    *
    * @param tokens the Tokens from the ContainerLaunchContext.
    * @return the Credentials object populated from the Tokens.
+   * @throws IOException io error occur.
    */
   public static Credentials getCredentialsFromTokensByteBuffer(
       ByteBuffer tokens) throws IOException {
@@ -142,7 +142,7 @@ public final class DockerClientConfigHandler {
     tokens.rewind();
     if (LOG.isDebugEnabled()) {
       for (Token token : credentials.getAllTokens()) {
-        LOG.debug("Added token: " + token.toString());
+        LOG.debug("Token read from token storage: {}", token);
       }
     }
     return credentials;
@@ -155,30 +155,35 @@ public final class DockerClientConfigHandler {
    * @param outConfigFile the File to write the Docker client configuration to.
    * @param credentials the populated Credentials object.
    * @throws IOException if the write fails.
+   * @return true if a Docker credential is found in the supplied credentials.
    */
-  public static void writeDockerCredentialsToPath(File outConfigFile,
+  public static boolean writeDockerCredentialsToPath(File outConfigFile,
       Credentials credentials) throws IOException {
-    ObjectMapper mapper = new ObjectMapper();
-    ObjectNode rootNode = mapper.createObjectNode();
-    ObjectNode registryUrlNode = mapper.createObjectNode();
+    boolean foundDockerCred = false;
     if (credentials.numberOfTokens() > 0) {
+      ObjectMapper mapper = new ObjectMapper();
+      ObjectNode rootNode = mapper.createObjectNode();
+      ObjectNode registryUrlNode = mapper.createObjectNode();
       for (Token<? extends TokenIdentifier> tk : credentials.getAllTokens()) {
         if (tk.getKind().equals(DockerCredentialTokenIdentifier.KIND)) {
+          foundDockerCred = true;
           DockerCredentialTokenIdentifier ti =
               (DockerCredentialTokenIdentifier) tk.decodeIdentifier();
           ObjectNode registryCredNode = mapper.createObjectNode();
-          registryUrlNode.put(ti.getRegistryUrl(), registryCredNode);
+          registryUrlNode.set(ti.getRegistryUrl(), registryCredNode);
           registryCredNode.put(CONFIG_AUTH_KEY,
-              new String(tk.getPassword(), Charset.forName("UTF-8")));
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Prepared token for write: " + tk.toString());
-          }
+              new String(tk.getPassword(), StandardCharsets.UTF_8));
+          LOG.debug("Prepared token for write: {}", tk);
         }
       }
+      if (foundDockerCred) {
+        rootNode.set(CONFIG_AUTHS_KEY, registryUrlNode);
+        String json = mapper.writerWithDefaultPrettyPrinter()
+            .writeValueAsString(rootNode);
+        FileUtils.writeStringToFile(
+            outConfigFile, json, StandardCharsets.UTF_8);
+      }
     }
-    rootNode.put(CONFIG_AUTHS_KEY, registryUrlNode);
-    String json =
-        mapper.writerWithDefaultPrettyPrinter().writeValueAsString(rootNode);
-    FileUtils.writeStringToFile(outConfigFile, json, StandardCharsets.UTF_8);
+    return foundDockerCred;
   }
 }

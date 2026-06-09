@@ -17,12 +17,13 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -39,28 +40,29 @@ import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.event.Level;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 /**
  * The hotornot.com of unit tests: makes sure that the standby not only
  * has namespace information, but also has the correct block reports, etc.
  */
 public class TestStandbyIsHot {
-  protected static final Log LOG = LogFactory.getLog(
+  protected static final Logger LOG = LoggerFactory.getLogger(
       TestStandbyIsHot.class);
   private static final String TEST_FILE_DATA = "hello highly available world";
   private static final String TEST_FILE = "/testStandbyIsHot";
   private static final Path TEST_FILE_PATH = new Path(TEST_FILE);
 
   static {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testStandbyIsHot() throws Exception {
     Configuration conf = new Configuration();
     // We read from the standby to watch block locations
@@ -132,7 +134,8 @@ public class TestStandbyIsHot {
    * In the bug, the standby node would only very slowly notice the blocks returning
    * to the cluster.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testDatanodeRestarts() throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, 1024);
@@ -175,8 +178,8 @@ public class TestStandbyIsHot {
       
       LocatedBlocks locs = nn1.getRpcServer().getBlockLocations(
           TEST_FILE, 0, 1);
-      assertEquals("Standby should have registered that the block has no replicas",
-          0, locs.get(0).getLocations().length);
+      assertEquals(0, locs.get(0).getLocations().length,
+          "Standby should have registered that the block has no replicas");
       
       cluster.restartDataNode(dnProps);
       // Wait for both NNs to re-register the DN.
@@ -192,8 +195,8 @@ public class TestStandbyIsHot {
       
       locs = nn1.getRpcServer().getBlockLocations(
           TEST_FILE, 0, 1);
-      assertEquals("Standby should have registered that the block has replicas again",
-          1, locs.get(0).getLocations().length);
+      assertEquals(1, locs.get(0).getLocations().length,
+          "Standby should have registered that the block has replicas again");
     } finally {
       cluster.shutdown();
     }
@@ -211,7 +214,7 @@ public class TestStandbyIsHot {
           LocatedBlocks locs = NameNodeAdapter.getBlockLocations(nn, path, 0, 1000);
           DatanodeInfo[] dnis = locs.getLastLocatedBlock().getLocations();
           for (DatanodeInfo dni : dnis) {
-            Assert.assertNotNull(dni);
+            assertNotNull(dni);
           }
           int numReplicas = dnis.length;
           

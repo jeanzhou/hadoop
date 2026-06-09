@@ -35,6 +35,10 @@ import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetEditLogMa
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetEditLogManifestResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetMostRecentCheckpointTxIdRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetMostRecentCheckpointTxIdResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetMostRecentNameNodeFileTxIdRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetMostRecentNameNodeFileTxIdResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetNextSPSPathRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetNextSPSPathResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetTransactionIdRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetTransactionIdResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.IsRollingUpgradeRequestProto;
@@ -49,6 +53,7 @@ import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.StartCheckpo
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.StartCheckpointResponseProto;
 import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
 import org.apache.hadoop.hdfs.server.namenode.CheckpointSignature;
+import org.apache.hadoop.hdfs.server.namenode.NNStorage;
 import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
@@ -56,8 +61,8 @@ import org.apache.hadoop.hdfs.server.protocol.NamenodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
 
-import com.google.protobuf.RpcController;
-import com.google.protobuf.ServiceException;
+import org.apache.hadoop.thirdparty.protobuf.RpcController;
+import org.apache.hadoop.thirdparty.protobuf.ServiceException;
 
 /**
  * Implementation for protobuf service that forwards requests
@@ -68,11 +73,11 @@ public class NamenodeProtocolServerSideTranslatorPB implements
     NamenodeProtocolPB {
   private final NamenodeProtocol impl;
 
-  private final static ErrorReportResponseProto VOID_ERROR_REPORT_RESPONSE = 
-  ErrorReportResponseProto.newBuilder().build();
+  protected final static ErrorReportResponseProto VOID_ERROR_REPORT_RESPONSE =
+      ErrorReportResponseProto.newBuilder().build();
 
-  private final static EndCheckpointResponseProto VOID_END_CHECKPOINT_RESPONSE =
-  EndCheckpointResponseProto.newBuilder().build();
+  protected final static EndCheckpointResponseProto VOID_END_CHECKPOINT_RESPONSE =
+      EndCheckpointResponseProto.newBuilder().build();
 
   public NamenodeProtocolServerSideTranslatorPB(NamenodeProtocol impl) {
     this.impl = impl;
@@ -87,7 +92,9 @@ public class NamenodeProtocolServerSideTranslatorPB implements
     BlocksWithLocations blocks;
     try {
       blocks = impl.getBlocks(dnInfo, request.getSize(),
-          request.getMinBlockSize());
+          request.getMinBlockSize(), request.getTimeInterval(),
+          request.hasStorageType() ?
+              PBHelperClient.convertStorageType(request.getStorageType()): null);
     } catch (IOException e) {
       throw new ServiceException(e);
     }
@@ -135,6 +142,20 @@ public class NamenodeProtocolServerSideTranslatorPB implements
       throw new ServiceException(e);
     }
     return GetMostRecentCheckpointTxIdResponseProto.newBuilder().setTxId(txid).build();
+  }
+
+  @Override
+  public GetMostRecentNameNodeFileTxIdResponseProto getMostRecentNameNodeFileTxId(
+      RpcController unused, GetMostRecentNameNodeFileTxIdRequestProto request)
+      throws ServiceException {
+    long txid;
+    try {
+      txid = impl.getMostRecentNameNodeFileTxId(
+          NNStorage.NameNodeFile.valueOf(request.getNameNodeFile()));
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return GetMostRecentNameNodeFileTxIdResponseProto.newBuilder().setTxId(txid).build();
   }
 
 
@@ -256,5 +277,21 @@ public class NamenodeProtocolServerSideTranslatorPB implements
     }
     return IsRollingUpgradeResponseProto.newBuilder()
         .setIsRollingUpgrade(isRollingUpgrade).build();
+  }
+
+  @Override
+  public GetNextSPSPathResponseProto getNextSPSPath(
+      RpcController controller, GetNextSPSPathRequestProto request)
+          throws ServiceException {
+    try {
+      Long nextSPSPath = impl.getNextSPSPath();
+      if (nextSPSPath == null) {
+        return GetNextSPSPathResponseProto.newBuilder().build();
+      }
+      return GetNextSPSPathResponseProto.newBuilder().setSpsPath(nextSPSPath)
+          .build();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
   }
 }

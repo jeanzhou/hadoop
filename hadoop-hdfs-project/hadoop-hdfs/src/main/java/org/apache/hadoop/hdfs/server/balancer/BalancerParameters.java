@@ -27,6 +27,7 @@ final class BalancerParameters {
   private final BalancingPolicy policy;
   private final double threshold;
   private final int maxIdleIteration;
+  private final long hotBlockTimeInterval;
   /** Exclude the nodes in this set. */
   private final Set<String> excludedNodes;
   /** If empty, include any node; otherwise, include only these nodes. */
@@ -37,6 +38,21 @@ final class BalancerParameters {
    */
   private final Set<String> sourceNodes;
   /**
+   * If empty, any node can be a source; otherwise, these nodes will be excluded as
+   * source nodes.
+   */
+  private final Set<String> excludedSourceNodes;
+  /**
+   * If empty, any node can be a target; otherwise, use only these nodes as
+   * target nodes.
+   */
+  private final Set<String> targetNodes;
+  /**
+   * If empty, any node can be a target; otherwise, these nodes will be excluded as
+   * target nodes.
+   */
+  private final Set<String> excludedTargetNodes;
+  /**
    * A set of block pools to run the balancer on.
    */
   private final Set<String> blockpools;
@@ -44,6 +60,12 @@ final class BalancerParameters {
    * Whether to run the balancer during upgrade.
    */
   private final boolean runDuringUpgrade;
+
+  private final boolean runAsService;
+
+  private final boolean sortTopNodes;
+
+  private final int limitOverUtilizedNum;
 
   static final BalancerParameters DEFAULT = new BalancerParameters();
 
@@ -58,8 +80,15 @@ final class BalancerParameters {
     this.excludedNodes = builder.excludedNodes;
     this.includedNodes = builder.includedNodes;
     this.sourceNodes = builder.sourceNodes;
+    this.excludedSourceNodes = builder.excludedSourceNodes;
+    this.targetNodes = builder.targetNodes;
+    this.excludedTargetNodes = builder.excludedTargetNodes;
     this.blockpools = builder.blockpools;
     this.runDuringUpgrade = builder.runDuringUpgrade;
+    this.runAsService = builder.runAsService;
+    this.sortTopNodes = builder.sortTopNodes;
+    this.limitOverUtilizedNum = builder.limitOverUtilizedNum;
+    this.hotBlockTimeInterval = builder.hotBlockTimeInterval;
   }
 
   BalancingPolicy getBalancingPolicy() {
@@ -86,6 +115,18 @@ final class BalancerParameters {
     return this.sourceNodes;
   }
 
+  Set<String> getExcludedSourceNodes() {
+    return this.excludedSourceNodes;
+  }
+
+  Set<String> getTargetNodes() {
+    return this.targetNodes;
+  }
+
+  Set<String> getExcludedTargetNodes() {
+    return this.excludedTargetNodes;
+  }
+
   Set<String> getBlockPools() {
     return this.blockpools;
   }
@@ -94,16 +135,37 @@ final class BalancerParameters {
     return this.runDuringUpgrade;
   }
 
+  boolean getRunAsService() {
+    return this.runAsService;
+  }
+
+  boolean getSortTopNodes() {
+    return this.sortTopNodes;
+  }
+
+  int getLimitOverUtilizedNum() {
+    return this.limitOverUtilizedNum;
+  }
+
+  long getHotBlockTimeInterval() {
+    return this.hotBlockTimeInterval;
+  }
+
   @Override
   public String toString() {
     return String.format("%s.%s [%s," + " threshold = %s,"
         + " max idle iteration = %s," + " #excluded nodes = %s,"
         + " #included nodes = %s," + " #source nodes = %s,"
-        + " #blockpools = %s," + " run during upgrade = %s]",
+        + " #excluded source nodes = %s," + " #target nodes = %s,"
+        + " #excluded target nodes = %s,"
+        + " #blockpools = %s," + " run during upgrade = %s,"
+        + " sort top nodes = %s," + " limit overUtilized nodes num = %s,"
+        + " hot block time interval = %s]",
         Balancer.class.getSimpleName(), getClass().getSimpleName(), policy,
         threshold, maxIdleIteration, excludedNodes.size(),
-        includedNodes.size(), sourceNodes.size(), blockpools.size(),
-        runDuringUpgrade);
+        includedNodes.size(), sourceNodes.size(), excludedSourceNodes.size(), targetNodes.size(),
+        excludedTargetNodes.size(), blockpools.size(),
+        runDuringUpgrade, sortTopNodes, limitOverUtilizedNum, hotBlockTimeInterval);
   }
 
   static class Builder {
@@ -115,8 +177,15 @@ final class BalancerParameters {
     private Set<String> excludedNodes = Collections.<String> emptySet();
     private Set<String> includedNodes = Collections.<String> emptySet();
     private Set<String> sourceNodes = Collections.<String> emptySet();
+    private Set<String> excludedSourceNodes = Collections.<String> emptySet();
+    private Set<String> targetNodes = Collections.<String> emptySet();
+    private Set<String> excludedTargetNodes = Collections.<String> emptySet();
     private Set<String> blockpools = Collections.<String> emptySet();
     private boolean runDuringUpgrade = false;
+    private boolean runAsService = false;
+    private boolean sortTopNodes = false;
+    private int limitOverUtilizedNum = Integer.MAX_VALUE;
+    private long hotBlockTimeInterval = 0;
 
     Builder() {
     }
@@ -136,6 +205,11 @@ final class BalancerParameters {
       return this;
     }
 
+    Builder setHotBlockTimeInterval(long t) {
+      this.hotBlockTimeInterval = t;
+      return this;
+    }
+
     Builder setExcludedNodes(Set<String> nodes) {
       this.excludedNodes = nodes;
       return this;
@@ -151,6 +225,21 @@ final class BalancerParameters {
       return this;
     }
 
+    Builder setExcludedSourceNodes(Set<String> nodes) {
+      this.excludedSourceNodes = nodes;
+      return this;
+    }
+
+    Builder setTargetNodes(Set<String> nodes) {
+      this.targetNodes = nodes;
+      return this;
+    }
+
+    Builder setExcludedTargetNodes(Set<String> nodes) {
+      this.excludedTargetNodes = nodes;
+      return this;
+    }
+
     Builder setBlockpools(Set<String> pools) {
       this.blockpools = pools;
       return this;
@@ -158,6 +247,21 @@ final class BalancerParameters {
 
     Builder setRunDuringUpgrade(boolean run) {
       this.runDuringUpgrade = run;
+      return this;
+    }
+
+    Builder setRunAsService(boolean asService) {
+      this.runAsService = asService;
+      return this;
+    }
+
+    Builder setSortTopNodes(boolean shouldSortTopNodes) {
+      this.sortTopNodes = shouldSortTopNodes;
+      return this;
+    }
+
+    Builder setLimitOverUtilizedNum(int overUtilizedNum) {
+      this.limitOverUtilizedNum = overUtilizedNum;
       return this;
     }
 

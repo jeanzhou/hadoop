@@ -20,39 +20,41 @@ package org.apache.hadoop.hdfs.server.namenode.web.resources;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.web.WebHdfsTestUtil;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Test WebHDFS files/directories creation to make sure it follows same rules
  * from dfs CLI for specifying files/directories permissions.
  */
 public class TestWebHdfsCreatePermissions {
-  static final Log LOG = LogFactory.getLog(TestWebHdfsCreatePermissions.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestWebHdfsCreatePermissions.class);
   {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
   }
 
   private MiniDFSCluster cluster;
 
-  @Before
+  @BeforeEach
   public void initializeMiniDFSCluster() throws Exception {
     final Configuration conf = WebHdfsTestUtil.createConf();
     this.cluster = new MiniDFSCluster.Builder(conf).build();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -78,12 +80,12 @@ public class TestWebHdfsCreatePermissions {
       URL url = new URL(uri.toString());
       HttpURLConnection conn = (HttpURLConnection) url.openConnection();
       conn.setRequestMethod("PUT");
-      Assert.assertEquals(expectedResponse, conn.getResponseCode());
+      assertEquals(expectedResponse, conn.getResponseCode());
 
       NamenodeProtocols namenode = cluster.getNameNode().getRpcServer();
       FsPermission resultingPermission = namenode.getFileInfo(path).
             getPermission();
-      Assert.assertEquals(expectedPermission, resultingPermission.toString());
+      assertEquals(expectedPermission, resultingPermission.toString());
     } finally {
       cluster.shutdown();
     }

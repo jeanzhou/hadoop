@@ -18,7 +18,9 @@
 
 package org.apache.hadoop.mapreduce.lib.input;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -40,15 +42,17 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.security.TokenCache;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StopWatch;
 import org.apache.hadoop.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.collect.Lists;
+import static java.util.Objects.requireNonNull;
+import static org.apache.hadoop.fs.FileUtil.maybeIgnoreMissingDirectory;
 
-/** 
+/**
  * A base class for file-based {@link InputFormat}s.
  *
  * <p><code>FileInputFormat</code> is the base class for all file-based 
@@ -76,6 +80,8 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
     "mapreduce.input.fileinputformat.numinputfiles";
   public static final String INPUT_DIR_RECURSIVE =
     "mapreduce.input.fileinputformat.input.dir.recursive";
+  public static final String INPUT_DIR_NONRECURSIVE_IGNORE_SUBDIRS =
+    "mapreduce.input.fileinputformat.input.dir.nonrecursive.ignore.subdirs";
   public static final String LIST_STATUS_NUM_THREADS =
       "mapreduce.input.fileinputformat.list-status.num-threads";
   public static final int DEFAULT_LIST_STATUS_NUM_THREADS = 1;
@@ -231,11 +237,15 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
         (PathFilter) ReflectionUtils.newInstance(filterClass, conf) : null;
   }
 
-  /** List input directories.
+  /**
+   * List input directories.
    * Subclasses may override to, e.g., select only files matching a regular
    * expression. 
-   * 
-   * @param job the job to list input paths for
+   *
+   * If security is enabled, this method collects
+   * delegation tokens from the input paths and adds them to the job's
+   * credentials.
+   * @param job the job to list input paths for and attach tokens to.
    * @return array of FileStatus objects
    * @throws IOException if zero items.
    */
@@ -277,7 +287,10 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
             job.getConfiguration(), dirs, recursive, inputFilter, true);
         locatedFiles = locatedFileStatusFetcher.getFileStatuses();
       } catch (InterruptedException e) {
-        throw new IOException("Interrupted while getting file statuses");
+        throw (IOException)
+            new InterruptedIOException(
+                "Interrupted while getting file statuses")
+                .initCause(e);
       }
       result = Lists.newArrayList(locatedFiles);
     }
@@ -315,7 +328,7 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
                   addInputPathRecursively(result, fs, stat.getPath(),
                       inputFilter);
                 } else {
-                  result.add(stat);
+                  result.add(shrinkStatus(stat));
                 }
               }
             }
@@ -347,20 +360,59 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
   protected void addInputPathRecursively(List<FileStatus> result,
       FileSystem fs, Path path, PathFilter inputFilter) 
       throws IOException {
-    RemoteIterator<LocatedFileStatus> iter = fs.listLocatedStatus(path);
-    while (iter.hasNext()) {
-      LocatedFileStatus stat = iter.next();
-      if (inputFilter.accept(stat.getPath())) {
-        if (stat.isDirectory()) {
-          addInputPathRecursively(result, fs, stat.getPath(), inputFilter);
-        } else {
-          result.add(stat);
+    // FNFE exceptions are caught whether raised in the list call,
+    // or in the hasNext() or next() calls, where async reporting
+    // may take place.
+    try {
+      RemoteIterator<LocatedFileStatus> iter = fs.listLocatedStatus(path);
+      while (iter.hasNext()) {
+        LocatedFileStatus stat = iter.next();
+        if (inputFilter.accept(stat.getPath())) {
+          if (stat.isDirectory()) {
+            addInputPathRecursively(result, fs, stat.getPath(), inputFilter);
+          } else {
+            result.add(shrinkStatus(stat));
+          }
         }
       }
+    } catch (FileNotFoundException e) {
+      // unless the store is capabile of list inconsistencies, rethrow.
+      // because this is recursive, the caller method may also end up catching
+      // and rethrowing, which is slighly inefficient but harmless.
+      maybeIgnoreMissingDirectory(fs, path, e);
     }
   }
-  
-  
+
+  /**
+   * The HdfsBlockLocation includes a LocatedBlock which contains messages
+   * for issuing more detailed queries to datanodes about a block, but these
+   * messages are useless during job submission currently. This method tries
+   * to exclude the LocatedBlock from HdfsBlockLocation by creating a new
+   * BlockLocation from original, reshaping the LocatedFileStatus,
+   * allowing {@link #listStatus(JobContext)} to scan more files with less
+   * memory footprint.
+   * @see BlockLocation
+   * @see org.apache.hadoop.fs.HdfsBlockLocation
+   * @param origStat The fat FileStatus.
+   * @return The FileStatus that has been shrunk.
+   */
+  public static FileStatus shrinkStatus(FileStatus origStat) {
+    if (origStat.isDirectory() || origStat.getLen() == 0 ||
+        !(origStat instanceof LocatedFileStatus)) {
+      return origStat;
+    } else {
+      BlockLocation[] blockLocations =
+          ((LocatedFileStatus)origStat).getBlockLocations();
+      BlockLocation[] locs = new BlockLocation[blockLocations.length];
+      int i = 0;
+      for (BlockLocation location : blockLocations) {
+        locs[i++] = new BlockLocation(location);
+      }
+      LocatedFileStatus newStat = new LocatedFileStatus(origStat, locs);
+      return newStat;
+    }
+  }
+
   /**
    * A factory that makes the split for this class. It can be overridden
    * by sub-classes to make sub-types
@@ -392,16 +444,29 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
     // generate splits
     List<InputSplit> splits = new ArrayList<InputSplit>();
     List<FileStatus> files = listStatus(job);
+
+    boolean ignoreDirs = !getInputDirRecursive(job)
+      && job.getConfiguration().getBoolean(INPUT_DIR_NONRECURSIVE_IGNORE_SUBDIRS, false);
     for (FileStatus file: files) {
+      if (ignoreDirs && file.isDirectory()) {
+        continue;
+      }
       Path path = file.getPath();
       long length = file.getLen();
       if (length != 0) {
         BlockLocation[] blkLocations;
         if (file instanceof LocatedFileStatus) {
-          blkLocations = ((LocatedFileStatus) file).getBlockLocations();
+          blkLocations = requireNonNull(
+              ((LocatedFileStatus) file).getBlockLocations(),
+              () -> String.format("No block locations in LocatedFileStatus %s; length=%d",
+                  file, length));
+
         } else {
           FileSystem fs = path.getFileSystem(job.getConfiguration());
-          blkLocations = fs.getFileBlockLocations(file, 0, length);
+          blkLocations = requireNonNull(fs.getFileBlockLocations(file, 0, length), () ->
+              String.format("No block locations returned from getFileBlockLocations(%s, 0, %d)"
+                      + "; status=%s",
+                  path, length, file));
         }
         if (isSplitable(job, path)) {
           long blockSize = file.getBlockSize();
@@ -512,7 +577,7 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
                                    Path... inputPaths) throws IOException {
     Configuration conf = job.getConfiguration();
     Path path = inputPaths[0].getFileSystem(conf).makeQualified(inputPaths[0]);
-    StringBuffer str = new StringBuffer(StringUtils.escapeString(path.toString()));
+    StringBuilder str = new StringBuilder(StringUtils.escapeString(path.toString()));
     for(int i = 1; i < inputPaths.length;i++) {
       str.append(StringUtils.COMMA_STR);
       path = inputPaths[i].getFileSystem(conf).makeQualified(inputPaths[i]);

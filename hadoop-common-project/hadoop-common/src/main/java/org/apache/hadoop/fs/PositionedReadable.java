@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,10 +17,19 @@
  */
 package org.apache.hadoop.fs;
 
-import java.io.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.IntFunction;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+
+import static java.util.Objects.requireNonNull;
+import static org.apache.hadoop.io.Sizes.S_16K;
+import static org.apache.hadoop.io.Sizes.S_1M;
 
 /**
  * Stream that permits positional reading.
@@ -85,4 +94,75 @@ public interface PositionedReadable {
    * the read operation completed
    */
   void readFully(long position, byte[] buffer) throws IOException;
+
+  /**
+   * What is the smallest reasonable seek?
+   * @return the minimum number of bytes
+   */
+  default int minSeekForVectorReads() {
+    return S_16K;
+  }
+
+  /**
+   * What is the largest size that we should group ranges together as?
+   * @return the number of bytes to read at once
+   */
+  default int maxReadSizeForVectorReads() {
+    return S_1M;
+  }
+
+  /**
+   * Read fully a list of file ranges asynchronously from this file.
+   * The default iterates through the ranges to read each synchronously, but
+   * the intent is that FSDataInputStream subclasses can make more efficient
+   * readers.
+   * As a result of the call, each range will have FileRange.setData(CompletableFuture)
+   * called with a future that when complete will have a ByteBuffer with the
+   * data from the file's range.
+   * <p>
+   *   The position returned by getPos() after readVectored() is undefined.
+   * </p>
+   * <p>
+   *   If a file is changed while the readVectored() operation is in progress, the output is
+   *   undefined. Some ranges may have old data, some may have new and some may have both.
+   * </p>
+   * <p>
+   *   While a readVectored() operation is in progress, normal read api calls may block.
+   * </p>
+   * @param ranges the byte ranges to read
+   * @param allocate the function to allocate ByteBuffer
+   * @throws IOException any IOE.
+   * @throws IllegalArgumentException if the any of ranges are invalid, or they overlap.
+   */
+  default void readVectored(List<? extends FileRange> ranges,
+                            IntFunction<ByteBuffer> allocate) throws IOException {
+    VectoredReadUtils.readVectored(this, ranges, allocate);
+  }
+
+  /**
+   * Extension of {@link #readVectored(List, IntFunction)} where a {@code release(buffer)}
+   * operation may be invoked if problems surface during reads.
+   * <p>
+   * The {@code release} operation is invoked after an IOException
+   * to return the actively buffer to a pool before reporting a failure
+   * in the future.
+   * <p>
+   * The default implementation calls {@link #readVectored(List, IntFunction)}.p
+   * <p>
+   * Implementations SHOULD override this method if they can release buffers as
+   * part of their error handling.
+   * @param ranges the byte ranges to read
+   * @param allocate function to allocate ByteBuffer
+   * @param release callable to release a ByteBuffer.
+   * @throws IOException any IOE.
+   * @throws IllegalArgumentException if any of ranges are invalid, or they overlap.
+   * @throws NullPointerException null arguments.
+   */
+  default void readVectored(List<? extends FileRange> ranges,
+      IntFunction<ByteBuffer> allocate,
+      Consumer<ByteBuffer> release) throws IOException {
+    requireNonNull(release);
+    readVectored(ranges, allocate);
+  }
+
 }

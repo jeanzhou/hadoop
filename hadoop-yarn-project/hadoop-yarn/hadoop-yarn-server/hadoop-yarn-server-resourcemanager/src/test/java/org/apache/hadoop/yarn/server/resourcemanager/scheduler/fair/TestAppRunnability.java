@@ -18,15 +18,13 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
 
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -34,6 +32,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNodes;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.ApplicationPlacementContext;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
@@ -42,12 +41,18 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptA
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
-import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
 
-/*
+
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair
+    .allocationfile.AllocationFileQueue;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair
+    .allocationfile.AllocationFileWriter;
+import org.apache.hadoop.yarn.util.resource.Resources;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+/**
  * This class is to  test the fair scheduler functionality of
  * deciding the number of runnable application under various conditions.
  */
@@ -55,7 +60,7 @@ public class TestAppRunnability extends FairSchedulerTestBase {
   private final static String ALLOC_FILE =
       new File(TEST_DIR, "test-queues").getAbsolutePath();
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     conf = createConfiguration();
     resourceManager = new MockRM(conf);
@@ -63,7 +68,7 @@ public class TestAppRunnability extends FairSchedulerTestBase {
     scheduler = (FairScheduler) resourceManager.getResourceScheduler();
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     if (resourceManager != null) {
       resourceManager.stop();
@@ -78,7 +83,7 @@ public class TestAppRunnability extends FairSchedulerTestBase {
     conf.set(FairSchedulerConfiguration.USER_AS_DEFAULT_QUEUE, "true");
     scheduler.reinitialize(conf, resourceManager.getRMContext());
     ApplicationAttemptId appAttemptId = createAppAttemptId(1, 1);
-    createApplicationWithAMResource(appAttemptId, "default", "user1", null);
+    createApplicationWithAMResource(appAttemptId, "root.user1", "user1", null);
     assertEquals(1, scheduler.getQueueManager().getLeafQueue("user1", true)
         .getNumRunnableApps());
     assertEquals(0, scheduler.getQueueManager().getLeafQueue("default", true)
@@ -88,39 +93,40 @@ public class TestAppRunnability extends FairSchedulerTestBase {
   }
 
   @Test
-  public void testNotUserAsDefaultQueue() throws Exception {
+  public void testNotUserAsDefaultQueue() {
 
-    // Restarting resource manager since the Conf object is changed changed.
-    resourceManager.stop();
+    // We need a new scheduler since we want to change the conf object. This
+    // requires a new RM to propagate it . Do a proper teardown to not leak
+    tearDown();
+    // Create a new one with the amended config.
     conf.set(FairSchedulerConfiguration.USER_AS_DEFAULT_QUEUE, "false");
     resourceManager = new MockRM(conf);
     resourceManager.start();
     scheduler = (FairScheduler) resourceManager.getResourceScheduler();
 
     ApplicationAttemptId appAttemptId = createAppAttemptId(1, 1);
-    createApplicationWithAMResource(appAttemptId, "default", "user2", null);
-    assertEquals(0, scheduler.getQueueManager().getLeafQueue("user1", true)
-        .getNumRunnableApps());
+    createApplicationWithAMResource(appAttemptId, "default", "user1", null);
     assertEquals(1, scheduler.getQueueManager().getLeafQueue("default", true)
         .getNumRunnableApps());
-    assertEquals(0, scheduler.getQueueManager().getLeafQueue("user2", true)
+    assertEquals(0, scheduler.getQueueManager().getLeafQueue("user1", true)
         .getNumRunnableApps());
   }
 
   @Test
-  public void testAppAdditionAndRemoval() throws Exception {
+  public void testAppAdditionAndRemoval() {
     ApplicationAttemptId attemptId = createAppAttemptId(1, 1);
+    ApplicationPlacementContext apc =
+        new ApplicationPlacementContext("user1");
     AppAddedSchedulerEvent appAddedEvent =
-        new AppAddedSchedulerEvent(attemptId.getApplicationId(), "default",
-            "user1");
+        new AppAddedSchedulerEvent(attemptId.getApplicationId(), "user1",
+            "user1", apc);
     scheduler.handle(appAddedEvent);
     AppAttemptAddedSchedulerEvent attemptAddedEvent =
         new AppAttemptAddedSchedulerEvent(createAppAttemptId(1, 1), false);
     scheduler.handle(attemptAddedEvent);
 
-    // Scheduler should have two queues (the default and the one created for
-    // user1)
-    assertEquals(2, scheduler.getQueueManager().getLeafQueues().size());
+    // Scheduler should have one queue (the one created for user1)
+    assertEquals(1, scheduler.getQueueManager().getLeafQueues().size());
 
     // That queue should have one app
     assertEquals(1, scheduler.getQueueManager().getLeafQueue("user1", true)
@@ -149,7 +155,7 @@ public class TestAppRunnability extends FairSchedulerTestBase {
 
     // User1 submits one application
     ApplicationAttemptId appAttemptId = createAppAttemptId(1, 1);
-    createApplicationWithAMResource(appAttemptId, "default", "user1", null);
+    createApplicationWithAMResource(appAttemptId, "user1", "user1", null);
 
     // The user1 queue should inherit the configurations from the root queue
     FSLeafQueue userQueue =
@@ -161,17 +167,15 @@ public class TestAppRunnability extends FairSchedulerTestBase {
   }
 
   @Test
-  public void testDontAllowUndeclaredPools() throws Exception {
+  public void testDontAllowUndeclaredPools() {
     conf.setBoolean(FairSchedulerConfiguration.ALLOW_UNDECLARED_POOLS, false);
     conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
 
-    PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
-    out.println("<?xml version=\"1.0\"?>");
-    out.println("<allocations>");
-    out.println("<queue name=\"jerry\">");
-    out.println("</queue>");
-    out.println("</allocations>");
-    out.close();
+    AllocationFileWriter.create()
+        .addQueue(new AllocationFileQueue.Builder("jerry").build())
+        .addQueue(new AllocationFileQueue.Builder("default").build())
+        .writeToFile(ALLOC_FILE);
+
     // Restarting resource manager since the file location and content is
     // changed.
     resourceManager.stop();
@@ -184,12 +188,14 @@ public class TestAppRunnability extends FairSchedulerTestBase {
     FSLeafQueue jerryQueue = queueManager.getLeafQueue("jerry", false);
     FSLeafQueue defaultQueue = queueManager.getLeafQueue("default", false);
 
+    // NOTE: placement is not inside the scheduler anymore need to fake it here.
+    // The scheduling request contains the fake placing
     // Should get put into jerry
     createSchedulingRequest(1024, "jerry", "someuser");
     assertEquals(1, jerryQueue.getNumRunnableApps());
 
     // Should get forced into default
-    createSchedulingRequest(1024, "newqueue", "someuser");
+    createSchedulingRequest(1024, "default", "someuser");
     assertEquals(1, jerryQueue.getNumRunnableApps());
     assertEquals(1, defaultQueue.getNumRunnableApps());
 
@@ -200,7 +206,7 @@ public class TestAppRunnability extends FairSchedulerTestBase {
     assertEquals(2, defaultQueue.getNumRunnableApps());
 
     // Should get put into jerry because of user-as-default-queue
-    createSchedulingRequest(1024, "default", "jerry");
+    createSchedulingRequest(1024, "jerry", "jerry");
     assertEquals(2, jerryQueue.getNumRunnableApps());
     assertEquals(2, defaultQueue.getNumRunnableApps());
   }

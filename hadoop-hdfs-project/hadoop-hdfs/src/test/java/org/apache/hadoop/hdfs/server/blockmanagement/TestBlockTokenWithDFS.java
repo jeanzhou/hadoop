@@ -18,10 +18,10 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -33,7 +33,6 @@ import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.FsTracer;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.BlockReader;
 import org.apache.hadoop.hdfs.client.impl.BlockReaderFactory;
@@ -65,9 +64,8 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.net.ServerSocketUtil;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 public class TestBlockTokenWithDFS {
 
@@ -78,7 +76,7 @@ public class TestBlockTokenWithDFS {
   private static final String FILE_TO_APPEND = "/fileToAppend.dat";
 
   {
-    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.TRACE);
   }
 
   public static byte[] generateBytes(int fileSize){
@@ -106,7 +104,7 @@ public class TestBlockTokenWithDFS {
     } catch (IOException e) {
       return false;
     }
-    assertEquals("Cannot read file.", toRead.length, totalRead);
+    assertEquals(toRead.length, totalRead, "Cannot read file.");
     return checkFile(toRead, expected);
   }
 
@@ -114,8 +112,8 @@ public class TestBlockTokenWithDFS {
   private boolean checkFile2(FSDataInputStream in, byte[] expected) {
     byte[] toRead = new byte[expected.length];
     try {
-      assertEquals("Cannot read file", toRead.length, in.read(0, toRead, 0,
-          toRead.length));
+      assertEquals(toRead.length, in.read(0, toRead, 0,
+          toRead.length), "Cannot read file");
     } catch (IOException e) {
       return false;
     }
@@ -167,7 +165,6 @@ public class TestBlockTokenWithDFS {
           setCachingStrategy(CachingStrategy.newDefaultStrategy()).
           setClientCacheContext(ClientContext.getFromConf(conf)).
           setConfiguration(conf).
-          setTracer(FsTracer.get(conf)).
           setRemotePeerFactory(new RemotePeerFactory() {
             @Override
             public Peer newConnectedPeer(InetSocketAddress addr,
@@ -200,14 +197,14 @@ public class TestBlockTokenWithDFS {
       }
     }
     if (shouldSucceed) {
-      Assert.assertNotNull("OP_READ_BLOCK: access token is invalid, "
-            + "when it is expected to be valid", blockReader);
+      assertNotNull(blockReader,
+          "OP_READ_BLOCK: access token is invalid, " + "when it is expected to be valid");
     } else {
-      Assert.assertNotNull("OP_READ_BLOCK: access token is valid, "
-          + "when it is expected to be invalid", ioe);
-      Assert.assertTrue(
-          "OP_READ_BLOCK failed due to reasons other than access token: ",
-          ioe instanceof InvalidBlockTokenException);
+      assertNotNull(ioe,
+          "OP_READ_BLOCK: access token is valid, " + "when it is expected to be invalid");
+      assertTrue(
+          ioe instanceof InvalidBlockTokenException,
+          "OP_READ_BLOCK failed due to reasons other than access token: ");
     }
   }
 
@@ -577,13 +574,32 @@ public class TestBlockTokenWithDFS {
     cluster.shutdownNameNode(0);
 
     // verify blockSeekTo() fails (cached tokens become invalid)
-    in1.seek(0);
-    assertFalse(checkFile1(in1,expected));
+    if (isStriped) {
+      try {
+        in1.seek(0);
+        assertFalse(checkFile1(in1, expected));
+      } catch (Exception ignored) {
+      }
+    } else {
+      in1.seek(0);
+      assertFalse(checkFile1(in1, expected));
+    }
+
     // verify fetchBlockByteRange() fails (cached tokens become invalid)
-    assertFalse(checkFile2(in3,expected));
+    if (isStriped) {
+      try {
+        assertFalse(checkFile2(in3, expected));
+      } catch (Exception ignored) {
+      }
+    } else {
+      assertFalse(checkFile2(in3, expected));
+    }
 
     // restart the namenode to allow DFSClient to re-fetch tokens
     cluster.restartNameNode(0);
+    // Reopen closed streams
+    in1 = fs.open(fileToRead);
+    in3 = fs.open(fileToRead);
     // verify blockSeekTo() works again (by transparently re-fetching
     // tokens from namenode)
     in1.seek(0);

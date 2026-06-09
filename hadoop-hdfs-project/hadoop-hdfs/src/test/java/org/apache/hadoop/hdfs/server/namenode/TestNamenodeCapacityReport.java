@@ -18,15 +18,16 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.StorageType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -44,15 +45,15 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.datanode.FsDatasetTestUtils;
-import org.junit.Test;
-
+import org.junit.jupiter.api.Test;
 
 
 /**
  * This tests InterDataNodeProtocol for block handling. 
  */
 public class TestNamenodeCapacityReport {
-  private static final Log LOG = LogFactory.getLog(TestNamenodeCapacityReport.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestNamenodeCapacityReport.class);
 
   /**
    * The following test first creates a file.
@@ -184,6 +185,58 @@ public class TestNamenodeCapacityReport {
           (namesystem.getCapacityUsed() + namesystem.getCapacityRemaining()
               + namesystem.getNonDfsUsedSpace() + fileCount * fs
               .getDefaultBlockSize()) - configCapacity < 1 * 1024);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  /**
+   * We split the disk to DISK/ARCHIVE volumes and test if NN gets correct stat.
+   */
+  @Test
+  public void testVolumeSizeWithSameDiskTiering() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster = null;
+
+    // Set aside fifth of the total capacity as reserved
+    long reserved = 10000;
+    conf.setLong(DFSConfigKeys.DFS_DATANODE_DU_RESERVED_KEY, reserved);
+
+    try {
+      double reserveForAchive = 0.3;
+      conf.setBoolean(DFSConfigKeys.DFS_DATANODE_ALLOW_SAME_DISK_TIERING,
+          true);
+      conf.setDouble(DFSConfigKeys
+              .DFS_DATANODE_RESERVE_FOR_ARCHIVE_DEFAULT_PERCENTAGE,
+          reserveForAchive);
+      cluster = new MiniDFSCluster.Builder(conf).storageTypes(
+          new StorageType[]{StorageType.DISK, StorageType.ARCHIVE}).build();
+      cluster.waitActive();
+
+      final FsDatasetTestUtils utils = cluster.getFsDatasetTestUtils(0);
+
+      long configCapacity = cluster.getNamesystem().getCapacityTotal();
+
+      // Disk capacity should be just the raw capacity
+      // as two volumes shares the capacity.
+      long rawCapacity = utils.getRawCapacity();
+      long diskCapacity = (long) ((rawCapacity - reserved) * reserveForAchive)
+          + (long) ((rawCapacity - reserved) * (1 - reserveForAchive))
+          + reserved;
+
+      // Ensure reserved should not be double counted.
+      assertEquals(configCapacity, diskCapacity - reserved);
+
+      DataNode dn = cluster.getDataNodes().get(0);
+      // Ensure nonDfsUsed is not double counted.
+      long singleVolumeUsed = dn.getFSDataset()
+          .getStorageReports(cluster.getNamesystem().getBlockPoolId())[0]
+          .getNonDfsUsed();
+      cluster.triggerHeartbeats();
+      assertTrue(cluster.getNamesystem().getCapacityUsed()
+          < singleVolumeUsed * 2);
     }
     finally {
       if (cluster != null) {
@@ -225,9 +278,9 @@ public class TestNamenodeCapacityReport {
       triggerHeartbeats(datanodes);
       
       // check that all nodes are live and in service
-      int expectedTotalLoad = nodes;  // xceiver server adds 1 to load
+      int expectedTotalLoad = 0;
       int expectedInServiceNodes = nodes;
-      int expectedInServiceLoad = nodes;
+      int expectedInServiceLoad = 0;
       checkClusterHealth(nodes, namesystem, expectedTotalLoad,
           expectedInServiceNodes, expectedInServiceLoad);
 
@@ -332,10 +385,7 @@ public class TestNamenodeCapacityReport {
           expectedInServiceNodes--;
         }
         assertEquals(expectedInServiceNodes, getNumDNInService(namesystem));
-        // live nodes always report load of 1.  no nodes is load 0
-        double expectedXceiverAvg = (i == nodes-1) ? 0.0 : 1.0;
-        assertEquals((double)expectedXceiverAvg,
-            getInServiceXceiverAverage(namesystem), EPSILON);
+        assertEquals(0, getInServiceXceiverAverage(namesystem), EPSILON);
       }
       // final sanity check
       checkClusterHealth(0, namesystem, 0.0, 0, 0.0);
@@ -374,7 +424,7 @@ public class TestNamenodeCapacityReport {
     assertEquals(expectedTotalLoad, namesystem.getTotalLoad(), EPSILON);
     if (expectedInServiceNodes != 0) {
       assertEquals(expectedInServiceLoad / expectedInServiceNodes,
-        getInServiceXceiverAverage(namesystem), EPSILON);
+          getInServiceXceiverAverage(namesystem), EPSILON);
     } else {
       assertEquals(0.0, getInServiceXceiverAverage(namesystem), EPSILON);
     }

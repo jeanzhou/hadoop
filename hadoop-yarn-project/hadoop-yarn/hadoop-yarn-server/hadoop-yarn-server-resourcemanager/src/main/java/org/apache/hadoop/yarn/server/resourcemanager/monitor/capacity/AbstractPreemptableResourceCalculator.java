@@ -18,12 +18,6 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.Iterator;
-import java.util.PriorityQueue;
-
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.policy.PriorityUtilizationQueueOrderingPolicy;
@@ -32,15 +26,27 @@ import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.PriorityQueue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Calculate how much resources need to be preempted for each queue,
  * will be used by {@link PreemptionCandidatesSelector}.
  */
 public class AbstractPreemptableResourceCalculator {
+  private static final Logger LOG = LoggerFactory.getLogger(
+      AbstractPreemptableResourceCalculator.class);
 
   protected final CapacitySchedulerPreemptionContext context;
   protected final ResourceCalculator rc;
-  private boolean isReservedPreemptionCandidatesSelector;
+  protected boolean isReservedPreemptionCandidatesSelector;
+  private Resource stepFactor;
+  private boolean allowQueuesBalanceAfterAllQueuesSatisfied;
 
   static class TQComparator implements Comparator<TempQueuePerPartition> {
     private ResourceCalculator rc;
@@ -74,6 +80,34 @@ public class AbstractPreemptableResourceCalculator {
     }
   }
 
+  private static class NormalizationTuple {
+    private Resource numerator;
+    private Resource denominator;
+
+    NormalizationTuple(Resource numer, Resource denom) {
+      this.numerator = numer;
+      this.denominator = denom;
+    }
+
+    long getNumeratorValue(int i) {
+      return numerator.getResourceInformation(i).getValue();
+    }
+
+    long getDenominatorValue(int i) {
+      String nUnits = numerator.getResourceInformation(i).getUnits();
+      ResourceInformation dResourceInformation = denominator
+          .getResourceInformation(i);
+      return UnitsConversionUtil.convert(
+          dResourceInformation.getUnits(), nUnits, dResourceInformation.getValue());
+    }
+
+    float getNormalizedValue(int i) {
+      long nValue = getNumeratorValue(i);
+      long dValue = getDenominatorValue(i);
+      return dValue == 0 ? 0.0f : (float) nValue / dValue;
+    }
+  }
+
   /**
    * PreemptableResourceCalculator constructor.
    *
@@ -82,14 +116,32 @@ public class AbstractPreemptableResourceCalculator {
    *          this will be set by different implementation of candidate
    *          selectors, please refer to TempQueuePerPartition#offer for
    *          details.
+   * @param allowQueuesBalanceAfterAllQueuesSatisfied
+   *          Should resources be preempted from an over-served queue when the
+   *          requesting queues are all at or over their guarantees?
+   *          An example is, there're 10 queues under root, guaranteed resource
+   *          of them are all 10%.
+   *          Assume there're two queues are using resources, queueA uses 10%
+   *          queueB uses 90%. For all queues are guaranteed, but it's not fair
+   *          for queueA.
+   *          We wanna make this behavior can be configured. By default it is
+   *          not allowed.
+   *
    */
   public AbstractPreemptableResourceCalculator(
       CapacitySchedulerPreemptionContext preemptionContext,
-      boolean isReservedPreemptionCandidatesSelector) {
+      boolean isReservedPreemptionCandidatesSelector,
+      boolean allowQueuesBalanceAfterAllQueuesSatisfied) {
     context = preemptionContext;
     rc = preemptionContext.getResourceCalculator();
     this.isReservedPreemptionCandidatesSelector =
         isReservedPreemptionCandidatesSelector;
+    this.allowQueuesBalanceAfterAllQueuesSatisfied =
+        allowQueuesBalanceAfterAllQueuesSatisfied;
+    stepFactor = Resource.newInstance(0, 0);
+    for (ResourceInformation ri : stepFactor.getResources()) {
+      ri.setValue(1);
+    }
   }
 
   /**
@@ -122,23 +174,24 @@ public class AbstractPreemptableResourceCalculator {
     TQComparator tqComparator = new TQComparator(rc, totGuarant);
     PriorityQueue<TempQueuePerPartition> orderedByNeed = new PriorityQueue<>(10,
         tqComparator);
-    for (Iterator<TempQueuePerPartition> i = qAlloc.iterator(); i.hasNext();) {
+    for (Iterator<TempQueuePerPartition> i = qAlloc.iterator(); i.hasNext(); ) {
       TempQueuePerPartition q = i.next();
       Resource used = q.getUsed();
 
       Resource initIdealAssigned;
       if (Resources.greaterThan(rc, totGuarant, used, q.getGuaranteed())) {
-        initIdealAssigned =
-            Resources.add(q.getGuaranteed(), q.untouchableExtra);
-      } else {
+        initIdealAssigned = Resources.add(
+            Resources.componentwiseMin(q.getGuaranteed(), q.getUsed()),
+            q.untouchableExtra);
+      } else{
         initIdealAssigned = Resources.clone(used);
       }
 
       // perform initial assignment
       initIdealAssignment(totGuarant, q, initIdealAssigned);
 
-
       Resources.subtractFrom(unassigned, q.idealAssigned);
+
       // If idealAssigned < (allocated + used + pending), q needs more
       // resources, so
       // add it to the list of underserved queues, ordered by need.
@@ -152,10 +205,9 @@ public class AbstractPreemptableResourceCalculator {
     // left
     while (!orderedByNeed.isEmpty() && Resources.greaterThan(rc, totGuarant,
         unassigned, Resources.none())) {
-      Resource wQassigned = Resource.newInstance(0, 0);
       // we compute normalizedGuarantees capacity based on currently active
       // queues
-      resetCapacity(unassigned, orderedByNeed, ignoreGuarantee);
+      resetCapacity(orderedByNeed, ignoreGuarantee);
 
       // For each underserved queue (or set of queues if multiple are equally
       // underserved), offer its share of the unassigned resources based on its
@@ -166,13 +218,29 @@ public class AbstractPreemptableResourceCalculator {
       Collection<TempQueuePerPartition> underserved = getMostUnderservedQueues(
           orderedByNeed, tqComparator);
 
+      // This value will be used in every round to calculate ideal allocation.
+      // So make a copy to avoid it changed during calculation.
+      Resource dupUnassignedForTheRound = Resources.clone(unassigned);
+
       for (Iterator<TempQueuePerPartition> i = underserved.iterator(); i
           .hasNext();) {
+        if (!rc.isAnyMajorResourceAboveZero(unassigned)) {
+          break;
+        }
+
         TempQueuePerPartition sub = i.next();
-        Resource wQavail = Resources.multiplyAndNormalizeUp(rc, unassigned,
-            sub.normalizedGuarantee, Resource.newInstance(1, 1));
+
+        // How much resource we offer to the queue (to increase its ideal_alloc
+        Resource wQavail = Resources.multiplyAndNormalizeUp(rc,
+            dupUnassignedForTheRound,
+            sub.normalizedGuarantee, this.stepFactor);
+
+        // Make sure it is not beyond unassigned
+        wQavail = Resources.componentwiseMin(wQavail, unassigned);
+
         Resource wQidle = sub.offer(wQavail, rc, totGuarant,
-            isReservedPreemptionCandidatesSelector);
+            isReservedPreemptionCandidatesSelector,
+            allowQueuesBalanceAfterAllQueuesSatisfied);
         Resource wQdone = Resources.subtract(wQavail, wQidle);
 
         if (Resources.greaterThan(rc, totGuarant, wQdone, Resources.none())) {
@@ -180,9 +248,12 @@ public class AbstractPreemptableResourceCalculator {
           // queue, recalculating its order based on need.
           orderedByNeed.add(sub);
         }
-        Resources.addTo(wQassigned, wQdone);
+
+        Resources.subtractFrom(unassigned, wQdone);
+
+        // Make sure unassigned is always larger than 0
+        unassigned = Resources.componentwiseMax(unassigned, Resources.none());
       }
-      Resources.subtractFrom(unassigned, wQassigned);
     }
 
     // Sometimes its possible that, all queues are properly served. So intra
@@ -213,45 +284,144 @@ public class AbstractPreemptableResourceCalculator {
   /**
    * Computes a normalizedGuaranteed capacity based on active queues.
    *
-   * @param clusterResource
-   *          the total amount of resources in the cluster
    * @param queues
    *          the list of queues to consider
    * @param ignoreGuar
    *          ignore guarantee.
    */
-  private void resetCapacity(Resource clusterResource,
-      Collection<TempQueuePerPartition> queues, boolean ignoreGuar) {
+  private void resetCapacity(Collection<TempQueuePerPartition> queues,
+                             boolean ignoreGuar) {
     Resource activeCap = Resource.newInstance(0, 0);
-    int maxLength = ResourceUtils.getNumberOfKnownResourceTypes();
+    float activeTotalAbsCap = 0.0f;
+    int maxLength = ResourceUtils.getNumberOfCountableResourceTypes();
 
     if (ignoreGuar) {
-      for (TempQueuePerPartition q : queues) {
-        for (int i = 0; i < maxLength; i++) {
-          q.normalizedGuarantee[i] = 1.0f / queues.size();
+      for (int i = 0; i < maxLength; i++) {
+        for (TempQueuePerPartition q : queues) {
+          computeNormGuarEvenly(q, queues.size(), i);
         }
       }
     } else {
       for (TempQueuePerPartition q : queues) {
         Resources.addTo(activeCap, q.getGuaranteed());
+        activeTotalAbsCap += q.getAbsCapacity();
       }
-      for (TempQueuePerPartition q : queues) {
-        for (int i = 0; i < maxLength; i++) {
-          ResourceInformation nResourceInformation = q.getGuaranteed()
-              .getResourceInformation(i);
-          ResourceInformation dResourceInformation = activeCap
-              .getResourceInformation(i);
 
-          long nValue = nResourceInformation.getValue();
-          long dValue = UnitsConversionUtil.convert(
-              dResourceInformation.getUnits(), nResourceInformation.getUnits(),
-              dResourceInformation.getValue());
-          if (dValue != 0) {
-            q.normalizedGuarantee[i] = (float) nValue / dValue;
+      // loop through all resource types and normalize guaranteed capacity for all queues
+      for (int i = 0; i < maxLength; i++) {
+        boolean useAbsCapBasedNorm = false;
+        // if the sum of absolute capacity of all queues involved is 0,
+        // we should normalize evenly
+        boolean useEvenlyDistNorm = activeTotalAbsCap == 0;
+
+        // loop through all the queues once to determine the
+        // right normalization strategy for current processing resource type
+        for (TempQueuePerPartition q : queues) {
+          NormalizationTuple normTuple = new NormalizationTuple(
+              q.getGuaranteed(), activeCap);
+          long queueGuaranValue = normTuple.getNumeratorValue(i);
+          long totalActiveGuaranValue = normTuple.getDenominatorValue(i);
+
+          if (queueGuaranValue == 0 && q.getAbsCapacity() != 0 && totalActiveGuaranValue != 0) {
+            // when the rounded value of a resource type is 0 but its absolute capacity is not 0,
+            // we should consider taking the normalized guarantee based on absolute capacity
+            useAbsCapBasedNorm = true;
+            break;
+          }
+
+          if (totalActiveGuaranValue == 0) {
+            // If totalActiveGuaranValue from activeCap is zero, that means the guaranteed capacity
+            // of this resource dimension for all active queues is tiny (close to 0).
+            // For example, if a queue has 1% of minCapacity on a cluster with a totalVcores of 48,
+            // then the idealAssigned Vcores for this queue is (48 * 0.01)=0.48 which then
+            // get rounded/casted into 0 (double -> long)
+            // In this scenario where the denominator is 0, we can just spread resources across
+            // all tiny queues evenly since their absoluteCapacity are roughly the same
+            useEvenlyDistNorm = true;
+          }
+        }
+
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Queue normalization strategy: " +
+              "absoluteCapacityBasedNormalization(" + useAbsCapBasedNorm +
+              "), evenlyDistributedNormalization(" + useEvenlyDistNorm +
+              "), defaultNormalization(" + !(useAbsCapBasedNorm || useEvenlyDistNorm) + ")");
+        }
+
+        // loop through all the queues again to apply normalization strategy
+        for (TempQueuePerPartition q : queues) {
+          if (useAbsCapBasedNorm) {
+            computeNormGuarFromAbsCapacity(q, activeTotalAbsCap, i);
+          } else if (useEvenlyDistNorm) {
+            computeNormGuarEvenly(q, queues.size(), i);
+          } else {
+            computeDefaultNormGuar(q, activeCap, i);
           }
         }
       }
     }
+  }
+
+  /**
+   * Computes the normalized guaranteed capacity based on the weight of a queue's abs capacity.
+   *
+   * Example:
+   *  There are two active queues: queueA & queueB, and
+   *  their configured absolute minimum capacity is 1% and 3% respectively.
+   *
+   *  Then their normalized guaranteed capacity are:
+   *    normalized_guar_queueA = 0.01 / (0.01 + 0.03) = 0.25
+   *    normalized_guar_queueB = 0.03 / (0.01 + 0.03) = 0.75
+   *
+   * @param q
+   *          the queue to consider
+   * @param activeTotalAbsCap
+   *          the sum of absolute capacity of all active queues
+   * @param resourceTypeIdx
+   *          index of the processing resource type
+   */
+  private static void computeNormGuarFromAbsCapacity(TempQueuePerPartition q,
+                                                     float activeTotalAbsCap,
+                                                     int resourceTypeIdx) {
+    if (activeTotalAbsCap != 0) {
+      q.normalizedGuarantee[resourceTypeIdx] = q.getAbsCapacity() / activeTotalAbsCap;
+    }
+  }
+
+  /**
+   * Computes the normalized guaranteed capacity evenly based on num of active queues.
+   *
+   * @param q
+   *          the queue to consider
+   * @param numOfActiveQueues
+   *          number of active queues
+   * @param resourceTypeIdx
+   *          index of the processing resource type
+   */
+  private static void computeNormGuarEvenly(TempQueuePerPartition q,
+                                            int numOfActiveQueues,
+                                            int resourceTypeIdx) {
+    q.normalizedGuarantee[resourceTypeIdx] = 1.0f / numOfActiveQueues;
+  }
+
+  /**
+   * The default way to compute a queue's normalized guaranteed capacity.
+   *
+   * For each resource type, divide a queue's configured guaranteed amount (MBs/Vcores) by
+   * the total amount of guaranteed resource of all active queues
+   *
+   * @param q
+   *          the queue to consider
+   * @param activeCap
+   *          total guaranteed resources of all active queues
+   * @param resourceTypeIdx
+   *          index of the processing resource type
+   */
+  private static void computeDefaultNormGuar(TempQueuePerPartition q,
+                                             Resource activeCap,
+                                             int resourceTypeIdx) {
+    NormalizationTuple normTuple = new NormalizationTuple(q.getGuaranteed(), activeCap);
+    q.normalizedGuarantee[resourceTypeIdx] = normTuple.getNormalizedValue(resourceTypeIdx);
   }
 
   // Take the most underserved TempQueue (the one on the head). Collect and

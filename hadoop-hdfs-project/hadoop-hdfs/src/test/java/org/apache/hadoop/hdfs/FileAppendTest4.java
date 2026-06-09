@@ -19,16 +19,16 @@ package org.apache.hadoop.hdfs;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /** This is a comprehensive append test that tries
  * all combinations of file length and number of appended bytes
@@ -41,7 +41,8 @@ import org.junit.Test;
  *
  */
 public class FileAppendTest4 {
-  public static final Log LOG = LogFactory.getLog(FileAppendTest4.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(FileAppendTest4.class);
   
   private static final int BYTES_PER_CHECKSUM = 4;
   private static final int PACKET_SIZE = BYTES_PER_CHECKSUM;
@@ -58,7 +59,7 @@ public class FileAppendTest4 {
     conf.setInt(HdfsClientConfigKeys.DFS_CLIENT_WRITE_PACKET_SIZE_KEY, PACKET_SIZE);
   }
   
-  @BeforeClass
+  @BeforeAll
   public static void startUp () throws IOException {
     conf = new HdfsConfiguration();
     init(conf);
@@ -66,7 +67,7 @@ public class FileAppendTest4 {
     fs = cluster.getFileSystem();
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     if (cluster != null) {
       cluster.shutdown();

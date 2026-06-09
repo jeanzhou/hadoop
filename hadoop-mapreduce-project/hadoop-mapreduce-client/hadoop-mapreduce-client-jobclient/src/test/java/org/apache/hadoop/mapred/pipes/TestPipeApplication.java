@@ -28,12 +28,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.TimeUnit;
 
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.FsConstants;
@@ -47,7 +51,6 @@ import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.IFile.Writer;
-import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.mapred.Counters;
@@ -60,15 +63,22 @@ import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.mapred.TaskAttemptID;
 import org.apache.hadoop.mapred.TaskLog;
+import org.apache.hadoop.mapred.pipes.Application.PingSocketCleaner;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
+@Timeout(value=10, unit = TimeUnit.SECONDS, threadMode = SEPARATE_THREAD)
 public class TestPipeApplication {
   private static File workSpace = new File("target",
           TestPipeApplication.class.getName() + "-workSpace");
@@ -78,16 +88,16 @@ public class TestPipeApplication {
   /**
    * test PipesMapRunner    test the transfer data from reader
    *
-   * @throws Exception
+   * @throws Exception The exception thrown during unit testing.
    */
   @Test
   public void testRunner() throws Exception {
 
     // clean old password files
-    JobConf conf = new JobConf();
-    File[] psw = cleanTokenPasswordFile(conf);
+    File[] psw = cleanTokenPasswordFile();
     try {
       RecordReader<FloatWritable, NullWritable> rReader = new ReaderPipesMapRunner();
+      JobConf conf = new JobConf();
       conf.set(Submitter.IS_JAVA_RR, "true");
       // for stdour and stderror
 
@@ -138,7 +148,7 @@ public class TestPipeApplication {
       if (psw != null) {
         // remove password files
         for (File file : psw) {
-          file.deleteOnExit();
+          file.delete();
         }
       }
 
@@ -163,7 +173,7 @@ public class TestPipeApplication {
 
     TestTaskReporter reporter = new TestTaskReporter();
 
-    File[] psw = cleanTokenPasswordFile(conf);
+    File[] psw = cleanTokenPasswordFile();
     try {
 
       conf.set(MRJobConfig.TASK_ATTEMPT_ID, taskName);
@@ -232,7 +242,7 @@ public class TestPipeApplication {
       if (psw != null) {
         // remove password files
         for (File file : psw) {
-          file.deleteOnExit();
+          file.delete();
         }
       }
     }
@@ -248,7 +258,7 @@ public class TestPipeApplication {
 
     JobConf conf = new JobConf();
 
-    File[] psw = cleanTokenPasswordFile(conf);
+    File[] psw = cleanTokenPasswordFile();
 
     System.setProperty("test.build.data",
             "target/tmp/build/TEST_SUBMITTER_MAPPER/data");
@@ -266,8 +276,6 @@ public class TestPipeApplication {
     Submitter.setJavaPartitioner(conf, partitioner.getClass());
 
     assertEquals(PipesPartitioner.class, (Submitter.getJavaPartitioner(conf)));
-    // test going to call main method with System.exit(). Change Security
-    SecurityManager securityManager = System.getSecurityManager();
     // store System.out
     PrintStream oldps = System.out;
     ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -280,7 +288,7 @@ public class TestPipeApplication {
     } catch (ExitUtil.ExitException e) {
       // System.exit prohibited! output message test
       assertTrue(out.toString().contains(""));
-      assertTrue(out.toString(), out.toString().contains("pipes"));
+      assertTrue(out.toString().contains("pipes"), out.toString());
       assertTrue(out.toString().contains("[-input <path>] // Input directory"));
       assertTrue(out.toString()
               .contains("[-output <path>] // Output directory"));
@@ -324,12 +332,10 @@ public class TestPipeApplication {
               + "archives to be unarchived on the compute machines"));
     } finally {
       System.setOut(oldps);
-      // restore
-      System.setSecurityManager(securityManager);
       if (psw != null) {
         // remove password files
         for (File file : psw) {
-          file.deleteOnExit();
+          file.delete();
         }
       }
     }
@@ -339,7 +345,7 @@ public class TestPipeApplication {
       String[] args = new String[22];
       File input = new File(workSpace + File.separator + "input");
       if (!input.exists()) {
-        Assert.assertTrue(input.createNewFile());
+        assertTrue(input.createNewFile());
       }
       File outPut = new File(workSpace + File.separator + "output");
       FileUtil.fullyDelete(outPut);
@@ -375,7 +381,6 @@ public class TestPipeApplication {
 
     } finally {
       System.setOut(oldps);
-      System.setSecurityManager(securityManager);
     }
 
   }
@@ -389,8 +394,8 @@ public class TestPipeApplication {
   @Test
   public void testPipesReduser() throws Exception {
 
+    File[] psw = cleanTokenPasswordFile();
     JobConf conf = new JobConf();
-    File[] psw = cleanTokenPasswordFile(conf);
     try {
       Token<AMRMTokenIdentifier> token = new Token<AMRMTokenIdentifier>(
               "user".getBytes(), "password".getBytes(), new Text("kind"), new Text(
@@ -429,7 +434,7 @@ public class TestPipeApplication {
       if (psw != null) {
         // remove password files
         for (File file : psw) {
-          file.deleteOnExit();
+          file.delete();
         }
       }
     }
@@ -454,6 +459,84 @@ public class TestPipeApplication {
     PipesPartitioner.setNextPartition(3);
     // get data from cache
     assertEquals(3, partitioner.getPartition(iw, new Text("test"), 2));
+  }
+
+  @Test
+  public void testSocketCleaner() throws Exception {
+    ServerSocket serverSocket = setupServerSocket();
+    SocketCleaner cleaner = setupCleaner(serverSocket);
+    // mock ping thread, connect to server socket per second.
+    int expectedClosedCount = 5;
+    for (int i = 0; i < expectedClosedCount; i++) {
+      try {
+        Thread.sleep(1000);
+        Socket clientSocket = new Socket(serverSocket.getInetAddress(),
+                                         serverSocket.getLocalPort());
+        clientSocket.close();
+      } catch (Exception exception) {
+        // ignored...
+        exception.printStackTrace();
+      }
+    }
+    GenericTestUtils.waitFor(
+        () -> expectedClosedCount == cleaner.getCloseSocketCount(), 100, 5000);
+  }
+
+  @Test
+  public void testSocketTimeout() throws Exception {
+    ServerSocket serverSocket = setupServerSocket();
+    SocketCleaner cleaner = setupCleaner(serverSocket, 100);
+    try {
+      new Socket(serverSocket.getInetAddress(), serverSocket.getLocalPort());
+      Thread.sleep(1000);
+    } catch (Exception exception) {
+      // ignored...
+    }
+    GenericTestUtils.waitFor(() -> 1 == cleaner.getCloseSocketCount(), 100,
+        5000);
+  }
+
+  private SocketCleaner setupCleaner(ServerSocket serverSocket) {
+    return setupCleaner(serverSocket,
+                        CommonConfigurationKeys.IPC_PING_INTERVAL_DEFAULT);
+  }
+
+  private SocketCleaner setupCleaner(ServerSocket serverSocket, int soTimeout) {
+    // start socket cleaner.
+    SocketCleaner cleaner = new SocketCleaner("test-ping-socket-cleaner",
+                                              serverSocket, soTimeout);
+    cleaner.setDaemon(true);
+    cleaner.start();
+
+    return cleaner;
+  }
+
+  private static class SocketCleaner extends PingSocketCleaner {
+    private int closeSocketCount = 0;
+
+    SocketCleaner(String name, ServerSocket serverSocket, int soTimeout) {
+      super(name, serverSocket, soTimeout);
+    }
+
+    @Override
+    public void work() {
+      super.work();
+    }
+
+    protected void closeSocketInternal(Socket clientSocket) {
+      if (!clientSocket.isClosed()) {
+        closeSocketCount++;
+      }
+      super.closeSocketInternal(clientSocket);
+    }
+
+    public int getCloseSocketCount() {
+      return closeSocketCount;
+    }
+  }
+
+  private ServerSocket setupServerSocket() throws Exception {
+    return new ServerSocket(0, 1);
   }
 
   /**
@@ -507,16 +590,14 @@ public class TestPipeApplication {
 
   }
 
-  private File[] cleanTokenPasswordFile(JobConf conf) throws Exception {
+  private File[] cleanTokenPasswordFile() throws Exception {
     File[] result = new File[2];
-    result[0] = new File(conf.get(MRConfig.LOCAL_DIR) + Path.SEPARATOR
-        + "jobTokenPassword");
+    result[0] = new File("./jobTokenPassword");
     if (result[0].exists()) {
       FileUtil.chmod(result[0].getAbsolutePath(), "700");
       assertTrue(result[0].delete());
     }
-    result[1] = new File(conf.get(MRConfig.LOCAL_DIR) + Path.SEPARATOR
-        + ".jobTokenPassword.crc");
+    result[1] = new File("./.jobTokenPassword.crc");
     if (result[1].exists()) {
       FileUtil.chmod(result[1].getAbsolutePath(), "700");
       result[1].delete();
@@ -537,7 +618,8 @@ public class TestPipeApplication {
     if (clazz == null) {
       os.write(("ls ").getBytes());
     } else {
-      os.write(("java -cp " + classpath + " " + clazz).getBytes());
+      // On Java 8 java.home returns "${JAVA_HOME}/jre", but that's good enough for this test
+      os.write((System.getProperty("java.home") + "/bin/java -cp " + classpath + " " + clazz).getBytes());
     }
     os.flush();
     os.close();

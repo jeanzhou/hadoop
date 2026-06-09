@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.util;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -31,9 +31,9 @@ import org.apache.hadoop.ipc.RPC.RpcKind;
 import org.apache.hadoop.ipc.RpcConstants;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcRequestHeaderProto;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcRequestHeaderProto.OperationProto;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import com.google.protobuf.CodedOutputStream;
+import org.apache.hadoop.thirdparty.protobuf.CodedOutputStream;
 
 public class TestProtoUtil {
   
@@ -69,7 +69,7 @@ public class TestProtoUtil {
   private void doVarIntTest(int value) throws IOException {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     CodedOutputStream cout = CodedOutputStream.newInstance(baos);
-    cout.writeRawVarint32(value);
+    cout.writeUInt32NoTag(value);
     cout.flush();
 
     DataInputStream dis = new DataInputStream(

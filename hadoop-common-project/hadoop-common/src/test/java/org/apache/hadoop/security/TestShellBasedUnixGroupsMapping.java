@@ -27,11 +27,15 @@ import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.Shell.ExitCodeException;
 import org.apache.hadoop.util.Shell.ShellCommandExecutor;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -173,6 +177,34 @@ public class TestShellBasedUnixGroupsMapping {
     assertTrue(groups.contains("zzz"));
   }
 
+  public long getTimeoutInterval(String timeout) {
+    Configuration conf = new Configuration();
+    String userName = "foobarnonexistinguser";
+    conf.set(
+        CommonConfigurationKeys.HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_KEY,
+        timeout);
+    TestDelayedGroupCommand mapping = ReflectionUtils
+        .newInstance(TestDelayedGroupCommand.class, conf);
+    ShellCommandExecutor executor = mapping.createGroupExecutor(userName);
+    return executor.getTimeoutInterval();
+  }
+
+  @Test
+  public void testShellTimeOutConf() {
+
+    // Test a 1 second max-runtime timeout
+    assertEquals(1000L, getTimeoutInterval("1s"),
+        "Expected the group names executor to carry the configured timeout");
+
+    // Test a 1 minute max-runtime timeout
+    assertEquals(60000L, getTimeoutInterval("1m"),
+        "Expected the group names executor to carry the configured timeout");
+
+    // Test a 1 millisecond max-runtime timeout
+    assertEquals(1L, getTimeoutInterval("1"),
+        "Expected the group names executor to carry the configured timeout");
+  }
+
   private class TestGroupResolvable
       extends ShellBasedUnixGroupsMapping {
     /**
@@ -222,7 +254,7 @@ public class TestShellBasedUnixGroupsMapping {
   private static class TestDelayedGroupCommand
       extends ShellBasedUnixGroupsMapping {
 
-    private Long timeoutSecs = 2L;
+    private Long timeoutSecs = 1L;
 
     TestDelayedGroupCommand() {
       super();
@@ -243,44 +275,38 @@ public class TestShellBasedUnixGroupsMapping {
     }
   }
 
-  @Test(timeout=4000)
+  @Test
+  @Timeout(value = 4)
   public void testFiniteGroupResolutionTime() throws Exception {
     Configuration conf = new Configuration();
     String userName = "foobarnonexistinguser";
     String commandTimeoutMessage =
         "ran longer than the configured timeout limit";
-    long testTimeout = 1L;
+    long testTimeout = 500L;
 
     // Test a 1 second max-runtime timeout
     conf.setLong(
         CommonConfigurationKeys.
-            HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_SECS,
+            HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_KEY,
         testTimeout);
 
     TestDelayedGroupCommand mapping =
         ReflectionUtils.newInstance(TestDelayedGroupCommand.class, conf);
 
     ShellCommandExecutor executor = mapping.createGroupExecutor(userName);
-    assertEquals(
-        "Expected the group names executor to carry the configured timeout",
-        testTimeout,
-        executor.getTimeoutInterval());
+    assertEquals(testTimeout, executor.getTimeoutInterval(),
+        "Expected the group names executor to carry the configured timeout");
 
     executor = mapping.createGroupIDExecutor(userName);
-    assertEquals(
-        "Expected the group ID executor to carry the configured timeout",
-        testTimeout,
-        executor.getTimeoutInterval());
+    assertEquals(testTimeout, executor.getTimeoutInterval(),
+        "Expected the group ID executor to carry the configured timeout");
 
-    assertEquals(
-        "Expected no groups to be returned given a shell command timeout",
-        0,
-        mapping.getGroups(userName).size());
-    assertTrue(
+    assertEquals(0, mapping.getGroups(userName).size(),
+        "Expected no groups to be returned given a shell command timeout");
+    assertTrue(shellMappingLog.getOutput().contains(commandTimeoutMessage),
         "Expected the logs to carry " +
-            "a message about command timeout but was: " +
-            shellMappingLog.getOutput(),
-        shellMappingLog.getOutput().contains(commandTimeoutMessage));
+        "a message about command timeout but was: " +
+        shellMappingLog.getOutput());
     shellMappingLog.clearOutput();
 
     // Test also the parent Groups framework for expected behaviour
@@ -294,11 +320,10 @@ public class TestShellBasedUnixGroupsMapping {
           "The groups framework call should " +
               "have failed with a command timeout");
     } catch (IOException e) {
-      assertTrue(
+      assertTrue(shellMappingLog.getOutput().contains(commandTimeoutMessage),
           "Expected the logs to carry " +
-              "a message about command timeout but was: " +
-              shellMappingLog.getOutput(),
-          shellMappingLog.getOutput().contains(commandTimeoutMessage));
+          "a message about command timeout but was: " +
+          shellMappingLog.getOutput());
     }
     shellMappingLog.clearOutput();
 
@@ -306,28 +331,23 @@ public class TestShellBasedUnixGroupsMapping {
     conf = new Configuration();
     long defaultTimeout =
         CommonConfigurationKeys.
-            HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_SECS_DEFAULT;
+            HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_DEFAULT;
 
     mapping =
         ReflectionUtils.newInstance(TestDelayedGroupCommand.class, conf);
 
     executor = mapping.createGroupExecutor(userName);
-    assertEquals(
-        "Expected the group names executor to carry the default timeout",
-        defaultTimeout,
-        executor.getTimeoutInterval());
+    assertEquals(defaultTimeout, executor.getTimeoutInterval(),
+        "Expected the group names executor to carry the default timeout");
 
     executor = mapping.createGroupIDExecutor(userName);
-    assertEquals(
-        "Expected the group ID executor to carry the default timeout",
-        defaultTimeout,
-        executor.getTimeoutInterval());
+    assertEquals(defaultTimeout, executor.getTimeoutInterval(),
+        "Expected the group ID executor to carry the default timeout");
 
     mapping.getGroups(userName);
-    assertFalse(
+    assertFalse(shellMappingLog.getOutput().contains(commandTimeoutMessage),
         "Didn't expect a timeout of command in execution but logs carry it: " +
-            shellMappingLog.getOutput(),
-        shellMappingLog.getOutput().contains(commandTimeoutMessage));
+        shellMappingLog.getOutput());
   }
 }
 

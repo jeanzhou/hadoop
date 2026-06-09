@@ -18,26 +18,38 @@
 
 package org.apache.hadoop.tools;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.mapreduce.Job;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.Cluster;
 import org.apache.hadoop.mapreduce.JobSubmissionFiles;
 import org.apache.hadoop.tools.util.TestDistCpUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.util.ExitUtil;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.security.Permission;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class TestExternalCall {
 
-  private static final Log LOG = LogFactory.getLog(TestExternalCall.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestExternalCall.class);
 
   private static FileSystem fs;
 
@@ -50,11 +62,13 @@ public class TestExternalCall {
     return conf;
   }
 
-  @Before
+  @BeforeEach
   public void setup() {
+    ExitUtil.disableSystemExit();
+    ExitUtil.disableSystemHalt();
+    ExitUtil.resetFirstExitException();
+    ExitUtil.resetFirstHaltException();
 
-    securityManager = System.getSecurityManager();
-    System.setSecurityManager(new NoExitSecurityManager());
     try {
       fs = FileSystem.get(getConf());
       root = new Path("target/tmp").makeQualified(fs.getUri(),
@@ -65,32 +79,33 @@ public class TestExternalCall {
     }
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
-    System.setSecurityManager(securityManager);
+    ExitUtil.resetFirstExitException();
+    ExitUtil.resetFirstHaltException();
   }
+
 /**
- * test methods run end execute of DistCp class. silple copy file
+ * test methods run end execute of DistCp class. simple copy file
  * @throws Exception 
  */
   @Test
   public void testCleanup() throws Exception {
 
-      Configuration conf = getConf();
+    Configuration conf = getConf();
 
-      Path stagingDir = JobSubmissionFiles.getStagingDir(new Cluster(conf),
-          conf);
-      stagingDir.getFileSystem(conf).mkdirs(stagingDir);
-      Path soure = createFile("tmp.txt");
-      Path target = createFile("target.txt");
+    Path stagingDir = JobSubmissionFiles.getStagingDir(new Cluster(conf),
+        conf);
+    stagingDir.getFileSystem(conf).mkdirs(stagingDir);
+    Path soure = createFile("tmp.txt");
+    Path target = createFile("target.txt");
 
-      DistCp distcp = new DistCp(conf, null);
-      String[] arg = { soure.toString(), target.toString() };
+    DistCp distcp = new DistCp(conf, null);
+    String[] arg = {soure.toString(), target.toString()};
 
-      distcp.run(arg);
-      Assert.assertTrue(fs.exists(target));
+    distcp.run(arg);
+    assertTrue(fs.exists(target));
 
-  
   }
 
   private Path createFile(String fname) throws IOException {
@@ -123,44 +138,45 @@ public class TestExternalCall {
 
       String[] arg = {target.toString(),soure.toString()};
       DistCp.main(arg);
-      Assert.fail();
+      fail();
 
-    } catch (ExitException t) {
-      Assert.assertTrue(fs.exists(target));
-      Assert.assertEquals(t.status, 0);
-      Assert.assertEquals(
+    } catch (ExitUtil.ExitException t) {
+      assertTrue(fs.exists(target));
+      assertEquals(t.status, 0);
+      assertEquals(
           stagingDir.getFileSystem(conf).listStatus(stagingDir).length, 0);
     }
 
   }
 
-  private SecurityManager securityManager;
+  /**
+   * test methods run end execute of DistCp class. distcp job should be cleaned up after completion
+   * @throws Exception
+   */
+  @Test
+  public void testCleanupOfJob() throws Exception {
 
-  protected static class ExitException extends SecurityException {
-    private static final long serialVersionUID = -1982617086752946683L;
-    public final int status;
+    Configuration conf = getConf();
 
-    public ExitException(int status) {
-      super("There is no escape!");
-      this.status = status;
-    }
+    Path stagingDir = JobSubmissionFiles.getStagingDir(new Cluster(conf),
+      conf);
+    stagingDir.getFileSystem(conf).mkdirs(stagingDir);
+    Path soure = createFile("tmp.txt");
+    Path target = createFile("target.txt");
+
+    DistCp distcp = mock(DistCp.class);
+    Job job = spy(Job.class);
+    when(distcp.getConf()).thenReturn(conf);
+    when(distcp.createAndSubmitJob()).thenReturn(job);
+    when(distcp.execute()).thenCallRealMethod();
+    when(distcp.execute(anyBoolean())).thenCallRealMethod();
+    doReturn(true).when(job).waitForCompletion(anyBoolean());
+    when(distcp.run(any())).thenCallRealMethod();
+    String[] arg = { soure.toString(), target.toString() };
+
+    distcp.run(arg);
+    verify(job, times(1)).close();
   }
 
-  private static class NoExitSecurityManager extends SecurityManager {
-    @Override
-    public void checkPermission(Permission perm) {
-      // allow anything.
-    }
 
-    @Override
-    public void checkPermission(Permission perm, Object context) {
-      // allow anything.
-    }
-
-    @Override
-    public void checkExit(int status) {
-      super.checkExit(status);
-      throw new ExitException(status);
-    }
-  }
 }

@@ -178,7 +178,6 @@ public class FileIoProvider {
    * Call sync_file_range on the given file descriptor.
    *
    * @param  volume target volume. null if unavailable.
-   * @throws IOException
    */
   public void syncFileRange(
       @Nullable FsVolumeSpi volume, FileDescriptor outFd,
@@ -198,7 +197,6 @@ public class FileIoProvider {
    * Call posix_fadvise on the given file descriptor.
    *
    * @param  volume target volume. null if unavailable.
-   * @throws IOException
    */
   public void posixFadvise(
       @Nullable FsVolumeSpi volume, String identifier, FileDescriptor outFd,
@@ -281,7 +279,15 @@ public class FileIoProvider {
           waitTime, transferTime);
       profilingEventHook.afterFileIo(volume, TRANSFER, begin, count);
     } catch (Exception e) {
-      onFailure(volume, begin);
+      String em = e.getMessage();
+      if (em != null) {
+        if (!em.startsWith("Broken pipe")
+            && !em.startsWith("Connection reset")) {
+          onFailure(volume, begin);
+        }
+      } else {
+        onFailure(volume, begin);
+      }
       throw e;
     }
   }
@@ -330,7 +336,7 @@ public class FileIoProvider {
       profilingEventHook.afterMetadataOp(volume, OPEN, begin);
       return fis;
     } catch(Exception e) {
-      org.apache.commons.io.IOUtils.closeQuietly(fis);
+      IOUtils.closeStream(fis);
       onFailure(volume, begin);
       throw e;
     }
@@ -361,7 +367,7 @@ public class FileIoProvider {
       profilingEventHook.afterMetadataOp(volume, OPEN, begin);
       return fos;
     } catch(Exception e) {
-      org.apache.commons.io.IOUtils.closeQuietly(fos);
+      IOUtils.closeStream(fos);
       onFailure(volume, begin);
       throw e;
     }
@@ -394,7 +400,6 @@ public class FileIoProvider {
    * @param volume  target volume. null if unavailable.
    * @param fd  File descriptor object.
    * @return  FileOutputStream to the given file object.
-   * @throws  FileNotFoundException
    */
   public FileOutputStream getFileOutputStream(
       @Nullable FsVolumeSpi volume, FileDescriptor fd) {
@@ -427,7 +432,7 @@ public class FileIoProvider {
       profilingEventHook.afterMetadataOp(volume, OPEN, begin);
       return fis;
     } catch(Exception e) {
-      org.apache.commons.io.IOUtils.closeQuietly(fis);
+      IOUtils.closeStream(fis);
       onFailure(volume, begin);
       throw e;
     }
@@ -459,7 +464,7 @@ public class FileIoProvider {
       profilingEventHook.afterMetadataOp(volume, OPEN, begin);
       return fis;
     } catch(Exception e) {
-      org.apache.commons.io.IOUtils.closeQuietly(fis);
+      IOUtils.closeStream(fis);
       onFailure(volume, begin);
       throw e;
     }
@@ -490,7 +495,7 @@ public class FileIoProvider {
       profilingEventHook.afterMetadataOp(volume, OPEN, begin);
       return raf;
     } catch(Exception e) {
-      org.apache.commons.io.IOUtils.closeQuietly(raf);
+      IOUtils.closeStream(raf);
       onFailure(volume, begin);
       throw e;
     }
@@ -508,6 +513,7 @@ public class FileIoProvider {
     try {
       faultInjectorEventHook.beforeMetadataOp(volume, DELETE);
       boolean deleted = FileUtil.fullyDelete(dir);
+      LOG.trace("Deletion of dir {} {}", dir, deleted ? "succeeded" : "failed");
       profilingEventHook.afterMetadataOp(volume, DELETE, begin);
       return deleted;
     } catch(Exception e) {
@@ -1064,5 +1070,9 @@ public class FileIoProvider {
       datanode.checkDiskErrorAsync(volume);
     }
     profilingEventHook.onFailure(volume, begin);
+  }
+
+  public ProfilingFileIoEvents getProfilingEventHook() {
+    return profilingEventHook;
   }
 }

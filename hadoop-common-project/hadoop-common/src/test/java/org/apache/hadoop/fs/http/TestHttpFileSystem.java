@@ -18,14 +18,16 @@
 
 package org.apache.hadoop.fs.http;
 
-import okhttp3.mockwebserver.MockResponse;
-import okhttp3.mockwebserver.MockWebServer;
-import okhttp3.mockwebserver.RecordedRequest;
+import mockwebserver3.MockResponse;
+import mockwebserver3.MockWebServer;
+import mockwebserver3.RecordedRequest;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IOUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,35 +35,57 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.stream.IntStream;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Testing HttpFileSystem.
  */
 public class TestHttpFileSystem {
+  private final Configuration conf = new Configuration(false);
+
+  @BeforeEach
+  public void setUp() {
+    conf.set("fs.http.impl", HttpFileSystem.class.getCanonicalName());
+  }
+
   @Test
   public void testHttpFileSystem() throws IOException, URISyntaxException,
       InterruptedException {
-    Configuration conf = new Configuration(false);
-    conf.set("fs.http.impl", HttpFileSystem.class.getCanonicalName());
     final String data = "foo";
-
     try (MockWebServer server = new MockWebServer()) {
-      server.enqueue(new MockResponse().setBody(data));
+      final MockResponse response = new MockResponse.Builder().body(data).build();
+      IntStream.rangeClosed(1, 3).forEach(i -> server.enqueue(response));
       server.start();
       URI uri = URI.create(String.format("http://%s:%d", server.getHostName(),
           server.getPort()));
       FileSystem fs = FileSystem.get(uri, conf);
-      try (InputStream is = fs.open(
-          new Path(new URL(uri.toURL(), "/foo").toURI()),
-          4096)) {
-        byte[] buf = new byte[data.length()];
-        IOUtils.readFully(is, buf, 0, buf.length);
-        assertEquals(data, new String(buf, StandardCharsets.UTF_8));
-      }
+      assertSameData(fs, new Path(new URL(uri.toURL(), "/foo").toURI()), data);
+      assertSameData(fs, new Path("/foo"), data);
+      assertSameData(fs, new Path("foo"), data);
       RecordedRequest req = server.takeRequest();
-      assertEquals("/foo", req.getPath());
+      assertEquals("/foo", req.getUrl().encodedPath());
+    }
+  }
+
+  @Test
+  public void testHttpFileStatus() throws IOException, URISyntaxException, InterruptedException {
+    URI uri = new URI("http://www.example.com");
+    FileSystem fs = FileSystem.get(uri, conf);
+    URI expectedUri = uri.resolve("/foo");
+    assertEquals(fs.getFileStatus(new Path(new Path(uri), "/foo")).getPath().toUri(), expectedUri);
+    assertEquals(fs.getFileStatus(new Path("/foo")).getPath().toUri(), expectedUri);
+    assertEquals(fs.getFileStatus(new Path("foo")).getPath().toUri(), expectedUri);
+  }
+
+  private void assertSameData(FileSystem fs, Path path, String data) throws IOException {
+    try (InputStream is = fs.open(
+            path,
+            4096)) {
+      byte[] buf = new byte[data.length()];
+      IOUtils.readFully(is, buf, 0, buf.length);
+      assertEquals(data, new String(buf, StandardCharsets.UTF_8));
     }
   }
 }

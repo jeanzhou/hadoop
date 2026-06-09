@@ -25,6 +25,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -32,8 +33,9 @@ import java.util.Map.Entry;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hdfs.server.aliasmap.InMemoryAliasMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
@@ -52,11 +54,11 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.Time;
 import org.apache.http.client.utils.URIBuilder;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.eclipse.jetty.io.EofException;
 
 import static org.apache.hadoop.hdfs.server.common.Util.IO_FILE_BUFFER_SIZE;
@@ -95,7 +97,8 @@ public class TransferFsImage {
 
   @VisibleForTesting
   static int timeout = 0;
-  private static final Log LOG = LogFactory.getLog(TransferFsImage.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TransferFsImage.class);
   
   public static void downloadMostRecentImageToDirectory(URL infoServer,
       File dir) throws IOException {
@@ -191,7 +194,24 @@ public class TransferFsImage {
       }
     }
   }
- 
+
+  /**
+   * Download the InMemoryAliasMap from the remote NN.
+   * @param fsName http address of remote NN.
+   * @param aliasMap location of the alias map.
+   * @param isBootstrapStandby flag to indicate if for bootstrap of standby.
+   * @throws IOException
+   */
+  public static void downloadAliasMap(URL fsName, File aliasMap,
+        boolean isBootstrapStandby) throws IOException {
+    String paramString = ImageServlet.getParamStringForAliasMap(
+        isBootstrapStandby);
+    getFileClient(fsName, paramString, Arrays.asList(aliasMap), null, false);
+    LOG.info("Downloaded file " + aliasMap.getName() + " size " +
+        aliasMap.length() + " bytes.");
+    InMemoryAliasMap.completeBootstrapTransfer(aliasMap);
+  }
+
   /**
    * Requests that the NameNode download an image from this node.
    *
@@ -274,7 +294,7 @@ public class TransferFsImage {
       connection.setDoOutput(true);
 
       
-      int chunkSize = conf.getInt(
+      int chunkSize = (int) conf.getLongBytes(
           DFSConfigKeys.DFS_IMAGE_TRANSFER_CHUNKSIZE_KEY,
           DFSConfigKeys.DFS_IMAGE_TRANSFER_CHUNKSIZE_DEFAULT);
       if (imageFile.length() > chunkSize) {
@@ -291,7 +311,7 @@ public class TransferFsImage {
       ImageServlet.setVerificationHeadersForPut(connection, imageFile);
 
       // Write the file to output stream.
-      writeFileToPutRequest(conf, connection, imageFile, canceler);
+      writeFileToPutRequest(conf, connection, imageFile, canceler, chunkSize);
 
       int responseCode = connection.getResponseCode();
       if (responseCode != HttpURLConnection.HTTP_OK) {
@@ -310,7 +330,8 @@ public class TransferFsImage {
   }
 
   private static void writeFileToPutRequest(Configuration conf,
-      HttpURLConnection connection, File imageFile, Canceler canceler)
+      HttpURLConnection connection, File imageFile, Canceler canceler,
+      int bufferSize)
       throws IOException {
     connection.setRequestProperty(Util.CONTENT_TYPE, "application/octet-stream");
     connection.setRequestProperty(Util.CONTENT_TRANSFER_ENCODING, "binary");
@@ -318,7 +339,7 @@ public class TransferFsImage {
     FileInputStream input = new FileInputStream(imageFile);
     try {
       copyFileToStream(output, imageFile, input,
-          ImageServlet.getThrottler(conf), canceler);
+          ImageServlet.getThrottler(conf), canceler, bufferSize);
     } finally {
       IOUtils.closeStream(input);
       IOUtils.closeStream(output);
@@ -332,13 +353,14 @@ public class TransferFsImage {
   public static void copyFileToStream(OutputStream out, File localfile,
       FileInputStream infile, DataTransferThrottler throttler)
     throws IOException {
-    copyFileToStream(out, localfile, infile, throttler, null);
+    copyFileToStream(out, localfile, infile, throttler, null, -1);
   }
 
   private static void copyFileToStream(OutputStream out, File localfile,
       FileInputStream infile, DataTransferThrottler throttler,
-      Canceler canceler) throws IOException {
-    byte buf[] = new byte[IO_FILE_BUFFER_SIZE];
+      Canceler canceler, int bufferSize) throws IOException {
+    int bufSize = bufferSize > 0 ? bufferSize : IO_FILE_BUFFER_SIZE;
+    byte[] buf = new byte[bufSize];
     long total = 0;
     int num = 1;
     IOException ioe = null;
@@ -349,13 +371,13 @@ public class TransferFsImage {
           .aboutToSendFile(localfile);
 
       if (CheckpointFaultInjector.getInstance().
-            shouldSendShortFile(localfile)) {
-          // Test sending image shorter than localfile
-          long len = localfile.length();
-          buf = new byte[(int)Math.min(len/2, IO_FILE_BUFFER_SIZE)];
-          // This will read at most half of the image
-          // and the rest of the image will be sent over the wire
-          infile.read(buf);
+          shouldSendShortFile(localfile)) {
+        // Test sending image shorter than localfile
+        long len = localfile.length();
+        buf = new byte[(int) Math.min(len / 2, bufSize)];
+        // This will read at most half of the image
+        // and the rest of the image will be sent over the wire
+        infile.read(buf);
       }
       while (num > 0) {
         if (canceler != null && canceler.isCancelled()) {

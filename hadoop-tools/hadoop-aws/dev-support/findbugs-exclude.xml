@@ -28,19 +28,10 @@
     <Method name="s3Exists" />
     <Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE" />
   </Match>
-
-  <!--
-    This extends the serializable S3Object, so findbug checks
-    serializability. It is never serialized however, so its
-    warnings are false positives.
-  -->
+  <!-- we are using completable futures, so ignore the Future which submit() returns -->
   <Match>
-    <Class name="org.apache.hadoop.fs.s3a.InconsistentS3Object" />
-    <Bug pattern="SE_TRANSIENT_FIELD_NOT_RESTORED" />
-  </Match>
-  <Match>
-    <Class name="org.apache.hadoop.fs.s3a.InconsistentS3Object" />
-    <Bug pattern="SE_NO_SERIALVERSIONID" />
+    <Class name="org.apache.hadoop.fs.s3a.impl.InputStreamCallbacksImpl" />
+    <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE" />
   </Match>
 
   <!--
@@ -63,5 +54,45 @@
     <Method name="reopen"/>
     <Bug pattern="RV_RETURN_VALUE_IGNORED_NO_SIDE_EFFECT"/>
   </Match>
+  <Match>
+    <Class name="org.apache.hadoop.fs.s3a.S3AFileSystem"/>
+    <Method name="openFileWithOptions"/>
+    <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/>
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.fs.s3a.S3AFileSystem"/>
+    <Field name="futurePool"/>
+    <Bug pattern="IS2_INCONSISTENT_SYNC"/>
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.fs.s3a.s3guard.S3GuardTool$BucketInfo"/>
+    <Method name="run"/>
+    <Bug pattern="SF_SWITCH_FALLTHROUGH"/>
+  </Match>
 
+  <!--
+  Some of the S3A Instrumentation classes increment volatile references from
+  within synchronized contexts; they use volatile to keep the cost
+  of these updates and reading them down.
+   -->
+  <Match>
+    <Class name="org.apache.hadoop.fs.s3a.S3AInstrumentation$InputStreamStatisticsImpl"/>
+    <Bug pattern="VO_VOLATILE_INCREMENT"/>
+  </Match>
+
+  <!-- Ignore return value from this method call -->
+  <Match>
+    <Class name="org.apache.hadoop.fs.s3a.impl.StoreContext"/>
+    <Method name="submit"/>
+    <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/>
+  </Match>
+  <!-- Despite adding `final` as suggested, spotbugs kept complaining. -->
+  <Match>
+    <Class name="org.apache.hadoop.fs.s3a.commit.files.PendingSet"/>
+    <Bug pattern="MC_OVERRIDABLE_METHOD_CALL_IN_READ_OBJECT"/>
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.fs.s3a.commit.files.SinglePendingCommit"/>
+    <Bug pattern="MC_OVERRIDABLE_METHOD_CALL_IN_READ_OBJECT"/>
+  </Match>
 </FindBugsFilter>

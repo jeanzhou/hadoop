@@ -18,24 +18,24 @@
 
 package org.apache.hadoop.tools;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IOUtils;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * A CopyFilter which compares Java Regex Patterns to each Path to determine
@@ -43,13 +43,14 @@ import com.google.common.annotations.VisibleForTesting;
  */
 public class RegexCopyFilter extends CopyFilter {
 
-  private static final Log LOG = LogFactory.getLog(RegexCopyFilter.class);
+  private static final Logger LOG = LoggerFactory.getLogger(RegexCopyFilter.class);
   private File filtersFile;
   private List<Pattern> filters;
 
   /**
    * Constructor, sets up a File object to read filter patterns from and
    * the List to store the patterns.
+   * @param filtersFilename name of the filtersFile
    */
   protected RegexCopyFilter(String filtersFilename) {
     filtersFile = new File(filtersFilename);
@@ -63,9 +64,9 @@ public class RegexCopyFilter extends CopyFilter {
   public void initialize() {
     BufferedReader reader = null;
     try {
-      InputStream is = new FileInputStream(filtersFile);
+      InputStream is = Files.newInputStream(filtersFile.toPath());
       reader = new BufferedReader(new InputStreamReader(is,
-          Charset.forName("UTF-8")));
+          StandardCharsets.UTF_8));
       String line;
       while ((line = reader.readLine()) != null) {
         Pattern pattern = Pattern.compile(line);
@@ -77,7 +78,7 @@ public class RegexCopyFilter extends CopyFilter {
       LOG.error("An error occurred while attempting to read from " +
           filtersFile);
     } finally {
-      IOUtils.cleanup(LOG, reader);
+      IOUtils.cleanupWithLogger(LOG, reader);
     }
   }
 

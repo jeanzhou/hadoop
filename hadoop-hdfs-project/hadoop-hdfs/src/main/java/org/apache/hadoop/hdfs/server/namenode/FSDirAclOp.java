@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.base.Preconditions;
-
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclEntryScope;
@@ -53,6 +51,8 @@ class FSDirAclOp {
           existingAcl, aclSpec);
       AclStorage.updateINodeAcl(inode, newAcl, snapshotId);
       fsd.getEditLog().logSetAcl(src, newAcl);
+    } catch (AclException e){
+      throw new AclException(e.getMessage() + " Path: " + src, e);
     } finally {
       fsd.writeUnlock();
     }
@@ -77,6 +77,8 @@ class FSDirAclOp {
         existingAcl, aclSpec);
       AclStorage.updateINodeAcl(inode, newAcl, snapshotId);
       fsd.getEditLog().logSetAcl(src, newAcl);
+    } catch (AclException e){
+      throw new AclException(e.getMessage() + " Path: " + src, e);
     } finally {
       fsd.writeUnlock();
     }
@@ -100,6 +102,8 @@ class FSDirAclOp {
         existingAcl);
       AclStorage.updateINodeAcl(inode, newAcl, snapshotId);
       fsd.getEditLog().logSetAcl(src, newAcl);
+    } catch (AclException e){
+      throw new AclException(e.getMessage() + " Path: " + src, e);
     } finally {
       fsd.writeUnlock();
     }
@@ -117,6 +121,8 @@ class FSDirAclOp {
       src = iip.getPath();
       fsd.checkOwner(pc, iip);
       unprotectedRemoveAcl(fsd, iip);
+    } catch (AclException e){
+      throw new AclException(e.getMessage() + " Path: " + src, e);
     } finally {
       fsd.writeUnlock();
     }
@@ -136,6 +142,8 @@ class FSDirAclOp {
       fsd.checkOwner(pc, iip);
       List<AclEntry> newAcl = unprotectedSetAcl(fsd, iip, aclSpec, false);
       fsd.getEditLog().logSetAcl(iip.getPath(), newAcl);
+    } catch (AclException e){
+      throw new AclException(e.getMessage() + " Path: " + src, e);
     } finally {
       fsd.writeUnlock();
     }
@@ -153,15 +161,16 @@ class FSDirAclOp {
       if (iip.isDotSnapshotDir() && fsd.getINode4DotSnapshot(iip) != null) {
         return new AclStatus.Builder().owner("").group("").build();
       }
-      INode inode = FSDirectory.resolveLastINode(iip);
-      int snapshotId = iip.getPathSnapshotId();
-      List<AclEntry> acl = AclStorage.readINodeAcl(fsd.getAttributes(iip));
-      FsPermission fsPermission = inode.getFsPermission(snapshotId);
+      INodeAttributes inodeAttrs = fsd.getAttributes(iip);
+      List<AclEntry> acl = AclStorage.readINodeAcl(inodeAttrs);
+      FsPermission fsPermission = inodeAttrs.getFsPermission();
       return new AclStatus.Builder()
-          .owner(inode.getUserName()).group(inode.getGroupName())
+          .owner(inodeAttrs.getUserName()).group(inodeAttrs.getGroupName())
           .stickyBit(fsPermission.getStickyBit())
           .setPermission(fsPermission)
           .addEntries(acl).build();
+    } catch (AclException e){
+      throw new AclException(e.getMessage() + " Path: " + src, e);
     } finally {
       fsd.readUnlock();
     }
@@ -217,10 +226,12 @@ class FSDirAclOp {
       int groupEntryIndex = Collections.binarySearch(
           featureEntries, groupEntryKey,
           AclTransformation.ACL_ENTRY_COMPARATOR);
-      Preconditions.checkPositionIndex(groupEntryIndex, featureEntries.size(),
-          "Invalid group entry index after binary-searching inode: " +
-              inode.getFullPathName() + "(" + inode.getId() + ") "
-              + "with featureEntries:" + featureEntries);
+      if (groupEntryIndex < 0 || groupEntryIndex > featureEntries.size()) {
+        throw new IndexOutOfBoundsException(
+            "Invalid group entry index after binary-searching inode: "
+                + inode.getFullPathName() + "(" + inode.getId() + ") "
+                + "with featureEntries:" + featureEntries);
+      }
       FsAction groupPerm = featureEntries.get(groupEntryIndex).getPermission();
       FsPermission newPerm = new FsPermission(perm.getUserAction(), groupPerm,
           perm.getOtherAction(), perm.getStickyBit());

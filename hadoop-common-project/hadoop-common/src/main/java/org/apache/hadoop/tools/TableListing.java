@@ -20,8 +20,7 @@ package org.apache.hadoop.tools;
 import java.util.ArrayList;
 import java.util.LinkedList;
 
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.lang.WordUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 
 /**
@@ -103,7 +102,8 @@ public class TableListing {
       // Line-wrap if it's too long
       String[] lines = new String[] {raw};
       if (wrap) {
-        lines = WordUtils.wrap(lines[0], wrapWidth, "\n", true).split("\n");
+        lines = org.apache.hadoop.util.StringUtils.wrap(lines[0], wrapWidth,
+            "\n", true).split("\n");
       }
       for (int i=0; i<lines.length; i++) {
         if (justification == Justification.LEFT) {
@@ -155,7 +155,9 @@ public class TableListing {
     }
 
     /**
-     * Whether to hide column headers in table output
+     * Whether to hide column headers in table output.
+     *
+     * @return Builder.
      */
     public Builder hideHeaders() {
       this.showHeader = false;
@@ -164,6 +166,8 @@ public class TableListing {
 
     /**
      * Whether to show column headers in table output. This is the default.
+     *
+     * @return Builder.
      */
     public Builder showHeaders() {
       this.showHeader = true;
@@ -173,6 +177,9 @@ public class TableListing {
     /**
      * Set the maximum width of a row in the TableListing. Must have one or
      * more wrappable fields for this to take effect.
+     *
+     * @param width width.
+     * @return Builder.
      */
     public Builder wrapWidth(int width) {
       this.wrapWidth = width;
@@ -181,6 +188,8 @@ public class TableListing {
 
     /**
      * Create a new TableListing.
+     *
+     * @return TableListing.
      */
     public TableListing build() {
       return new TableListing(columns.toArray(new Column[0]), showHeader,
@@ -234,7 +243,7 @@ public class TableListing {
         Column column = columns[i];
         if (column.wrap) {
           int maxWidth = column.getMaxWidth();
-          if (maxWidth > 4) {
+          if (maxWidth > 10) {
             column.setWrapWidth(maxWidth-1);
             modified = true;
             width -= 1;

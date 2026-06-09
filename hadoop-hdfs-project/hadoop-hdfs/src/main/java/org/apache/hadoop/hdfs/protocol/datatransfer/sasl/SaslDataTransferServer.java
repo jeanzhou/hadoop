@@ -17,18 +17,23 @@
  */
 package org.apache.hadoop.hdfs.protocol.datatransfer.sasl;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_SASL_CUSTOMIZEDCALLBACKHANDLER_CLASS_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATA_TRANSFER_PROTECTION_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_CIPHER_SUITES_KEY;
 import static org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSaslUtil.*;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.CallbackHandler;
@@ -37,6 +42,7 @@ import javax.security.auth.callback.PasswordCallback;
 import javax.security.auth.callback.UnsupportedCallbackException;
 import javax.security.sasl.AuthorizeCallback;
 import javax.security.sasl.RealmCallback;
+import javax.security.sasl.Sasl;
 import javax.security.sasl.SaslException;
 
 import org.apache.commons.codec.binary.Base64;
@@ -50,15 +56,17 @@ import org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyExceptio
 import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.DataTransferEncryptorMessageProto.DataTransferEncryptorStatus;
 import org.apache.hadoop.hdfs.security.token.block.BlockPoolTokenSecretManager;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
+import org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException;
 import org.apache.hadoop.hdfs.server.datanode.DNConf;
+import org.apache.hadoop.security.CustomizedCallbackHandler;
 import org.apache.hadoop.security.SaslPropertiesResolver;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.SecretManager;
+import org.apache.hadoop.util.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Charsets;
-import com.google.common.collect.Lists;
 
 /**
  * Negotiates SASL for DataTransferProtocol on behalf of a server.  There are
@@ -77,6 +85,10 @@ public class SaslDataTransferServer {
 
   private final BlockPoolTokenSecretManager blockPoolTokenSecretManager;
   private final DNConf dnConf;
+
+  // Store the most recent successfully negotiated QOP,
+  // for testing purpose only
+  private String negotiatedQOP;
 
   /**
    * Creates a new SaslDataTransferServer.
@@ -170,7 +182,7 @@ public class SaslDataTransferServer {
         dnConf.getEncryptionAlgorithm());
     }
 
-    CallbackHandler callbackHandler = new SaslServerCallbackHandler(
+    final CallbackHandler callbackHandler = new SaslServerCallbackHandler(dnConf.getConf(),
       new PasswordFunction() {
         @Override
         public char[] apply(String userName) throws IOException {
@@ -187,7 +199,7 @@ public class SaslDataTransferServer {
    * logic.  It's similar to a Guava Function, but we need to let it throw
    * exceptions.
    */
-  private interface PasswordFunction {
+  interface PasswordFunction {
 
     /**
      * Returns the SASL password for the given user name.
@@ -202,18 +214,20 @@ public class SaslDataTransferServer {
   /**
    * Sets user name and password when asked by the server-side SASL object.
    */
-  private static final class SaslServerCallbackHandler
+  static final class SaslServerCallbackHandler
       implements CallbackHandler {
-
     private final PasswordFunction passwordFunction;
+    private final CustomizedCallbackHandler customizedCallbackHandler;
 
     /**
      * Creates a new SaslServerCallbackHandler.
      *
      * @param passwordFunction for determing the user's password
      */
-    public SaslServerCallbackHandler(PasswordFunction passwordFunction) {
+    SaslServerCallbackHandler(Configuration conf, PasswordFunction passwordFunction) {
       this.passwordFunction = passwordFunction;
+      this.customizedCallbackHandler = CustomizedCallbackHandler.get(
+          HADOOP_SECURITY_SASL_CUSTOMIZEDCALLBACKHANDLER_CLASS_KEY, conf);
     }
 
     @Override
@@ -222,6 +236,7 @@ public class SaslDataTransferServer {
       NameCallback nc = null;
       PasswordCallback pc = null;
       AuthorizeCallback ac = null;
+      List<Callback> unknownCallbacks = null;
       for (Callback callback : callbacks) {
         if (callback instanceof AuthorizeCallback) {
           ac = (AuthorizeCallback) callback;
@@ -232,8 +247,10 @@ public class SaslDataTransferServer {
         } else if (callback instanceof RealmCallback) {
           continue; // realm is ignored
         } else {
-          throw new UnsupportedCallbackException(callback,
-              "Unrecognized SASL DIGEST-MD5 Callback: " + callback);
+          if (unknownCallbacks == null) {
+            unknownCallbacks = new ArrayList<>();
+          }
+          unknownCallbacks.add(callback);
         }
       }
 
@@ -244,6 +261,12 @@ public class SaslDataTransferServer {
       if (ac != null) {
         ac.setAuthorized(true);
         ac.setAuthorizedID(ac.getAuthorizationID());
+      }
+
+      if (unknownCallbacks != null) {
+        final String name = nc != null ? nc.getDefaultName() : null;
+        final char[] password = name != null ? passwordFunction.apply(name) : null;
+        customizedCallbackHandler.handleCallbacks(unknownCallbacks, name, password);
       }
     }
   }
@@ -290,7 +313,7 @@ public class SaslDataTransferServer {
     Map<String, String> saslProps = saslPropsResolver.getServerProperties(
       getPeerAddress(peer));
 
-    CallbackHandler callbackHandler = new SaslServerCallbackHandler(
+    final CallbackHandler callbackHandler = new SaslServerCallbackHandler(dnConf.getConf(),
       new PasswordFunction() {
         @Override
         public char[] apply(String userName) throws IOException {
@@ -318,7 +341,7 @@ public class SaslDataTransferServer {
     byte[] tokenPassword = blockPoolTokenSecretManager.retrievePassword(
       identifier);
     return (new String(Base64.encodeBase64(tokenPassword, false),
-      Charsets.UTF_8)).toCharArray();
+      StandardCharsets.UTF_8)).toCharArray();
   }
 
   /**
@@ -335,6 +358,11 @@ public class SaslDataTransferServer {
     identifier.readFields(new DataInputStream(new ByteArrayInputStream(
       Base64.decodeBase64(str))));
     return identifier;
+  }
+
+  @VisibleForTesting
+  public String getNegotiatedQOP() {
+    return negotiatedQOP;
   }
 
   /**
@@ -355,9 +383,6 @@ public class SaslDataTransferServer {
     DataInputStream in = new DataInputStream(underlyingIn);
     DataOutputStream out = new DataOutputStream(underlyingOut);
 
-    SaslParticipant sasl = SaslParticipant.createServerSaslParticipant(saslProps,
-      callbackHandler);
-
     int magicNumber = in.readInt();
     if (magicNumber != SASL_TRANSFER_MAGIC_NUMBER) {
       throw new InvalidMagicNumberException(magicNumber, 
@@ -365,7 +390,21 @@ public class SaslDataTransferServer {
     }
     try {
       // step 1
-      byte[] remoteResponse = readSaslMessage(in);
+      SaslMessageWithHandshake message = readSaslMessageWithHandshakeSecret(in);
+      byte[] secret = message.getSecret();
+      String bpid = message.getBpid();
+      Map<String, String> dynamicSaslProps = new TreeMap<>(saslProps);
+      if (secret != null || bpid != null) {
+        // sanity check, if one is null, the other must also not be null
+        assert(secret != null && bpid != null);
+        String qop = new String(secret, StandardCharsets.UTF_8);
+        saslProps.put(Sasl.QOP, qop);
+        dynamicSaslProps.put(Sasl.QOP, qop);
+      }
+      SaslParticipant sasl = SaslParticipant.createServerSaslParticipant(
+          dynamicSaslProps, callbackHandler);
+
+      byte[] remoteResponse = message.getPayload();
       byte[] localResponse = sasl.evaluateChallengeOrResponse(remoteResponse);
       sendSaslMessage(out, localResponse);
 
@@ -376,9 +415,10 @@ public class SaslDataTransferServer {
       localResponse = sasl.evaluateChallengeOrResponse(remoteResponse);
 
       // SASL handshake is complete
-      checkSaslComplete(sasl, saslProps);
+      checkSaslComplete(sasl, dynamicSaslProps);
 
       CipherOption cipherOption = null;
+      negotiatedQOP = sasl.getNegotiatedQop();
       if (sasl.isNegotiatedQopPrivacy()) {
         // Negotiate a cipher option
         Configuration conf = dnConf.getConf();
@@ -420,6 +460,14 @@ public class SaslDataTransferServer {
         // error, the client will get a new encryption key from the NN and retry
         // connecting to this DN.
         sendInvalidKeySaslErrorMessage(out, ioe.getCause().getMessage());
+      } else if (ioe instanceof SaslException &&
+          ioe.getCause() != null &&
+          (ioe.getCause() instanceof InvalidBlockTokenException ||
+              ioe.getCause() instanceof SecretManager.InvalidToken)) {
+        // This could be because the client is long-lived and block token is expired
+        // The client will get new block token from the NN, upon receiving this error
+        // and retry connecting to this DN
+        sendInvalidTokenSaslErrorMessage(out, ioe.getCause().getMessage());
       } else {
         sendGenericSaslErrorMessage(out, ioe.getMessage());
       }
@@ -438,5 +486,17 @@ public class SaslDataTransferServer {
       String message) throws IOException {
     sendSaslMessage(out, DataTransferEncryptorStatus.ERROR_UNKNOWN_KEY, null,
         message);
+  }
+
+  /**
+   * Sends a SASL negotiation message indicating an invalid token error.
+   *
+   * @param out     stream to receive message
+   * @param message to send
+   * @throws IOException for any error
+   */
+  private static void sendInvalidTokenSaslErrorMessage(DataOutputStream out,
+      String message) throws IOException {
+    sendSaslMessage(out, DataTransferEncryptorStatus.ERROR, null, message, null, true);
   }
 }

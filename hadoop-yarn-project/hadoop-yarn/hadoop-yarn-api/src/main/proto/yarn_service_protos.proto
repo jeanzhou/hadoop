@@ -18,10 +18,11 @@
 
 /**
  * These .proto interfaces are public and stable.
- * Please see http://wiki.apache.org/hadoop/Compatibility
+ * Please see https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/Compatibility.html
  * for what changes are allowed for a *stable* .proto interface.
  */
 
+syntax = "proto2";
 option java_package = "org.apache.hadoop.yarn.proto";
 option java_outer_classname = "YarnServiceProtos";
 option java_generic_services = true;
@@ -92,6 +93,7 @@ message AllocateRequestProto {
   optional float progress = 5;
   repeated UpdateContainerRequestProto update_requests = 7;
   repeated SchedulingRequestProto scheduling_requests = 10;
+  optional string tracking_url = 11;
 }
 
 message NMTokenProto {
@@ -102,6 +104,11 @@ message NMTokenProto {
 message UpdatedContainerProto {
   required ContainerUpdateTypeProto update_type = 1;
   required ContainerProto container = 2;
+}
+
+message EnhancedHeadroomProto {
+  optional int32 total_pending_count = 1;
+  optional int32 total_active_cores = 2;
 }
 
 message AllocateResponseProto {
@@ -121,6 +128,7 @@ message AllocateResponseProto {
   repeated UpdatedContainerProto updated_containers = 16;
   repeated ContainerProto containers_from_previous_attempts = 17;
   repeated RejectedSchedulingRequestProto rejected_scheduling_requests = 18;
+  optional EnhancedHeadroomProto enhanced_headroom = 19;
 }
 
 enum SchedulerResourceTypes {
@@ -204,6 +212,7 @@ message GetApplicationsRequestProto {
   optional int64 finish_end = 9;
   repeated string applicationTags = 10;
   optional ApplicationsRequestScopeProto scope = 11 [default = ALL];
+  optional string name = 12;
 }
 
 message GetApplicationsResponseProto {
@@ -223,6 +232,7 @@ message GetQueueInfoRequestProto {
   optional bool includeApplications = 2;
   optional bool includeChildQueues = 3;
   optional bool recursive = 4;
+  optional string subClusterId = 5;
 }
 
 message GetQueueInfoResponseProto {
@@ -257,6 +267,29 @@ message GetClusterNodeLabelsRequestProto {
 message GetClusterNodeLabelsResponseProto {
   repeated string deprecatedNodeLabels = 1;
   repeated NodeLabelProto nodeLabels = 2;
+}
+
+message GetClusterNodeAttributesRequestProto {
+}
+
+message GetClusterNodeAttributesResponseProto {
+  repeated NodeAttributeInfoProto nodeAttributes = 1;
+}
+
+message GetAttributesToNodesRequestProto {
+  repeated NodeAttributeKeyProto nodeAttributes = 1;
+}
+
+message GetAttributesToNodesResponseProto {
+  repeated AttributeToNodesProto attributesToNodes = 1;
+}
+
+message GetNodesToAttributesRequestProto {
+  repeated string hostnames = 1;
+}
+
+message GetNodesToAttributesResponseProto {
+  repeated NodeToAttributesProto nodesToAttributes = 1;
 }
 
 message UpdateApplicationPriorityRequestProto {
@@ -518,4 +551,32 @@ message RunSharedCacheCleanerTaskRequestProto {
 
 message RunSharedCacheCleanerTaskResponseProto {
   optional bool accepted = 1;
+}
+
+// Localization
+message GetLocalizationStatusesRequestProto {
+  repeated ContainerIdProto container_id = 1;
+}
+
+message GetLocalizationStatusesResponseProto {
+  repeated ContainerLocalizationStatusesProto cntn_localization_statuses = 1;
+  repeated ContainerExceptionMapProto failed_requests = 2;
+}
+
+enum LocalizationStateProto {
+  L_PENDING = 1;
+  L_COMPLETED = 2;
+  L_FAILED = 3;
+}
+
+
+message LocalizationStatusProto {
+  optional string resource_key = 1;
+  optional LocalizationStateProto localization_state= 2;
+  optional string diagnostics = 3;
+}
+
+message ContainerLocalizationStatusesProto {
+  optional ContainerIdProto container_id = 1;
+  repeated LocalizationStatusProto localization_statuses = 2;
 }

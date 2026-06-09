@@ -21,9 +21,9 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.*;
 
-import org.apache.log4j.Level;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.event.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.*;
 import org.apache.hadoop.fs.permission.*;
@@ -32,10 +32,13 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.StringUtils;
 
-import org.junit.Test;
-import org.junit.BeforeClass;
-import org.junit.AfterClass;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Basic functional tests on a fuse-dfs mount.
@@ -48,9 +51,9 @@ public class TestFuseDFS {
   private static Runtime r;
   private static String mountPoint;
 
-  private static final Log LOG = LogFactory.getLog(TestFuseDFS.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestFuseDFS.class);
   {
-    GenericTestUtils.setLogLevel(LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(LOG, Level.TRACE);
   }
 
   /** Dump the given intput stream to stderr */
@@ -135,7 +138,7 @@ public class TestFuseDFS {
       fi.close(); // NB: leaving f unclosed prevents unmount
     }
     String s = new String(b, 0, len);
-    assertEquals("File content differs", expectedContents, s);
+    assertEquals(expectedContents, s, "File content differs");
   }
 
   private static class RedirectToStdoutThread extends Thread {
@@ -187,6 +190,7 @@ public class TestFuseDFS {
       "-ononempty",              // Don't complain about junk in mount point
       "-f",                      // Don't background the process
       "-ordbuffer=32768",        // Read buffer size in kb
+      "-omax_background=100",    // Set fuse max_background=100 (12 by default)
       "rw"
     };
 
@@ -226,13 +230,14 @@ public class TestFuseDFS {
   private static void teardownMount() throws IOException {
     execWaitRet("fusermount -u " + mountPoint);
     try {
-      assertEquals(0, fuseProcess.waitFor()); // fuse_dfs should exit cleanly
+      assertEquals(0,
+          fuseProcess.waitFor()); // fuse_dfs should exit cleanly
     } catch (InterruptedException e) {
       fail("interrupted while waiting for fuse_dfs process to exit.");
     }
   }
 
-  @BeforeClass
+  @BeforeAll
   public static void startUp() throws IOException {
     Configuration conf = new HdfsConfiguration();
     r = Runtime.getRuntime();
@@ -244,7 +249,7 @@ public class TestFuseDFS {
     fuseProcess = establishMount(fs.getUri());
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() throws IOException {
     // Unmount before taking down the mini cluster
     // so no outstanding operations hang.

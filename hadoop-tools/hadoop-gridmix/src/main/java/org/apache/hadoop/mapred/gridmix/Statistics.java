@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.mapred.gridmix;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.ClusterStatus;
 import org.apache.hadoop.mapred.JobClient;
@@ -28,6 +28,7 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobStatus;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.tools.rumen.JobStory;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
@@ -50,7 +51,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * notified either on every job completion event or some fixed time interval.
  */
 public class Statistics implements Component<Statistics.JobStats> {
-  public static final Log LOG = LogFactory.getLog(Statistics.class);
+  public static final Logger LOG = LoggerFactory.getLogger(Statistics.class);
 
   private final StatCollector statistics = new StatCollector();
   private JobClient cluster;
@@ -216,13 +217,13 @@ public class Statistics implements Component<Statistics.JobStats> {
     statistics.start();
   }
 
-  private class StatCollector extends Thread {
+  private class StatCollector extends SubjectInheritingThread {
 
     StatCollector() {
       super("StatsCollectorThread");
     }
 
-    public void run() {
+    public void work() {
       try {
         startFlag.await();
         if (Thread.currentThread().isInterrupted()) {

@@ -17,9 +17,6 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
@@ -28,10 +25,15 @@ import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.fs.XAttrSetFlag;
 import org.apache.hadoop.hdfs.protocol.ZoneReencryptionStatus;
 import org.apache.hadoop.hdfs.server.namenode.ReencryptionHandler.ReencryptionBatch;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.ipc.RetriableException;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.StopWatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -383,32 +385,34 @@ public final class ReencryptionUpdater implements Runnable {
     final LinkedList<Future> tasks = tracker.getTasks();
     final List<XAttr> xAttrs = Lists.newArrayListWithCapacity(1);
     ListIterator<Future> iter = tasks.listIterator();
-    while (iter.hasNext()) {
-      Future<ReencryptionTask> curr = iter.next();
-      if (curr.isCancelled()) {
-        break;
+    synchronized (handler) {
+      while (iter.hasNext()) {
+        Future<ReencryptionTask> curr = iter.next();
+        if (curr.isCancelled()) {
+          break;
+        }
+        if (!curr.isDone() || !curr.get().processed) {
+          // still has earlier tasks not completed, skip here.
+          break;
+        }
+        ReencryptionTask task = curr.get();
+        LOG.debug("Updating re-encryption checkpoint with completed task."
+            + " last: {} size:{}.", task.lastFile, task.batch.size());
+        assert zoneId == task.zoneId;
+        try {
+          final XAttr xattr = FSDirEncryptionZoneOp
+              .updateReencryptionProgress(dir, zoneNode, status, task.lastFile,
+                  task.numFilesUpdated, task.numFailures);
+          xAttrs.clear();
+          xAttrs.add(xattr);
+        } catch (IOException ie) {
+          LOG.warn("Failed to update re-encrypted progress to xattr" +
+                  " for zone {}", zonePath, ie);
+          ++task.numFailures;
+        }
+        ++tracker.numCheckpointed;
+        iter.remove();
       }
-      if (!curr.isDone() || !curr.get().processed) {
-        // still has earlier tasks not completed, skip here.
-        break;
-      }
-      ReencryptionTask task = curr.get();
-      LOG.debug("Updating re-encryption checkpoint with completed task."
-          + " last: {} size:{}.", task.lastFile, task.batch.size());
-      assert zoneId == task.zoneId;
-      try {
-        final XAttr xattr = FSDirEncryptionZoneOp
-            .updateReencryptionProgress(dir, zoneNode, status, task.lastFile,
-                task.numFilesUpdated, task.numFailures);
-        xAttrs.clear();
-        xAttrs.add(xattr);
-      } catch (IOException ie) {
-        LOG.warn("Failed to update re-encrypted progress to xattr for zone {}",
-            zonePath, ie);
-        ++task.numFailures;
-      }
-      ++tracker.numCheckpointed;
-      iter.remove();
     }
     if (tracker.isCompleted()) {
       LOG.debug("Removed re-encryption tracker for zone {} because it completed"
@@ -431,7 +435,7 @@ public final class ReencryptionUpdater implements Runnable {
 
     boolean shouldRetry;
     do {
-      dir.getFSNamesystem().writeLock();
+      dir.getFSNamesystem().writeLock(RwLockMode.FS);
       try {
         throttleTimerLocked.start();
         processTask(task);
@@ -449,7 +453,7 @@ public final class ReencryptionUpdater implements Runnable {
         task.processed = true;
         shouldRetry = false;
       } finally {
-        dir.getFSNamesystem().writeUnlock("reencryptUpdater");
+        dir.getFSNamesystem().writeUnlock(RwLockMode.FS, "reencryptUpdater");
         throttleTimerLocked.stop();
       }
       // logSync regardless, to prevent edit log buffer overflow triggering
@@ -464,7 +468,7 @@ public final class ReencryptionUpdater implements Runnable {
     final String zonePath;
     dir.writeLock();
     try {
-      handler.checkZoneReady(task.zoneId);
+      handler.getTraverser().checkINodeReady(task.zoneId);
       final INode zoneNode = dir.getInode(task.zoneId);
       if (zoneNode == null) {
         // ez removed.
@@ -497,7 +501,7 @@ public final class ReencryptionUpdater implements Runnable {
 
   private synchronized void checkPauseForTesting() throws InterruptedException {
     assert !dir.hasWriteLock();
-    assert !dir.getFSNamesystem().hasWriteLock();
+    assert !dir.getFSNamesystem().hasWriteLock(RwLockMode.FS);
     if (pauseAfterNthCheckpoint != 0) {
       ZoneSubmissionTracker tracker =
           handler.unprotectedGetTracker(pauseZoneId);

@@ -27,7 +27,12 @@ This document assumes that the reader has a general understanding of general com
 Note: Using the Quorum Journal Manager or Conventional Shared Storage
 ---------------------------------------------------------------------
 
-This guide discusses how to configure and use HDFS HA using the Quorum Journal Manager (QJM) to share edit logs between the Active and Standby NameNodes. For information on how to configure HDFS HA using NFS for shared storage instead of the QJM, please see [this alternative guide.](./HDFSHighAvailabilityWithNFS.html)
+This guide discusses how to configure and use HDFS HA using the Quorum
+Journal Manager (QJM) to share edit logs between the Active and Standby
+NameNodes. For information on how to configure HDFS HA using NFS for
+shared storage instead of the QJM, please see [this alternative
+guide.](./HDFSHighAvailabilityWithNFS.html). For information on how to
+configure HDFS HA with Observer NameNode, please see [this guide](./ObserverNameNode.html)
 
 Background
 ----------
@@ -189,9 +194,18 @@ The order in which you set these configurations is unimportant, but the values y
           <value>qjournal://node1.example.com:8485;node2.example.com:8485;node3.example.com:8485/mycluster</value>
         </property>
 
+    You can also configure journal nodes by setting up dns round-robin record to avoid hardcoded names:
+
+        <property>
+          <name>dfs.namenode.edits.qjournals.resolution-enabled</name>
+          <value>true</value>
+        </property>
+
+    This will require you to configure multiple IPs behind one dns record on the host level, for example round robin DNS.
+
 *   **dfs.client.failover.proxy.provider.[nameservice ID]** - the Java class that HDFS clients use to contact the Active NameNode
 
-    Configure the name of the Java class which will be used by the DFS Client to
+    Configure the name of the Java class which will be used by the HDFS Client to
     determine which NameNode is the current Active, and therefore which NameNode is
     currently serving client requests. The two implementations which currently
     ship with Hadoop are the **ConfiguredFailoverProxyProvider** and the
@@ -225,8 +239,8 @@ The order in which you set these configurations is unimportant, but the values y
 
     The fencing methods used during a failover are configured as a
     carriage-return-separated list, which will be attempted in order until
-    one indicates that fencing has succeeded. There are two methods which ship with
-    Hadoop: *shell* and *sshfence*. For information on implementing your own custom
+    one indicates that fencing has succeeded. There are three methods which ship with
+    Hadoop: *shell*, *sshfence* and *powershell*. For information on implementing your own custom
     fencing method, see the *org.apache.hadoop.ha.NodeFencer* class.
 
     - - -
@@ -317,6 +331,26 @@ The order in which you set these configurations is unimportant, but the values y
 
     - - -
 
+    **powershell** - use PowerShell to remotely connect to a machine and kill
+    the required process
+
+    The *powershell* fencing method uses PowerShell command. It may be
+    configured like so:
+
+            <property>
+              <name>dfs.ha.fencing.methods</name>
+              <value>powershell(NameNode)</value>
+            </property>
+
+    The argument passed to this fencer should be a unique string in the "CommandLine"
+    attribute for the "java.exe" process. For example, the full path for the Namenode:
+    "org.apache.hadoop.hdfs.server.namenode.NameNode".
+    The administrator can also shorten the name to "Namenode" if it's unique.
+
+    **Note:** This only works in Windows.
+
+    - - -
+
 *   **fs.defaultFS** - the default path prefix used by the Hadoop FS client when none is given
 
     Optionally, you may now configure the default path for Hadoop clients to use
@@ -340,6 +374,20 @@ The order in which you set these configurations is unimportant, but the values y
         <property>
           <name>dfs.journalnode.edits.dir</name>
           <value>/path/to/journal/node/local/data</value>
+        </property>
+
+*   **dfs.ha.nn.not-become-active-in-safemode** - if prevent safe mode namenodes to become active or observer
+
+    Whether allow namenode to become active when it is in safemode, when it is
+    set to true, namenode in safemode will report SERVICE_UNHEALTHY to ZKFC if
+    auto failover is on, or will throw exception to fail the transition to
+    active if auto failover is off. If you transition namenode to observer state
+    when it is in safemode, when this configuration is set to true, namenode will throw exception
+    to fail the transition to observer. For example:
+
+        <property>
+          <name>dfs.ha.nn.not-become-active-in-safemode</name>
+          <value>true</value>
         </property>
 
 ### Deployment details
@@ -422,6 +470,52 @@ This guide describes high-level uses of each of these subcommands. For specific 
 
     **Note:** This is not yet implemented, and at present will always return
     success, unless the given NameNode is completely down.
+
+
+### Load Balancer Setup
+
+If you are running a set of NameNodes behind a Load Balancer (e.g. [Azure](https://docs.microsoft.com/en-us/azure/load-balancer/load-balancer-custom-probe-overview) or [AWS](https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/elb-healthchecks.html) ) and would like the Load Balancer to point to the active NN, you can use the /isActive HTTP endpoint as a health probe.
+http://NN_HOSTNAME/isActive will return a 200 status code response if the NN is in Active HA State, 405 otherwise.
+
+
+
+### In-Progress Edit Log Tailing
+
+Under the default settings, the Standby NameNode will only apply edits that are present in an edit
+log segments which has been finalized. If it is desirable to have a Standby NameNode which has more
+up-to-date namespace information, it is possible to enable tailing of in-progress edit segments.
+This setting will attempt to fetch edits from an in-memory cache on the JournalNodes and can reduce
+the lag time before a transaction is applied on the Standby NameNode to the order of milliseconds.
+If an edit cannot be served from the cache, the Standby will still be able to retrieve it, but the
+lag time will be much longer. The relevant configurations are:
+
+*   **dfs.ha.tail-edits.in-progress** - Whether or not to enable tailing on in-progress edits logs.
+    This will also enable the in-memory edit cache on the JournalNodes. Disabled by default.
+
+*   **dfs.journalnode.edit-cache-size.bytes** - The size of the in-memory cache of edits on the
+    JournalNode. Edits take around 200 bytes each in a typical environment, so, for example, the
+    default of 1048576 (1MB) can hold around 5000 transactions. It is recommended to monitor the
+    JournalNode metrics RpcRequestCacheMissAmountNumMisses and RpcRequestCacheMissAmountAvgTxns,
+    which respectively count the number of requests unable to be served by the cache, and the extra
+    number of transactions which would have needed to have been in the cache for the request to
+    succeed. For example, if a request attempted to fetch edits starting at transaction ID 10, but
+    the oldest data in the cache was at transaction ID 20, a value of 10 would be added to the
+    average.
+
+*   **dfs.journalnode.edit-cache-size.fraction** - This fraction refers to the proportion of
+    the maximum memory of the JVM. Used to calculate the size of the edits cache that is
+    kept in the JournalNode's memory. This config is an alternative to the
+    dfs.journalnode.edit-cache-size.bytes. And it is used to serve edits for tailing via
+    the RPC-based mechanism, and is only enabled when dfs.ha.tail-edits.in-progress is true.
+    Transactions range in size but are around 200 bytes on average, so the default of 1MB
+    can store around 5000 transactions. So we can configure a reasonable value based on
+    the maximum memory. The recommended value is less than 0.9. If we set
+    dfs.journalnode.edit-cache-size.bytes, this parameter will not take effect.
+
+This feature is primarily useful in conjunction with the Standby/Observer Read feature. Using this
+feature, read requests can be serviced from non-active NameNodes; thus tailing in-progress edits
+provides these nodes with the ability to serve requests with data which is much more fresh. See the
+Apache JIRA ticket HDFS-12943 for more information on this feature.
 
 Automatic Failover
 ------------------
@@ -631,6 +725,8 @@ When moving between versions of HDFS, sometimes the newer software can simply be
     the `'-upgrade'` flag.
 
 Note that if at any time you want to restart the NameNodes before finalizing or rolling back the upgrade, you should start the NNs as normal, i.e. without any special startup flag.
+
+**To query status of upgrade**, the operator will use the `` `hdfs dfsadmin -upgrade query' `` command while atleast one of the NNs is running. The command will return whether the NN upgrade process is finalized or not, for each NN.
 
 **To finalize an HA upgrade**, the operator will use the `` `hdfs dfsadmin -finalizeUpgrade' `` command while the NNs are running and one of them is active. The active NN at the time this happens will perform the finalization of the shared log, and the NN whose local storage directories contain the previous FS state will delete its local state.
 

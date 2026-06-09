@@ -24,6 +24,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -34,6 +35,9 @@ import java.util.Set;
 import java.util.Stack;
 import java.util.TreeSet;
 import java.util.Map.Entry;
+import java.util.concurrent.CompletableFuture;
+
+import javax.annotation.Nonnull;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -41,6 +45,9 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem.Statistics;
 import org.apache.hadoop.fs.Options.CreateOpts;
+import org.apache.hadoop.fs.impl.FutureDataInputStreamBuilderImpl;
+import org.apache.hadoop.fs.impl.FsLinkResolution;
+import org.apache.hadoop.fs.impl.OpenFileParameters;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
@@ -53,16 +60,22 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.ipc.RpcClientException;
 import org.apache.hadoop.ipc.RpcServerException;
 import org.apache.hadoop.ipc.UnexpectedServerException;
-import org.apache.hadoop.fs.InvalidPathException;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.ShutdownHookManager;
-
-import com.google.common.base.Preconditions;
-import org.apache.htrace.core.Tracer;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_BUFFER_SIZE;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_LENGTH;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY_WHOLE_FILE;
+import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapabilityArgs;
+import static org.apache.hadoop.util.functional.FutureIO.awaitFuture;
 
 /**
  * The FileContext class provides an interface for users of the Hadoop
@@ -167,7 +180,7 @@ import org.slf4j.LoggerFactory;
 
 @InterfaceAudience.Public
 @InterfaceStability.Stable
-public class FileContext {
+public class FileContext implements PathCapabilities {
   
   public static final Logger LOG = LoggerFactory.getLogger(FileContext.class);
   /**
@@ -216,10 +229,12 @@ public class FileContext {
    * The FileContext is defined by.
    *  1) defaultFS (slash)
    *  2) wd
-   *  3) umask (Obtained by FsPermission.getUMask(conf))
+   *  3) umask (explicitly set via setUMask(),
+   *      falling back to FsPermission.getUMask(conf))
    */   
   private final AbstractFileSystem defaultFS; //default FS for this FileContext.
   private Path workingDir;          // Fully qualified
+  private FsPermission umask;
   private final Configuration conf;
   private final UserGroupInformation ugi;
   final boolean resolveSymlinks;
@@ -348,16 +363,11 @@ public class FileContext {
   }
   
   /**
-   * Protected Static Factory methods for getting a FileContexts
-   * that take a AbstractFileSystem as input. To be used for testing.
-   */
-
-  /**
    * Create a FileContext with specified FS as default using the specified
    * config.
    * 
-   * @param defFS
-   * @param aConf
+   * @param defFS default fs.
+   * @param aConf configutration.
    * @return new FileContext with specified FS as default.
    */
   public static FileContext getFileContext(final AbstractFileSystem defFS,
@@ -368,7 +378,7 @@ public class FileContext {
   /**
    * Create a FileContext for specified file system using the default config.
    * 
-   * @param defaultFS
+   * @param defaultFS default fs.
    * @return a FileContext with the specified AbstractFileSystem
    *                 as the default FS.
    */
@@ -401,6 +411,7 @@ public class FileContext {
    * 
    * @throws UnsupportedFileSystemException If the file system from the default
    *           configuration is not supported
+   * @return file context.
    */
   public static FileContext getFileContext()
       throws UnsupportedFileSystemException {
@@ -420,7 +431,7 @@ public class FileContext {
   /**
    * Create a FileContext for specified URI using the default config.
    * 
-   * @param defaultFsUri
+   * @param defaultFsUri defaultFsUri.
    * @return a FileContext with the specified URI as the default FS.
    * 
    * @throws UnsupportedFileSystemException If the file system for
@@ -434,8 +445,8 @@ public class FileContext {
   /**
    * Create a FileContext for specified default URI using the specified config.
    * 
-   * @param defaultFsUri
-   * @param aConf
+   * @param defaultFsUri defaultFsUri.
+   * @param aConf configrution.
    * @return new FileContext for specified uri
    * @throws UnsupportedFileSystemException If the file system with specified is
    *           not supported
@@ -466,14 +477,14 @@ public class FileContext {
    * {@link #getFileContext(URI, Configuration)} instead of this one.
    * 
    * 
-   * @param aConf
+   * @param aConf configration.
    * @return new FileContext
    * @throws UnsupportedFileSystemException If file system in the config
    *           is not supported
    */
   public static FileContext getFileContext(final Configuration aConf)
       throws UnsupportedFileSystemException {
-    final URI defaultFsUri = URI.create(aConf.get(FS_DEFAULT_NAME_KEY,
+    final URI defaultFsUri = URI.create(aConf.getTrimmed(FS_DEFAULT_NAME_KEY,
         FS_DEFAULT_NAME_DEFAULT));
     if (   defaultFsUri.getScheme() != null
         && !defaultFsUri.getScheme().trim().isEmpty()) {
@@ -497,10 +508,9 @@ public class FileContext {
     return getFileContext(FsConstants.LOCAL_FS_URI, aConf);
   }
 
-  /* This method is needed for tests. */
+  @VisibleForTesting
   @InterfaceAudience.Private
-  @InterfaceStability.Unstable /* return type will change to AFS once
-                                  HADOOP-6223 is completed */
+  @InterfaceStability.Unstable
   public AbstractFileSystem getDefaultFileSystem() {
     return defaultFS;
   }
@@ -545,6 +555,7 @@ public class FileContext {
   
   /**
    * Gets the working directory for wd-relative names (such a "foo/bar").
+   * @return the path.
    */
   public Path getWorkingDirectory() {
     return workingDir;
@@ -572,7 +583,7 @@ public class FileContext {
    * @return the umask of this FileContext
    */
   public FsPermission getUMask() {
-    return FsPermission.getUMask(conf);
+    return (umask != null ? umask : FsPermission.getUMask(conf));
   }
   
   /**
@@ -580,9 +591,8 @@ public class FileContext {
    * @param newUmask  the new umask
    */
   public void setUMask(final FsPermission newUmask) {
-    FsPermission.setUMask(conf, newUmask);
+    this.umask = newUmask;
   }
-  
   
   /**
    * Resolve the path following any symlinks or mount points
@@ -592,13 +602,14 @@ public class FileContext {
    * @throws FileNotFoundException  If <code>f</code> does not exist
    * @throws AccessControlException if access denied
    * @throws IOException If an IO Error occurred
-   * 
+   * @throws UnresolvedLinkException If unresolved link occurred.
+   *
    * Exceptions applicable to file systems accessed over RPC:
    * @throws RpcClientException If an exception occurred in the RPC client
    * @throws RpcServerException If an exception occurred in the RPC server
    * @throws UnexpectedServerException If server implementation throws
    *           undeclared exception to RPC server
-   * 
+   *
    * RuntimeExceptions:
    * @throws InvalidPathException If path <code>f</code> is not valid
    */
@@ -612,7 +623,7 @@ public class FileContext {
    * A Fully-qualified path has scheme and authority specified and an absolute
    * path.
    * Use the default file system and working dir in this FileContext to qualify.
-   * @param path
+   * @param path the path.
    * @return qualified path
    */
   public Path makeQualified(final Path path) {
@@ -695,10 +706,74 @@ public class FileContext {
   }
 
   /**
+   * {@link FSDataOutputStreamBuilder} for {@liink FileContext}.
+   */
+  private static final class FCDataOutputStreamBuilder extends
+      FSDataOutputStreamBuilder<
+        FSDataOutputStream, FCDataOutputStreamBuilder> {
+    private final FileContext fc;
+
+    private FCDataOutputStreamBuilder(
+        @Nonnull FileContext fc, @Nonnull Path p) throws IOException {
+      super(fc, p);
+      this.fc = fc;
+      Preconditions.checkNotNull(fc);
+    }
+
+    @Override
+    public FCDataOutputStreamBuilder getThisBuilder() {
+      return this;
+    }
+
+    @Override
+    public FSDataOutputStream build() throws IOException {
+      final EnumSet<CreateFlag> flags = getFlags();
+      List<CreateOpts> createOpts = new ArrayList<>(Arrays.asList(
+          CreateOpts.blockSize(getBlockSize()),
+          CreateOpts.bufferSize(getBufferSize()),
+          CreateOpts.repFac(getReplication()),
+          CreateOpts.perms(getPermission())
+      ));
+      if (getChecksumOpt() != null) {
+        createOpts.add(CreateOpts.checksumParam(getChecksumOpt()));
+      }
+      if (getProgress() != null) {
+        createOpts.add(CreateOpts.progress(getProgress()));
+      }
+      if (isRecursive()) {
+        createOpts.add(CreateOpts.createParent());
+      }
+      return fc.create(getPath(), flags,
+          createOpts.toArray(new CreateOpts[0]));
+    }
+  }
+
+  /**
+   * Create a {@link FSDataOutputStreamBuilder} for creating or overwriting
+   * a file on indicated path.
+   *
+   * @param f the file path to create builder for.
+   * @return {@link FSDataOutputStreamBuilder} to build a
+   *         {@link FSDataOutputStream}.
+   *
+   * Upon {@link FSDataOutputStreamBuilder#build()} being invoked,
+   * builder parameters will be verified by {@link FileContext} and
+   * {@link AbstractFileSystem#create}. And filesystem states will be modified.
+   *
+   * Client should expect {@link FSDataOutputStreamBuilder#build()} throw the
+   * same exceptions as create(Path, EnumSet, CreateOpts...).
+   * @throws IOException If an I/O error occurred.
+   */
+  public FSDataOutputStreamBuilder<FSDataOutputStream, ?> create(final Path f)
+      throws IOException {
+    return new FCDataOutputStreamBuilder(this, f).create();
+  }
+
+  /**
    * Make(create) a directory and all the non-existent parents.
    * 
    * @param dir - the dir to make
-   * @param permission - permissions is set permission&~umask
+   * @param permission - permissions is set permission{@literal &~}umask
    * @param createParent - if true then missing parent dirs are created if false
    *          then parent must exist
    * 
@@ -761,6 +836,8 @@ public class FileContext {
    * 
    * RuntimeExceptions:
    * @throws InvalidPathException If path <code>f</code> is invalid
+   *
+   * @return if delete success true, not false.
    */
   public boolean delete(final Path f, final boolean recursive)
       throws AccessControlException, FileNotFoundException,
@@ -791,6 +868,7 @@ public class FileContext {
    * @throws RpcServerException If an exception occurred in the RPC server
    * @throws UnexpectedServerException If server implementation throws 
    *           undeclared exception to RPC server
+   * @return input stream.
    */
   public FSDataInputStream open(final Path f) throws AccessControlException,
       FileNotFoundException, UnsupportedFileSystemException, IOException {
@@ -821,6 +899,7 @@ public class FileContext {
    * @throws RpcServerException If an exception occurred in the RPC server
    * @throws UnexpectedServerException If server implementation throws 
    *           undeclared exception to RPC server
+   * @return output stream.
    */
   public FSDataInputStream open(final Path f, final int bufferSize)
       throws AccessControlException, FileNotFoundException,
@@ -912,7 +991,6 @@ public class FileContext {
   /**
    * Renames Path src to Path dst
    * <ul>
-   * <li
    * <li>Fails if src is a file and dst is a directory.
    * <li>Fails if src is a directory and dst is a file.
    * <li>Fails if the parent of dst does not exist or is a file.
@@ -931,10 +1009,11 @@ public class FileContext {
    * 
    * @param src path to be renamed
    * @param dst new path after rename
+   * @param options rename options.
    * 
    * @throws AccessControlException If access is denied
    * @throws FileAlreadyExistsException If <code>dst</code> already exists and
-   *           <code>options</options> has {@link Options.Rename#OVERWRITE} 
+   *           <code>options</code> has {@link Options.Rename#OVERWRITE}
    *           option false.
    * @throws FileNotFoundException If <code>src</code> does not exist
    * @throws ParentNotDirectoryException If parent of <code>dst</code> is not a
@@ -982,7 +1061,7 @@ public class FileContext {
   
   /**
    * Set permission of a path.
-   * @param f
+   * @param f the path.
    * @param permission - the new absolute permission (umask is not applied)
    *
    * @throws AccessControlException If access is denied
@@ -1126,7 +1205,7 @@ public class FileContext {
    * Set the verify checksum flag for the  file system denoted by the path.
    * This is only applicable if the 
    * corresponding FileSystem supports checksum. By default doesn't do anything.
-   * @param verifyChecksum
+   * @param verifyChecksum verify check sum.
    * @param f set the verifyChecksum for the Filesystem containing this path
    *
    * @throws AccessControlException If access is denied
@@ -1179,11 +1258,22 @@ public class FileContext {
   }
 
   /**
+   * Synchronize client metadata state.
+   *
+   * @throws IOException If an I/O error occurred.
+   * @throws UnsupportedOperationException If file system for <code>f</code> is
+   *                                       not supported.
+   */
+  public void msync() throws IOException, UnsupportedOperationException {
+    defaultFS.msync();
+  }
+
+  /**
    * Checks if the user can access a path.  The mode specifies which access
    * checks to perform.  If the requested permissions are granted, then the
    * method returns normally.  If access is denied, then the method throws an
    * {@link AccessControlException}.
-   * <p/>
+   * <p>
    * The default implementation of this method calls {@link #getFileStatus(Path)}
    * and checks the returned permissions against the requested permissions.
    * Note that the getFileStatus call will be subject to authorization checks.
@@ -1430,9 +1520,9 @@ public class FileContext {
    * <pre>
    * Given a path referring to a symlink of form:
    * 
-   *   <---X---> 
+   *   {@literal <---}X{@literal --->}
    *   fs://host/A/B/link 
-   *   <-----Y----->
+   *   {@literal <-----}Y{@literal ----->}
    * 
    * In this path X is the scheme and authority that identify the file system,
    * and Y is the path leading up to the final path component "link". If Y is
@@ -1469,7 +1559,7 @@ public class FileContext {
    *
    *
    * @throws AccessControlException If access is denied
-   * @throws FileAlreadyExistsException If file <code>linkcode> already exists
+   * @throws FileAlreadyExistsException If file <code>link</code> already exists
    * @throws FileNotFoundException If <code>target</code> does not exist
    * @throws ParentNotDirectoryException If parent of <code>link</code> is not a
    *           directory.
@@ -1533,9 +1623,12 @@ public class FileContext {
   }
 
   /**
+   * List CorruptFile Blocks.
+   *
+   * @param path the path.
    * @return an iterator over the corrupt files under the given path
    * (may contain duplicates if a file has more than one corrupt block)
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   public RemoteIterator<Path> listCorruptFileBlocks(Path path)
     throws IOException {
@@ -1659,6 +1752,7 @@ public class FileContext {
      * @throws RpcServerException If an exception occurred in the RPC server
      * @throws UnexpectedServerException If server implementation throws 
      *           undeclared exception to RPC server
+     * @return if f exists true, not false.
      */
     public boolean exists(final Path f) throws AccessControlException,
       UnsupportedFileSystemException, IOException {
@@ -1719,6 +1813,12 @@ public class FileContext {
     
     /**
      * See {@link #listStatus(Path[], PathFilter)}
+     *
+     * @param files files.
+     * @throws AccessControlException If access is denied.
+     * @throws FileNotFoundException If <code>files</code> does not exist.
+     * @throws IOException If an I/O error occurred.
+     * @return file status array.
      */
     public FileStatus[] listStatus(Path[] files) throws AccessControlException,
         FileNotFoundException, IOException {
@@ -1877,9 +1977,9 @@ public class FileContext {
         LocatedFileStatus curFile;
 
         /**
-         * Returns <tt>true</tt> if the iterator has more files.
+         * Returns <code>true</code> if the iterator has more files.
          *
-         * @return <tt>true</tt> if the iterator has more files.
+         * @return <code>true</code> if the iterator has more files.
          * @throws AccessControlException if not allowed to access next
          *                                file's status or locations
          * @throws FileNotFoundException if next file does not exist any more
@@ -1971,42 +2071,34 @@ public class FileContext {
      * <dl>
      *  <dd>
      *   <dl>
-     *    <p>
-     *    <dt> <tt> ? </tt>
+     *    <dt> <code> ? </code>
      *    <dd> Matches any single character.
      *
-     *    <p>
-     *    <dt> <tt> * </tt>
+     *    <dt> <code> * </code>
      *    <dd> Matches zero or more characters.
      *
-     *    <p>
-     *    <dt> <tt> [<i>abc</i>] </tt>
+     *    <dt> <code> [<i>abc</i>] </code>
      *    <dd> Matches a single character from character set
-     *     <tt>{<i>a,b,c</i>}</tt>.
+     *     <code>{<i>a,b,c</i>}</code>.
      *
-     *    <p>
-     *    <dt> <tt> [<i>a</i>-<i>b</i>] </tt>
+     *    <dt> <code> [<i>a</i>-<i>b</i>] </code>
      *    <dd> Matches a single character from the character range
-     *     <tt>{<i>a...b</i>}</tt>. Note: character <tt><i>a</i></tt> must be
-     *     lexicographically less than or equal to character <tt><i>b</i></tt>.
+     *     <code>{<i>a...b</i>}</code>. Note: character <code><i>a</i></code> must be
+     *     lexicographically less than or equal to character <code><i>b</i></code>.
      *
-     *    <p>
-     *    <dt> <tt> [^<i>a</i>] </tt>
+     *    <dt> <code> [^<i>a</i>] </code>
      *    <dd> Matches a single char that is not from character set or range
-     *     <tt>{<i>a</i>}</tt>.  Note that the <tt>^</tt> character must occur
+     *     <code>{<i>a</i>}</code>.  Note that the <code>^</code> character must occur
      *     immediately to the right of the opening bracket.
      *
-     *    <p>
-     *    <dt> <tt> \<i>c</i> </tt>
+     *    <dt> <code> \<i>c</i> </code>
      *    <dd> Removes (escapes) any special meaning of character <i>c</i>.
      *
-     *    <p>
-     *    <dt> <tt> {ab,cd} </tt>
-     *    <dd> Matches a string from the string set <tt>{<i>ab, cd</i>} </tt>
-     *    
-     *    <p>
-     *    <dt> <tt> {ab,c{de,fh}} </tt>
-     *    <dd> Matches a string from string set <tt>{<i>ab, cde, cfh</i>}</tt>
+     *    <dt> <code> {ab,cd} </code>
+     *    <dd> Matches a string from the string set <code>{<i>ab, cd</i>} </code>
+     *
+     *    <dt> <code> {ab,c{de,fh}} </code>
+     *    <dd> Matches a string from string set <code>{<i>ab, cde, cfh</i>}</code>
      *
      *   </dl>
      *  </dd>
@@ -2065,6 +2157,18 @@ public class FileContext {
     /**
      * Copy file from src to dest. See
      * {@link #copy(Path, Path, boolean, boolean)}
+     *
+     * @param src src.
+     * @param dst dst.
+     * @throws AccessControlException If access is denied.
+     * @throws FileAlreadyExistsException If file <code>src</code> already exists.
+     * @throws FileNotFoundException if next file does not exist any more.
+     * @throws ParentNotDirectoryException If parent of <code>src</code> is not a
+     * directory.
+     * @throws UnsupportedFileSystemException If file system for
+     * <code>src/dst</code> is not supported.
+     * @throws IOException If an I/O error occurred.
+     * @return if success copy true, not false.
      */
     public boolean copy(final Path src, final Path dst)
         throws AccessControlException, FileAlreadyExistsException,
@@ -2075,8 +2179,8 @@ public class FileContext {
     
     /**
      * Copy from src to dst, optionally deleting src and overwriting dst.
-     * @param src
-     * @param dst
+     * @param src src.
+     * @param dst dst.
      * @param deleteSource - delete src if true
      * @param overwrite  overwrite dst if true; throw IOException if dst exists
      *         and overwrite is false.
@@ -2124,7 +2228,12 @@ public class FileContext {
         EnumSet<CreateFlag> createFlag = overwrite ? EnumSet.of(
             CreateFlag.CREATE, CreateFlag.OVERWRITE) :
             EnumSet.of(CreateFlag.CREATE);
-        InputStream in = open(qSrc);
+        InputStream in = awaitFuture(openFile(qSrc)
+            .opt(FS_OPTION_OPENFILE_READ_POLICY,
+                FS_OPTION_OPENFILE_READ_POLICY_WHOLE_FILE)
+            .optLong(FS_OPTION_OPENFILE_LENGTH,
+                fs.getLen())   // file length hint for object stores
+            .build());
         try (OutputStream out = create(qDst, createFlag)) {
           IOUtils.copyBytes(in, out, conf, true);
         } finally {
@@ -2192,7 +2301,7 @@ public class FileContext {
    * Are qualSrc and qualDst of the same file system?
    * @param qualPath1 - fully qualified path
    * @param qualPath2 - fully qualified path
-   * @return
+   * @return is same fs true,not false.
    */
   private static boolean isSameFS(Path qualPath1, Path qualPath2) {
     URI srcUri = qualPath1.toUri();
@@ -2215,6 +2324,13 @@ public class FileContext {
   /**
    * Resolves all symbolic links in the specified path.
    * Returns the new path object.
+   *
+   * @param f the path.
+   * @throws FileNotFoundException If <code>f</code> does not exist.
+   * @throws UnresolvedLinkException If unresolved link occurred.
+   * @throws AccessControlException If access is denied.
+   * @throws IOException If an I/O error occurred.
+   * @return resolve path.
    */
   protected Path resolve(final Path f) throws FileNotFoundException,
       UnresolvedLinkException, AccessControlException, IOException {
@@ -2232,6 +2348,7 @@ public class FileContext {
    * to, but not including the final path component.
    * @param f path to resolve
    * @return the new path object.
+   * @throws IOException If an I/O error occurred.
    */
   protected Path resolveIntermediate(final Path f) throws IOException {
     return new FSLinkResolver<FileStatus>() {
@@ -2250,13 +2367,12 @@ public class FileContext {
    * @param f
    *          Path which needs to be resolved
    * @return List of AbstractFileSystems accessed in the path
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   Set<AbstractFileSystem> resolveAbstractFileSystems(final Path f)
       throws IOException {
     final Path absF = fixRelativePart(f);
-    final HashSet<AbstractFileSystem> result 
-      = new HashSet<AbstractFileSystem>();
+    final HashSet<AbstractFileSystem> result = new HashSet<>();
     new FSLinkResolver<Void>() {
       @Override
       public Void next(final AbstractFileSystem fs, final Path p)
@@ -2311,7 +2427,7 @@ public class FileContext {
    * @param p Path for which delegations tokens are requested.
    * @param renewer the account name that is allowed to renew the token.
    * @return List of delegation tokens.
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   @InterfaceAudience.LimitedPrivate( { "HDFS", "MapReduce" })
   public List<Token<?>> getDelegationTokens(
@@ -2333,7 +2449,8 @@ public class FileContext {
    * changes.  (Modifications are merged into the current ACL.)
    *
    * @param path Path to modify
-   * @param aclSpec List<AclEntry> describing modifications
+   * @param aclSpec List{@literal <}AclEntry{@literal >} describing
+   * modifications
    * @throws IOException if an ACL could not be modified
    */
   public void modifyAclEntries(final Path path, final List<AclEntry> aclSpec)
@@ -2354,7 +2471,8 @@ public class FileContext {
    * retained.
    *
    * @param path Path to modify
-   * @param aclSpec List<AclEntry> describing entries to remove
+   * @param aclSpec List{@literal <}AclEntry{@literal >} describing entries
+   * to remove
    * @throws IOException if an ACL could not be modified
    */
   public void removeAclEntries(final Path path, final List<AclEntry> aclSpec)
@@ -2414,8 +2532,9 @@ public class FileContext {
    * entries.
    *
    * @param path Path to modify
-   * @param aclSpec List<AclEntry> describing modifications, must include entries
-   *   for user, group, and others for compatibility with permission bits.
+   * @param aclSpec List{@literal <}AclEntry{@literal >} describing
+   * modifications, must include entries for user, group, and others for
+   * compatibility with permission bits.
    * @throws IOException if an ACL could not be modified
    */
   public void setAcl(Path path, final List<AclEntry> aclSpec)
@@ -2435,7 +2554,8 @@ public class FileContext {
    * Gets the ACLs of files and directories.
    *
    * @param path Path to get
-   * @return RemoteIterator<AclStatus> which returns each AclStatus
+   * @return RemoteIterator{@literal <}AclStatus{@literal >} which returns
+   *         each AclStatus
    * @throws IOException if an ACL could not be read
    */
   public AclStatus getAclStatus(Path path) throws IOException {
@@ -2453,13 +2573,13 @@ public class FileContext {
    * Set an xattr of a file or directory.
    * The name must be prefixed with the namespace followed by ".". For example,
    * "user.attr".
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to modify
    * @param name xattr name.
    * @param value xattr value.
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   public void setXAttr(Path path, String name, byte[] value)
       throws IOException {
@@ -2471,14 +2591,14 @@ public class FileContext {
    * Set an xattr of a file or directory.
    * The name must be prefixed with the namespace followed by ".". For example,
    * "user.attr".
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to modify
    * @param name xattr name.
    * @param value xattr value.
    * @param flag xattr set flag
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   public void setXAttr(Path path, final String name, final byte[] value,
       final EnumSet<XAttrSetFlag> flag) throws IOException {
@@ -2497,13 +2617,13 @@ public class FileContext {
    * Get an xattr for a file or directory.
    * The name must be prefixed with the namespace followed by ".". For example,
    * "user.attr".
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to get extended attribute
    * @param name xattr name.
    * @return byte[] xattr value.
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   public byte[] getXAttr(Path path, final String name) throws IOException {
     final Path absF = fixRelativePart(path);
@@ -2520,12 +2640,13 @@ public class FileContext {
    * Get all of the xattrs for a file or directory.
    * Only those xattrs for which the logged-in user has permissions to view
    * are returned.
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to get extended attributes
-   * @return Map<String, byte[]> describing the XAttrs of the file or directory
-   * @throws IOException
+   * @return Map{@literal <}String, byte[]{@literal >} describing the XAttrs
+   * of the file or directory
+   * @throws IOException If an I/O error occurred.
    */
   public Map<String, byte[]> getXAttrs(Path path) throws IOException {
     final Path absF = fixRelativePart(path);
@@ -2542,13 +2663,14 @@ public class FileContext {
    * Get all of the xattrs for a file or directory.
    * Only those xattrs for which the logged-in user has permissions to view
    * are returned.
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to get extended attributes
    * @param names XAttr names.
-   * @return Map<String, byte[]> describing the XAttrs of the file or directory
-   * @throws IOException
+   * @return Map{@literal <}String, byte[]{@literal >} describing the XAttrs
+   * of the file or directory
+   * @throws IOException If an I/O error occurred.
    */
   public Map<String, byte[]> getXAttrs(Path path, final List<String> names)
       throws IOException {
@@ -2566,12 +2688,12 @@ public class FileContext {
    * Remove an xattr of a file or directory.
    * The name must be prefixed with the namespace followed by ".". For example,
    * "user.attr".
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to remove extended attribute
    * @param name xattr name
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   public void removeXAttr(Path path, final String name) throws IOException {
     final Path absF = fixRelativePart(path);
@@ -2589,12 +2711,13 @@ public class FileContext {
    * Get all of the xattr names for a file or directory.
    * Only those xattr names which the logged-in user has permissions to view
    * are returned.
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to get extended attributes
-   * @return List<String> of the XAttr names of the file or directory
-   * @throws IOException
+   * @return List{@literal <}String{@literal >} of the XAttr names of the
+   * file or directory
+   * @throws IOException If an I/O error occurred.
    */
   public List<String> listXAttrs(Path path) throws IOException {
     final Path absF = fixRelativePart(path);
@@ -2709,12 +2832,31 @@ public class FileContext {
   }
 
   /**
+   * Set the source path to satisfy storage policy.
+   * @param path The source path referring to either a directory or a file.
+   * @throws IOException If an I/O error occurred.
+   */
+  public void satisfyStoragePolicy(final Path path)
+      throws IOException {
+    final Path absF = fixRelativePart(path);
+    new FSLinkResolver<Void>() {
+      @Override
+      public Void next(final AbstractFileSystem fs, final Path p)
+          throws IOException {
+        fs.satisfyStoragePolicy(path);
+        return null;
+      }
+    }.resolve(this, absF);
+  }
+
+  /**
    * Set the storage policy for a given file or directory.
    *
    * @param path file or directory path.
    * @param policyName the name of the target storage policy. The list
    *                   of supported Storage policies can be retrieved
    *                   via {@link #getAllStoragePolicies}.
+   * @throws IOException If an I/O error occurred.
    */
   public void setStoragePolicy(final Path path, final String policyName)
       throws IOException {
@@ -2732,7 +2874,7 @@ public class FileContext {
   /**
    * Unset the storage policy set for a given file or directory.
    * @param src file or directory path.
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   public void unsetStoragePolicy(final Path src) throws IOException {
     final Path absF = fixRelativePart(src);
@@ -2751,7 +2893,7 @@ public class FileContext {
    *
    * @param path file or directory path.
    * @return storage policy for give file.
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   public BlockStoragePolicySpi getStoragePolicy(Path path) throws IOException {
     final Path absF = fixRelativePart(path);
@@ -2769,7 +2911,7 @@ public class FileContext {
    * Retrieve all the storage policies supported by this file system.
    *
    * @return all storage policies supported by this filesystem.
-   * @throws IOException
+   * @throws IOException If an I/O error occurred.
    */
   public Collection<? extends BlockStoragePolicySpi> getAllStoragePolicies()
       throws IOException {
@@ -2778,5 +2920,117 @@ public class FileContext {
 
   Tracer getTracer() {
     return tracer;
+  }
+
+  /**
+   * Open a file for reading through a builder API.
+   * Ultimately calls {@link #open(Path, int)} unless a subclass
+   * executes the open command differently.
+   *
+   * The semantics of this call are therefore the same as that of
+   * {@link #open(Path, int)} with one special point: it is in
+   * {@code FSDataInputStreamBuilder.build()} in which the open operation
+   * takes place -it is there where all preconditions to the operation
+   * are checked.
+   * @param path file path
+   * @return a FSDataInputStreamBuilder object to build the input stream
+   * @throws IOException if some early checks cause IO failures.
+   * @throws UnsupportedOperationException if support is checked early.
+   */
+  @InterfaceStability.Unstable
+  public FutureDataInputStreamBuilder openFile(Path path)
+      throws IOException, UnsupportedOperationException {
+
+    return new FSDataInputStreamBuilder(path);
+  }
+
+  /**
+   * Builder returned for {@link #openFile(Path)}.
+   */
+  private class FSDataInputStreamBuilder
+      extends FutureDataInputStreamBuilderImpl {
+
+    /**
+     * Path Constructor.
+     * @param path path to open.
+     */
+    protected FSDataInputStreamBuilder(
+        @Nonnull final Path path) throws IOException {
+      super(FileContext.this, path);
+    }
+
+    /**
+     * Perform the open operation.
+     *
+     * @return a future to the input stream.
+     * @throws IOException early failure to open
+     * @throws UnsupportedOperationException if the specific operation
+     * is not supported.
+     * @throws IllegalArgumentException if the parameters are not valid.
+     */
+    @Override
+    public CompletableFuture<FSDataInputStream> build() throws IOException {
+      final Path absF = fixRelativePart(getPath());
+      OpenFileParameters parameters = new OpenFileParameters()
+          .withMandatoryKeys(getMandatoryKeys())
+          .withOptionalKeys(getOptionalKeys())
+          .withOptions(getOptions())
+          .withStatus(getStatus())
+          .withBufferSize(
+              getOptions().getInt(FS_OPTION_OPENFILE_BUFFER_SIZE, getBufferSize()));
+      return new FSLinkResolver<CompletableFuture<FSDataInputStream>>() {
+        @Override
+        public CompletableFuture<FSDataInputStream> next(
+            final AbstractFileSystem fs,
+            final Path p)
+            throws IOException {
+          return fs.openFileWithOptions(p, parameters);
+        }
+      }.resolve(FileContext.this, absF);
+    }
+  }
+
+  /**
+   * Return the path capabilities of the bonded {@code AbstractFileSystem}.
+   * @param path path to query the capability of.
+   * @param capability string to query the stream support for.
+   * @return true iff the capability is supported under that FS.
+   * @throws IOException path resolution or other IO failure
+   * @throws IllegalArgumentException invalid arguments
+   */
+  public boolean hasPathCapability(Path path, String capability)
+      throws IOException {
+    validatePathCapabilityArgs(path, capability);
+    return FsLinkResolution.resolve(this,
+        fixRelativePart(path),
+        (fs, p) -> fs.hasPathCapability(p, capability));
+  }
+
+  /**
+   * Return a set of server default configuration values based on path.
+   * @param path path to fetch server defaults
+   * @return server default configuration values for path
+   * @throws IOException an I/O error occurred
+   */
+  public FsServerDefaults getServerDefaults(final Path path)
+      throws IOException {
+    return FsLinkResolution.resolve(this,
+        fixRelativePart(path),
+        (fs, p) -> fs.getServerDefaults(p));
+  }
+
+  /**
+   * Create a multipart uploader.
+   * @param basePath file path under which all files are uploaded
+   * @return a MultipartUploaderBuilder object to build the uploader
+   * @throws IOException if some early checks cause IO failures.
+   * @throws UnsupportedOperationException if support is checked early.
+   */
+  @InterfaceStability.Unstable
+  public MultipartUploaderBuilder createMultipartUploader(Path basePath)
+      throws IOException {
+    return FsLinkResolution.resolve(this,
+        fixRelativePart(basePath),
+        (fs, p) -> fs.createMultipartUploader(p));
   }
 }

@@ -33,6 +33,9 @@ public class GpuDevice implements Serializable, Comparable {
     this.minorNumber = minorNumber;
   }
 
+  public GpuDevice() {
+  }
+
   public int getIndex() {
     return index;
   }
@@ -43,7 +46,7 @@ public class GpuDevice implements Serializable, Comparable {
 
   @Override
   public boolean equals(Object obj) {
-    if (obj == null || !(obj instanceof GpuDevice)) {
+    if (!(obj instanceof GpuDevice)) {
       return false;
     }
     GpuDevice other = (GpuDevice) obj;
@@ -52,7 +55,7 @@ public class GpuDevice implements Serializable, Comparable {
 
   @Override
   public int compareTo(Object obj) {
-    if (obj == null || (!(obj instanceof  GpuDevice))) {
+    if (!(obj instanceof  GpuDevice)) {
       return -1;
     }
 

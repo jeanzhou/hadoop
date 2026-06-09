@@ -18,8 +18,8 @@
 package org.apache.hadoop.mapred.nativetask;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
-import com.google.common.base.Charsets;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.io.RawComparator;
@@ -32,7 +32,6 @@ import org.apache.hadoop.mapred.nativetask.serde.INativeSerializer;
 import org.apache.hadoop.mapred.nativetask.serde.NativeSerialization;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
-import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.util.QuickSort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -132,7 +131,7 @@ public class NativeMapOutputCollectorDelegator<K, V> implements MapOutputCollect
     if (ret) {
       if (job.getBoolean(MRJobConfig.MAP_OUTPUT_COMPRESS, false)) {
         String codec = job.get(MRJobConfig.MAP_OUTPUT_COMPRESS_CODEC);
-        if (!NativeRuntime.supportsCompressionCodec(codec.getBytes(Charsets.UTF_8))) {
+        if (!NativeRuntime.supportsCompressionCodec(codec.getBytes(StandardCharsets.UTF_8))) {
           String message = "Native output collector doesn't support compression codec " + codec;
           LOG.error(message);
           throw new InvalidJobConfException(message);

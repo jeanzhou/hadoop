@@ -180,7 +180,15 @@ public interface RMApp extends EventHandler<RMAppEvent> {
    * @return the submit time of the application.
    */
   long getSubmitTime();
-  
+
+  /**
+   * The launch time of the application.
+   * Since getStartTime() returns what is essentially submit time,
+   * this new field is to prevent potential backwards compatibility issues.
+   * @return the launch time of the application.
+   */
+  long getLaunchTime();
+
   /**
    * The tracking url for the application master.
    * @return the tracking url for the application master.
@@ -234,7 +242,7 @@ public interface RMApp extends EventHandler<RMAppEvent> {
    * @return the number of max attempts of the application.
    */
   int getMaxAppAttempts();
-  
+
   /**
    * Returns the application type
    * @return the application type.
@@ -282,8 +290,10 @@ public interface RMApp extends EventHandler<RMAppEvent> {
   Map<NodeId, LogAggregationReport> getLogAggregationReportsForApp();
 
   LogAggregationStatus getLogAggregationStatusForAppReport();
+
   /**
    * Return the node label expression of the AM container.
+   * @return the node label expression.
    */
   String getAmNodeLabelExpression();
 
@@ -317,4 +327,6 @@ public interface RMApp extends EventHandler<RMAppEvent> {
    * @return Map of envs related to application scheduling preferences.
    */
   Map<String, String> getApplicationSchedulingEnvs();
+
+  String getRealUser();
 }

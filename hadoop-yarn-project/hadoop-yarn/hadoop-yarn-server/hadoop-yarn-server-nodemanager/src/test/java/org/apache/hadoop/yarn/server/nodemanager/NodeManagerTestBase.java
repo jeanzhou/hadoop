@@ -37,9 +37,9 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.NodeHeartbeatRe
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.RegisterNodeManagerResponsePBImpl;
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.UnRegisterNodeManagerResponsePBImpl;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.ContainerManagerImpl;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
-import org.junit.Assert;
-import org.junit.Before;
+import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,6 +47,8 @@ import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class NodeManagerTestBase {
   // temp fix until metrics system can auto-detect itself running in unit test:
@@ -77,7 +79,7 @@ public class NodeManagerTestBase {
       localhostAddress = InetAddress.getByName("localhost")
           .getCanonicalHostName();
     } catch (UnknownHostException e) {
-      Assert.fail("Unable to get localhost address: " + e.getMessage());
+      fail("Unable to get localhost address: " + e.getMessage());
     }
     conf.setInt(YarnConfiguration.NM_PMEM_MB, 5 * 1024); // 5GB
     conf.set(YarnConfiguration.NM_ADDRESS, localhostAddress + ":" + port);
@@ -153,7 +155,7 @@ public class NodeManagerTestBase {
     }
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     nmLocalDir.mkdirs();
     tmpDir.mkdirs();

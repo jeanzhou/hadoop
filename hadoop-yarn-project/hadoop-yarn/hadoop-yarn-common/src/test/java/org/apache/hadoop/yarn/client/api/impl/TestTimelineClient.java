@@ -18,19 +18,18 @@
 
 package org.apache.hadoop.yarn.client.api.impl;
 
-import static org.mockito.Matchers.any;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
-
-import java.io.File;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.security.PrivilegedExceptionAction;
+
+import javax.ws.rs.client.Client;
+import javax.ws.rs.core.Response;
+import javax.ws.rs.ProcessingException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -49,143 +48,162 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.client.TimelineDelegationTokenIdentifier;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
 
-import com.sun.jersey.api.client.Client;
-import com.sun.jersey.api.client.ClientHandlerException;
-import com.sun.jersey.api.client.ClientResponse;
+import static org.apache.hadoop.security.ssl.FileBasedKeyStoresFactory.SSL_MONITORING_THREAD_NAME;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import net.jodah.failsafe.RetryPolicy;
+import org.apache.hadoop.util.Time;
 
 public class TestTimelineClient {
 
   private TimelineClientImpl client;
   private TimelineWriter spyTimelineWriter;
+  private String keystoresDir;
+  private String sslConfDir;
 
-  @Before
+  @BeforeEach
   public void setup() {
     YarnConfiguration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     conf.setFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION, 1.0f);
     client = createTimelineClient(conf);
+    client.getConnector().setSocketTimeOut(10);
   }
 
-  @After
-  public void tearDown() {
+  @AfterEach
+  public void tearDown() throws Exception {
     if (client != null) {
       client.stop();
     }
+    if (isSSLConfigured()) {
+      KeyStoreTestUtil.cleanupSSLConfig(keystoresDir, sslConfDir);
+    }
+    client.getConnector().setSocketTimeOut(60_000);
   }
 
   @Test
-  public void testPostEntities() throws Exception {
-    mockEntityClientResponse(spyTimelineWriter, ClientResponse.Status.OK,
-      false, false);
+  void testPostEntities() throws Exception {
+    mockEntityClientResponse(spyTimelineWriter, Response.Status.OK,
+        false, false);
     try {
       TimelinePutResponse response = client.putEntities(generateEntity());
-      Assert.assertEquals(0, response.getErrors().size());
+      assertEquals(0, response.getErrors().size());
     } catch (YarnException e) {
-      Assert.fail("Exception is not expected");
+      fail("Exception is not expected");
     }
   }
 
   @Test
-  public void testPostEntitiesWithError() throws Exception {
-    mockEntityClientResponse(spyTimelineWriter, ClientResponse.Status.OK, true,
-      false);
+  void testPostEntitiesWithError() throws Exception {
+    mockEntityClientResponse(spyTimelineWriter, Response.Status.OK, true,
+        false);
     try {
       TimelinePutResponse response = client.putEntities(generateEntity());
-      Assert.assertEquals(1, response.getErrors().size());
-      Assert.assertEquals("test entity id", response.getErrors().get(0)
+      assertEquals(1, response.getErrors().size());
+      assertEquals("test entity id", response.getErrors().get(0)
           .getEntityId());
-      Assert.assertEquals("test entity type", response.getErrors().get(0)
+      assertEquals("test entity type", response.getErrors().get(0)
           .getEntityType());
-      Assert.assertEquals(TimelinePutResponse.TimelinePutError.IO_EXCEPTION,
+      assertEquals(TimelinePutResponse.TimelinePutError.IO_EXCEPTION,
           response.getErrors().get(0).getErrorCode());
     } catch (YarnException e) {
-      Assert.fail("Exception is not expected");
+      fail("Exception is not expected");
     }
   }
 
   @Test
-  public void testPostIncompleteEntities() throws Exception {
+  void testPostIncompleteEntities() throws Exception {
     try {
       client.putEntities(new TimelineEntity());
-      Assert.fail("Exception should have been thrown");
+      fail("Exception should have been thrown");
     } catch (YarnException e) {
     }
   }
 
   @Test
-  public void testPostEntitiesNoResponse() throws Exception {
-    mockEntityClientResponse(spyTimelineWriter,
-      ClientResponse.Status.INTERNAL_SERVER_ERROR, false, false);
+  void testPostEntitiesNoResponse() throws Exception {
+    mockEntityClientResponse(spyTimelineWriter, Response.Status.INTERNAL_SERVER_ERROR,
+        false, false);
     try {
       client.putEntities(generateEntity());
-      Assert.fail("Exception is expected");
+      fail("Exception is expected");
     } catch (YarnException e) {
-      Assert.assertTrue(e.getMessage().contains(
+      assertTrue(e.getMessage().contains(
           "Failed to get the response from the timeline server."));
     }
   }
 
   @Test
-  public void testPostEntitiesConnectionRefused() throws Exception {
+  void testPostEntitiesConnectionRefused() throws Exception {
     mockEntityClientResponse(spyTimelineWriter, null, false, true);
     try {
       client.putEntities(generateEntity());
-      Assert.fail("RuntimeException is expected");
+      fail("RuntimeException is expected");
     } catch (RuntimeException re) {
-      Assert.assertTrue(re instanceof ClientHandlerException);
+      assertTrue(re instanceof ProcessingException);
     }
   }
 
   @Test
-  public void testPutDomain() throws Exception {
-    mockDomainClientResponse(spyTimelineWriter, ClientResponse.Status.OK, false);
+  void testPutDomain() throws Exception {
+    mockDomainClientResponse(spyTimelineWriter, Response.Status.OK, false);
     try {
       client.putDomain(generateDomain());
     } catch (YarnException e) {
-      Assert.fail("Exception is not expected");
+      fail("Exception is not expected");
     }
   }
 
   @Test
-  public void testPutDomainNoResponse() throws Exception {
+  void testPutDomainNoResponse() throws Exception {
     mockDomainClientResponse(spyTimelineWriter,
-        ClientResponse.Status.FORBIDDEN, false);
+        Response.Status.FORBIDDEN, false);
     try {
       client.putDomain(generateDomain());
-      Assert.fail("Exception is expected");
+      fail("Exception is expected");
     } catch (YarnException e) {
-      Assert.assertTrue(e.getMessage().contains(
+      assertTrue(e.getMessage().contains(
           "Failed to get the response from the timeline server."));
     }
   }
 
   @Test
-  public void testPutDomainConnectionRefused() throws Exception {
+  void testPutDomainConnectionRefused() throws Exception {
     mockDomainClientResponse(spyTimelineWriter, null, true);
     try {
       client.putDomain(generateDomain());
-      Assert.fail("RuntimeException is expected");
+      fail("RuntimeException is expected");
     } catch (RuntimeException re) {
-      Assert.assertTrue(re instanceof ClientHandlerException);
+      assertTrue(re instanceof ProcessingException);
     }
   }
 
   @Test
-  public void testCheckRetryCount() throws Exception {
+  void testCheckRetryCount() throws Exception {
     try {
       YarnConfiguration conf = new YarnConfiguration();
       conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
       conf.setInt(YarnConfiguration.TIMELINE_SERVICE_CLIENT_MAX_RETRIES,
-        -2);
+          -2);
       createTimelineClient(conf);
-      Assert.fail();
-    } catch(IllegalArgumentException e) {
-      Assert.assertTrue(e.getMessage().contains(
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertTrue(e.getMessage().contains(
           YarnConfiguration.TIMELINE_SERVICE_CLIENT_MAX_RETRIES));
     }
 
@@ -193,50 +211,49 @@ public class TestTimelineClient {
       YarnConfiguration conf = new YarnConfiguration();
       conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
       conf.setLong(YarnConfiguration.TIMELINE_SERVICE_CLIENT_RETRY_INTERVAL_MS,
-        0);
+          0);
       createTimelineClient(conf);
-      Assert.fail();
-    } catch(IllegalArgumentException e) {
-      Assert.assertTrue(e.getMessage().contains(
+      fail();
+    } catch (IllegalArgumentException e) {
+      assertTrue(e.getMessage().contains(
           YarnConfiguration.TIMELINE_SERVICE_CLIENT_RETRY_INTERVAL_MS));
     }
     int newMaxRetries = 5;
     long newIntervalMs = 500;
     YarnConfiguration conf = new YarnConfiguration();
     conf.setInt(YarnConfiguration.TIMELINE_SERVICE_CLIENT_MAX_RETRIES,
-      newMaxRetries);
+        newMaxRetries);
     conf.setLong(YarnConfiguration.TIMELINE_SERVICE_CLIENT_RETRY_INTERVAL_MS,
-      newIntervalMs);
+        newIntervalMs);
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     TimelineClientImpl client = createTimelineClient(conf);
+    long start = Time.monotonicNow();
     try {
       // This call should fail because there is no timeline server
       client.putEntities(generateEntity());
-      Assert.fail("Exception expected! "
+      fail("Exception expected! "
           + "Timeline server should be off to run this test. ");
     } catch (RuntimeException ce) {
-      Assert.assertTrue(
-          "Handler exception for reason other than retry: " + ce.getMessage(),
-          ce.getMessage().contains("Connection retries limit exceeded"));
-      // we would expect this exception here, check if the client has retried
-      Assert.assertTrue("Retry filter didn't perform any retries! ",
-          client.connector.connectionRetry.getRetired());
+      long end = Time.monotonicNow();
+      ce.printStackTrace();
+      assertTrue(end - start >= newIntervalMs * newMaxRetries, "Failed without retries.");
     }
   }
 
   @Test
-  public void testDelegationTokenOperationsRetry() throws Exception {
+  void testDelegationTokenOperationsRetry() throws Exception {
     int newMaxRetries = 5;
     long newIntervalMs = 500;
     YarnConfiguration conf = new YarnConfiguration();
     conf.setInt(YarnConfiguration.TIMELINE_SERVICE_CLIENT_MAX_RETRIES,
-      newMaxRetries);
+        newMaxRetries);
     conf.setLong(YarnConfiguration.TIMELINE_SERVICE_CLIENT_RETRY_INTERVAL_MS,
-      newIntervalMs);
+        newIntervalMs);
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     // use kerberos to bypass the issue in HADOOP-11215
     conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION,
         "kerberos");
+    conf.set(YarnConfiguration.TIMELINE_HTTP_AUTH_TYPE, "kerberos");
     UserGroupInformation.setConfiguration(conf);
 
     TimelineClientImpl client = createTimelineClient(conf);
@@ -251,10 +268,9 @@ public class TestTimelineClient {
       try {
         // try getting a delegation token
         client.getDelegationToken(
-          UserGroupInformation.getCurrentUser().getShortUserName());
+            UserGroupInformation.getCurrentUser().getShortUserName());
         assertFail();
       } catch (RuntimeException ce) {
-        assertException(client, ce);
       }
 
       try {
@@ -269,7 +285,6 @@ public class TestTimelineClient {
                 new Text("0.0.0.0:8188")));
         assertFail();
       } catch (RuntimeException ce) {
-        assertException(client, ce);
       }
 
       try {
@@ -284,7 +299,6 @@ public class TestTimelineClient {
                 new Text("0.0.0.0:8188")));
         assertFail();
       } catch (RuntimeException ce) {
-        assertException(client, ce);
       }
 
       // Test DelegationTokenOperationsRetry on SocketTimeoutException
@@ -299,7 +313,6 @@ public class TestTimelineClient {
                 new Text("0.0.0.0:8188")));
         assertFail();
       } catch (RuntimeException ce) {
-        assertException(clientFake, ce);
       }
     } finally {
       client.stop();
@@ -308,32 +321,60 @@ public class TestTimelineClient {
     }
   }
 
+  /**
+   * Test actual delegation token operations are not carried out when
+   * simple auth is configured for timeline.
+   * @throws Exception
+   */
+  @Test
+  void testDelegationTokenDisabledOnSimpleAuth() throws Exception {
+    YarnConfiguration conf = new YarnConfiguration();
+    conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
+    conf.set(YarnConfiguration.TIMELINE_HTTP_AUTH_TYPE, "simple");
+    UserGroupInformation.setConfiguration(conf);
+
+    TimelineClientImpl tClient = createTimelineClient(conf);
+    TimelineConnector spyConnector = spy(tClient.connector);
+    tClient.connector = spyConnector;
+    try {
+      // try getting a delegation token
+      Token<TimelineDelegationTokenIdentifier> identifierToken =
+          tClient.getDelegationToken(
+              UserGroupInformation.getCurrentUser().getShortUserName());
+      // Get a null token when using simple auth
+      assertNull(identifierToken);
+
+      // try renew a delegation token
+      Token<TimelineDelegationTokenIdentifier> dummyToken = new Token<>();
+      long renewTime = tClient.renewDelegationToken(dummyToken);
+      // Get invalid expiration time so that RM skips renewal
+      assertEquals(renewTime, -1);
+
+      // try cancel a delegation token
+      tClient.cancelDelegationToken(dummyToken);
+      // Shouldn't try to cancel and connect to authURL
+      verify(spyConnector, never()).getDelegationTokenAuthenticatedURL();
+    } finally {
+      tClient.stop();
+    }
+  }
+
   private static void assertFail() {
-    Assert.fail("Exception expected! "
+    fail("Exception expected! "
         + "Timeline server should be off to run this test.");
   }
 
-  private void assertException(TimelineClientImpl client, RuntimeException ce) {
-    Assert.assertTrue(
-        "Handler exception for reason other than retry: " + ce.toString(), ce
-            .getMessage().contains("Connection retries limit exceeded"));
-    // we would expect this exception here, check if the client has retried
-    Assert.assertTrue("Retry filter didn't perform any retries! ",
-        client.connector.connectionRetry.getRetired());
-  }
-
-  public static ClientResponse mockEntityClientResponse(
-      TimelineWriter spyTimelineWriter, ClientResponse.Status status,
-      boolean hasError, boolean hasRuntimeError) {
-    ClientResponse response = mock(ClientResponse.class);
+  public static Response mockEntityClientResponse(
+      TimelineWriter spyTimelineWriter, Response.Status status,
+      boolean hasError, boolean hasRuntimeError) throws JsonProcessingException {
+    Response response = mock(Response.class);
     if (hasRuntimeError) {
-      doThrow(new ClientHandlerException(new ConnectException())).when(
-        spyTimelineWriter).doPostingObject(
-        any(TimelineEntities.class), any(String.class));
+      doThrow(new ProcessingException(new ConnectException())).when(spyTimelineWriter)
+          .doPostingObject(any(TimelineEntities.class), any());
       return response;
     }
     doReturn(response).when(spyTimelineWriter)
-        .doPostingObject(any(TimelineEntities.class), any(String.class));
+        .doPostingObject(any(TimelineEntities.class), any());
     when(response.getStatusInfo()).thenReturn(status);
     TimelinePutResponse.TimelinePutError error =
         new TimelinePutResponse.TimelinePutError();
@@ -344,16 +385,16 @@ public class TestTimelineClient {
     if (hasError) {
       putResponse.addError(error);
     }
-    when(response.getEntity(TimelinePutResponse.class)).thenReturn(putResponse);
+    when(response.readEntity(TimelinePutResponse.class)).thenReturn(putResponse);
     return response;
   }
 
-  private static ClientResponse mockDomainClientResponse(
-      TimelineWriter spyTimelineWriter, ClientResponse.Status status,
-      boolean hasRuntimeError) {
-    ClientResponse response = mock(ClientResponse.class);
+  private static Response mockDomainClientResponse(
+      TimelineWriter spyTimelineWriter, Response.Status status,
+      boolean hasRuntimeError) throws JsonProcessingException {
+    Response response = mock(Response.class);
     if (hasRuntimeError) {
-      doThrow(new ClientHandlerException(new ConnectException())).when(
+      doThrow(new ProcessingException(new ConnectException())).when(
         spyTimelineWriter).doPostingObject(any(TimelineDomain.class),
         any(String.class));
       return response;
@@ -389,7 +430,7 @@ public class TestTimelineClient {
 
   public static TimelineDomain generateDomain() {
     TimelineDomain domain = new TimelineDomain();
-    domain.setId("namesapce id");
+    domain.setId("namespace id");
     domain.setDescription("domain description");
     domain.setOwner("domain owner");
     domain.setReaders("domain_reader");
@@ -404,10 +445,11 @@ public class TestTimelineClient {
     TimelineClientImpl client = new TimelineClientImpl() {
       @Override
       protected TimelineWriter createTimelineWriter(Configuration conf,
-          UserGroupInformation authUgi, Client client, URI resURI)
+          UserGroupInformation uAuthUgi, Client paramClient, URI resURI,
+          RetryPolicy<Object> retryPolicy)
           throws IOException {
         TimelineWriter timelineWriter =
-            new DirectTimelineWriter(authUgi, client, resURI);
+            new DirectTimelineWriter(uAuthUgi, paramClient, resURI, retryPolicy);
         spyTimelineWriter = spy(timelineWriter);
         return spyTimelineWriter;
       }
@@ -448,17 +490,13 @@ public class TestTimelineClient {
   }
 
   @Test
-  public void testTimelineClientCleanup() throws Exception {
+  void testTimelineClientCleanup() throws Exception {
     YarnConfiguration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     conf.setInt(YarnConfiguration.TIMELINE_SERVICE_CLIENT_MAX_RETRIES, 0);
     conf.set(YarnConfiguration.YARN_HTTP_POLICY_KEY, Policy.HTTPS_ONLY.name());
 
-    File testDir = TestGenericTestUtils.getTestDir();
-    String sslConfDir =
-        KeyStoreTestUtil.getClasspathDir(TestTimelineClient.class);
-    KeyStoreTestUtil.setupSSLConfig(testDir.getAbsolutePath(),
-        sslConfDir, conf, false);
+    setupSSLConfig(conf);
     client = createTimelineClient(conf);
 
     ThreadGroup threadGroup = Thread.currentThread().getThreadGroup();
@@ -473,11 +511,11 @@ public class TestTimelineClient {
     Thread reloaderThread = null;
     for (Thread thread : threads) {
       if ((thread.getName() != null)
-          && (thread.getName().contains("Truststore reloader thread"))) {
+          && (thread.getName().contains(SSL_MONITORING_THREAD_NAME))) {
         reloaderThread = thread;
       }
     }
-    Assert.assertTrue("Reloader is not alive", reloaderThread.isAlive());
+    assertTrue(reloaderThread.isAlive(), "Reloader is not alive");
 
     client.close();
 
@@ -489,7 +527,29 @@ public class TestTimelineClient {
       }
       Thread.sleep(1000);
     }
-    Assert.assertFalse("Reloader is still alive", reloaderStillAlive);
+    assertFalse(reloaderStillAlive, "Reloader is still alive");
+  }
+
+  @Test
+  void testTimelineConnectorDestroy() {
+    YarnConfiguration conf = new YarnConfiguration();
+    conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
+    TimelineClientImpl client = createTimelineClient(conf);
+    Client mockJerseyClient = mock(Client.class);
+    client.connector.client = mockJerseyClient;
+    client.stop();
+    verify(mockJerseyClient, times(1)).close();
+  }
+
+  private void setupSSLConfig(YarnConfiguration conf) throws Exception {
+    keystoresDir = TestGenericTestUtils.getTestDir().getAbsolutePath();
+    sslConfDir =
+        KeyStoreTestUtil.getClasspathDir(TestTimelineClient.class);
+    KeyStoreTestUtil.setupSSLConfig(keystoresDir, sslConfDir, conf, false);
+  }
+
+  private boolean isSSLConfigured() {
+    return keystoresDir != null && sslConfDir != null;
   }
 
   private static class TestTimelineDelegationTokenSecretManager extends

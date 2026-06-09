@@ -18,10 +18,10 @@
 
 /**
  * These .proto interfaces are private and stable.
- * Please see http://wiki.apache.org/hadoop/Compatibility
+ * Please see https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/Compatibility.html
  * for what changes are allowed for a *stable* .proto interface.
  */
-
+syntax = "proto2";
 option java_package = "org.apache.hadoop.ipc.protobuf";
 option java_outer_classname = "RpcHeaderProtos";
 option java_generate_equals_and_hash = true;
@@ -47,7 +47,7 @@ package hadoop.common;
  */
 enum RpcKindProto {
   RPC_BUILTIN          = 0;  // Used for built in calls by tests
-  RPC_WRITABLE         = 1;  // Use WritableRpcEngine 
+  RPC_WRITABLE         = 1;  // WritableRpcEngine removed; value kept for wire-level detection and rejection
   RPC_PROTOCOL_BUFFER  = 2;  // Use ProtobufRpcEngine
 }
 
@@ -63,7 +63,7 @@ enum RpcKindProto {
 message RPCTraceInfoProto {
     optional int64 traceId = 1; // parentIdHigh
     optional int64 parentId = 2; // parentIdLow
-
+    optional bytes spanContext = 3; // Trace SpanContext
 }
 
 /**
@@ -90,6 +90,13 @@ message RpcRequestHeaderProto { // the header for the RpcRequest
   optional sint32 retryCount = 5 [default = -1];
   optional RPCTraceInfoProto traceInfo = 6; // tracing info
   optional RPCCallerContextProto callerContext = 7; // call context
+  optional int64 stateId = 8; // The last seen Global State ID
+  // Alignment context info for use with routers.
+  // The client should not interpret these bytes, but only forward bytes
+  // received from RpcResponseHeaderProto.routerFederatedState.
+  optional bytes routerFederatedState = 9;
+  // Authorization header for passing opaque credentials or tokens
+  optional bytes authorizationHeader = 10;
 }
 
 
@@ -155,6 +162,11 @@ message RpcResponseHeaderProto {
   optional RpcErrorCodeProto errorDetail = 6; // in case of error
   optional bytes clientId = 7; // Globally unique client ID
   optional sint32 retryCount = 8 [default = -1];
+  optional int64 stateId = 9; // The last written Global State ID
+  // Alignment context info for use with routers.
+  // The client should not interpret these bytes, but only
+  // forward them to the router using RpcRequestHeaderProto.routerFederatedState.
+  optional bytes routerFederatedState = 10;
 }
 
 message RpcSaslProto {

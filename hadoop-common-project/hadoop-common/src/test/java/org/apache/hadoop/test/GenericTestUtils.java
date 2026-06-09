@@ -30,21 +30,31 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.Enumeration;
+import java.util.TreeSet;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
-import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.RandomStringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.impl.Log4JLogger;
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.util.BlockingThreadPoolExecutorService;
+import org.apache.hadoop.util.DurationInfo;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.log4j.Appender;
@@ -54,20 +64,33 @@ import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 import org.apache.log4j.PatternLayout;
 import org.apache.log4j.WriterAppender;
-import org.junit.Assert;
-import org.junit.Assume;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+
+import static org.apache.hadoop.fs.contract.ContractTestUtils.createFile;
+import static org.apache.hadoop.util.functional.CommonCallableSupplier.submit;
+import static org.apache.hadoop.util.functional.CommonCallableSupplier.waitForCompletion;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Test provides some very generic helpers which might be used across the tests
  */
 public abstract class GenericTestUtils {
+
+  public static final int EXECUTOR_THREAD_COUNT = 64;
+
+  private static final org.slf4j.Logger LOG =
+      LoggerFactory.getLogger(GenericTestUtils.class);
+
+  public static final String PREFIX = "file-";
 
   private static final AtomicInteger sequence = new AtomicInteger();
 
@@ -88,34 +111,17 @@ public abstract class GenericTestUtils {
   public static final String DEFAULT_TEST_DATA_PATH = "target/test/data/";
 
   /**
-   * Error string used in {@link GenericTestUtils#waitFor(Supplier, int, int)}.
+   * Error string used in
+   * {@link GenericTestUtils#waitFor(Supplier, long, long)}.
    */
   public static final String ERROR_MISSING_ARGUMENT =
       "Input supplier interface should be initailized";
   public static final String ERROR_INVALID_ARGUMENT =
       "Total wait time should be greater than check interval time";
 
-  /**
-   * @deprecated use {@link #disableLog(org.slf4j.Logger)} instead
-   */
-  @Deprecated
-  @SuppressWarnings("unchecked")
-  public static void disableLog(Log log) {
-    // We expect that commons-logging is a wrapper around Log4j.
-    disableLog((Log4JLogger) log);
-  }
-
   @Deprecated
   public static Logger toLog4j(org.slf4j.Logger logger) {
     return LogManager.getLogger(logger.getName());
-  }
-
-  /**
-   * @deprecated use {@link #disableLog(org.slf4j.Logger)} instead
-   */
-  @Deprecated
-  public static void disableLog(Log4JLogger log) {
-    log.getLogger().setLevel(Level.OFF);
   }
 
   /**
@@ -130,45 +136,6 @@ public abstract class GenericTestUtils {
     disableLog(toLog4j(logger));
   }
 
-  /**
-   * @deprecated
-   * use {@link #setLogLevel(org.slf4j.Logger, org.slf4j.event.Level)} instead
-   */
-  @Deprecated
-  @SuppressWarnings("unchecked")
-  public static void setLogLevel(Log log, Level level) {
-    // We expect that commons-logging is a wrapper around Log4j.
-    setLogLevel((Log4JLogger) log, level);
-  }
-
-  /**
-   * A helper used in log4j2 migration to accept legacy
-   * org.apache.commons.logging apis.
-   * <p>
-   * And will be removed after migration.
-   *
-   * @param log   a log
-   * @param level level to be set
-   */
-  @Deprecated
-  public static void setLogLevel(Log log, org.slf4j.event.Level level) {
-    setLogLevel(log, Level.toLevel(level.toString()));
-  }
-
-  /**
-   * @deprecated
-   * use {@link #setLogLevel(org.slf4j.Logger, org.slf4j.event.Level)} instead
-   */
-  @Deprecated
-  public static void setLogLevel(Log4JLogger log, Level level) {
-    log.getLogger().setLevel(level);
-  }
-
-  /**
-   * @deprecated
-   * use {@link #setLogLevel(org.slf4j.Logger, org.slf4j.event.Level)} instead
-   */
-  @Deprecated
   public static void setLogLevel(Logger logger, Level level) {
     logger.setLevel(level);
   }
@@ -189,6 +156,14 @@ public abstract class GenericTestUtils {
 
   public static void setRootLogLevel(org.slf4j.event.Level level) {
     setLogLevel(LogManager.getRootLogger(), Level.toLevel(level.toString()));
+  }
+
+  public static void setCurrentLoggersLogLevel(org.slf4j.event.Level level) {
+    for (Enumeration<?> loggers = LogManager.getCurrentLoggers();
+        loggers.hasMoreElements();) {
+      Logger logger = (Logger) loggers.nextElement();
+      logger.setLevel(Level.toLevel(level.toString()));
+    }
   }
 
   public static org.slf4j.event.Level toLevel(String level) {
@@ -220,6 +195,22 @@ public abstract class GenericTestUtils {
   }
 
   /**
+   * Creates a directory for the data/logs of the unit test.
+   * It first deletes the directory if it exists.
+   *
+   * @param testClass the unit test class.
+   * @return the Path of the root directory.
+   */
+  public static File setupTestRootDir(Class<?> testClass) {
+    File testRootDir = getTestDir(testClass.getSimpleName());
+    if (testRootDir.exists()) {
+      FileUtil.fullyDelete(testRootDir);
+    }
+    testRootDir.mkdirs();
+    return testRootDir;
+  }
+
+  /**
    * Get the (created) base directory for tests.
    * @return the absolute directory
    */
@@ -230,8 +221,9 @@ public abstract class GenericTestUtils {
       prop = DEFAULT_TEST_DATA_DIR;
     }
     File dir = new File(prop).getAbsoluteFile();
-    dir.mkdirs();
-    assertExists(dir);
+    if (dir.mkdirs() && !dir.exists()) {
+      throw new IllegalStateException("Directory " + dir + " not created");
+    }
     return dir;
   }
 
@@ -287,7 +279,7 @@ public abstract class GenericTestUtils {
    * Assert that a given file exists.
    */
   public static void assertExists(File f) {
-    Assert.assertTrue("File " + f + " should exist", f.exists());
+    assertTrue(f.exists(), "File " + f + " should exist");
   }
 
   /**
@@ -298,17 +290,17 @@ public abstract class GenericTestUtils {
   public static void assertGlobEquals(File dir, String pattern,
       String ... expectedMatches) throws IOException {
 
-    Set<String> found = Sets.newTreeSet();
+    Set<String> found = new TreeSet<>();
     for (File f : FileUtil.listFiles(dir)) {
       if (f.getName().matches(pattern)) {
         found.add(f.getName());
       }
     }
-    Set<String> expectedSet = Sets.newTreeSet(
+    Set<String> expectedSet = new TreeSet<>(
         Arrays.asList(expectedMatches));
-    Assert.assertEquals("Bad files matching " + pattern + " in " + dir,
-        Joiner.on(",").join(expectedSet),
-        Joiner.on(",").join(found));
+    assertEquals(Joiner.on(",").join(expectedSet),
+        Joiner.on(",").join(found),
+        "Bad files matching " + pattern + " in " + dir);
   }
 
   static final String E_NULL_THROWABLE = "Null Throwable";
@@ -338,14 +330,13 @@ public abstract class GenericTestUtils {
   public static void assertExceptionContains(String expectedText,
       Throwable t,
       String message) {
-    Assert.assertNotNull(E_NULL_THROWABLE, t);
+    assertNotNull(t, E_NULL_THROWABLE);
     String msg = t.toString();
     if (msg == null) {
       throw new AssertionError(E_NULL_THROWABLE_STRING, t);
     }
-    if (expectedText != null && !msg.contains(expectedText)) {
-      String prefix = org.apache.commons.lang.StringUtils.isEmpty(message)
-          ? "" : (message + ": ");
+    if (expectedText != null && !msg.toLowerCase().contains(expectedText.toLowerCase())) {
+      final String prefix = message == null || message.isEmpty() ? "" : message + ": ";
       throw new AssertionError(
           String.format("%s Expected to find '%s' %s: %s",
               prefix, expectedText, E_UNEXPECTED_EXCEPTION,
@@ -369,11 +360,35 @@ public abstract class GenericTestUtils {
    * time
    * @throws InterruptedException if the method is interrupted while waiting
    */
-  public static void waitFor(Supplier<Boolean> check, int checkEveryMillis,
-      int waitForMillis) throws TimeoutException, InterruptedException {
-    Preconditions.checkNotNull(check, ERROR_MISSING_ARGUMENT);
-    Preconditions.checkArgument(waitForMillis >= checkEveryMillis,
-        ERROR_INVALID_ARGUMENT);
+  public static void waitFor(final Supplier<Boolean> check,
+      final long checkEveryMillis, final long waitForMillis)
+      throws TimeoutException, InterruptedException {
+    waitFor(check, checkEveryMillis, waitForMillis, null);
+  }
+
+  /**
+   * Wait for the specified test to return true. The test will be performed
+   * initially and then every {@code checkEveryMillis} until at least
+   * {@code waitForMillis} time has expired. If {@code check} is null or
+   * {@code waitForMillis} is less than {@code checkEveryMillis} this method
+   * will throw an {@link IllegalArgumentException}.
+   *
+   * @param check the test to perform.
+   * @param checkEveryMillis how often to perform the test.
+   * @param waitForMillis the amount of time after which no more tests will be
+   * performed.
+   * @param errorMsg error message to provide in TimeoutException.
+   * @throws TimeoutException if the test does not return true in the allotted
+   * time.
+   * @throws InterruptedException if the method is interrupted while waiting.
+   */
+  public static void waitFor(final Supplier<Boolean> check,
+      final long checkEveryMillis, final long waitForMillis,
+      final String errorMsg) throws TimeoutException, InterruptedException {
+    Objects.requireNonNull(check, ERROR_MISSING_ARGUMENT);
+    if (waitForMillis < checkEveryMillis) {
+      throw new IllegalArgumentException(ERROR_INVALID_ARGUMENT);
+    }
 
     long st = Time.monotonicNow();
     boolean result = check.get();
@@ -384,9 +399,12 @@ public abstract class GenericTestUtils {
     }
 
     if (!result) {
-      throw new TimeoutException("Timed out waiting for condition. " +
-          "Thread diagnostics:\n" +
-          TimedOutTestsListener.buildThreadDiagnosticString());
+      final String exceptionErrorMsg = "Timed out waiting for condition. "
+          + (org.apache.commons.lang3.StringUtils.isNotEmpty(errorMsg)
+          ? "Error Message: " + errorMsg : "")
+          + "\nThread diagnostics:\n" +
+          TimedOutTestsListener.buildThreadDiagnosticString();
+      throw new TimeoutException(exceptionErrorMsg);
     }
   }
 
@@ -452,7 +470,7 @@ public abstract class GenericTestUtils {
 
     @Override
     public void close() throws Exception {
-      IOUtils.closeQuietly(bytesPrintStream);
+      IOUtils.closeStream(bytesPrintStream);
       System.setErr(oldErr);
     }
   }
@@ -462,13 +480,15 @@ public abstract class GenericTestUtils {
     private WriterAppender appender;
     private Logger logger;
 
-    public static LogCapturer captureLogs(Log l) {
-      Logger logger = ((Log4JLogger)l).getLogger();
-      return new LogCapturer(logger);
+    public static LogCapturer captureLogs(org.slf4j.Logger logger) {
+      if (logger.getName().equals("root")) {
+        return new LogCapturer(org.apache.log4j.Logger.getRootLogger());
+      }
+      return new LogCapturer(toLog4j(logger));
     }
 
-    public static LogCapturer captureLogs(org.slf4j.Logger logger) {
-      return new LogCapturer(toLog4j(logger));
+    public static LogCapturer captureLogs(Logger logger) {
+      return new LogCapturer(logger);
     }
 
     private LogCapturer(Logger logger) {
@@ -501,7 +521,7 @@ public abstract class GenericTestUtils {
    * method is called, then waits on another before continuing.
    */
   public static class DelayAnswer implements Answer<Object> {
-    private final Log LOG;
+    private final org.slf4j.Logger LOG;
 
     private final CountDownLatch fireLatch = new CountDownLatch(1);
     private final CountDownLatch waitLatch = new CountDownLatch(1);
@@ -514,7 +534,7 @@ public abstract class GenericTestUtils {
     private volatile Throwable thrown;
     private volatile Object returnValue;
 
-    public DelayAnswer(Log log) {
+    public DelayAnswer(org.slf4j.Logger log) {
       this.LOG = log;
     }
 
@@ -611,13 +631,13 @@ public abstract class GenericTestUtils {
    */
   public static class DelegateAnswer implements Answer<Object> {
     private final Object delegate;
-    private final Log log;
+    private final org.slf4j.Logger log;
 
     public DelegateAnswer(Object delegate) {
       this(null, delegate);
     }
 
-    public DelegateAnswer(Log log, Object delegate) {
+    public DelegateAnswer(org.slf4j.Logger log, Object delegate) {
       this.log = log;
       this.delegate = delegate;
     }
@@ -661,7 +681,7 @@ public abstract class GenericTestUtils {
     public Object answer(InvocationOnMock invocation) throws Throwable {
       boolean interrupted = false;
       try {
-        Thread.sleep(r.nextInt(maxSleepTime) + minSleepTime);
+        Thread.sleep(r.nextInt(maxSleepTime - minSleepTime) + minSleepTime);
       } catch (InterruptedException ie) {
         interrupted = true;
       }
@@ -676,15 +696,15 @@ public abstract class GenericTestUtils {
   }
 
   public static void assertDoesNotMatch(String output, String pattern) {
-    Assert.assertFalse("Expected output to match /" + pattern + "/" +
-        " but got:\n" + output,
-        Pattern.compile(pattern).matcher(output).find());
+    assertFalse(Pattern.compile(pattern).matcher(output).find(),
+        "Expected output to match /" + pattern + "/" +
+        " but got:\n" + output);
   }
 
   public static void assertMatches(String output, String pattern) {
-    Assert.assertTrue("Expected output to match /" + pattern + "/" +
-        " but got:\n" + output,
-        Pattern.compile(pattern).matcher(output).find());
+    assertTrue(Pattern.compile(pattern).matcher(output).find(),
+        "Expected output to match /" + pattern + "/" +
+        " but got:\n" + output);
   }
 
   public static void assertValueNear(long expected, long actual, long allowedError) {
@@ -693,8 +713,9 @@ public abstract class GenericTestUtils {
 
   public static void assertValueWithinRange(long expectedMin, long expectedMax,
       long actual) {
-    Assert.assertTrue("Expected " + actual + " to be in range (" + expectedMin + ","
-        + expectedMax + ")", expectedMin <= actual && actual <= expectedMax);
+    assertTrue(expectedMin <= actual && actual <= expectedMax,
+        "Expected " + actual + " to be in range (" + expectedMin + ","
+        + expectedMax + ")");
   }
 
   /**
@@ -725,7 +746,7 @@ public abstract class GenericTestUtils {
   public static void assertNoThreadsMatching(String regex) {
     Pattern pattern = Pattern.compile(regex);
     if (anyThreadMatching(pattern)) {
-      Assert.fail("Leaked thread matches " + regex);
+      fail("Leaked thread matches " + regex);
     }
   }
 
@@ -758,8 +779,8 @@ public abstract class GenericTestUtils {
    * in the definition of native profile in pom.xml.
    */
   public static void assumeInNativeProfile() {
-    Assume.assumeTrue(
-        Boolean.parseBoolean(System.getProperty("runningWithNative", "false")));
+    assumeTrue(Boolean.parseBoolean(
+        System.getProperty("runningWithNative", "false")));
   }
 
   /**
@@ -773,12 +794,10 @@ public abstract class GenericTestUtils {
    */
   public static String getFilesDiff(File a, File b) throws IOException {
     StringBuilder bld = new StringBuilder();
-    BufferedReader ra = null, rb = null;
-    try {
-      ra = new BufferedReader(
-          new InputStreamReader(new FileInputStream(a)));
-      rb = new BufferedReader(
-          new InputStreamReader(new FileInputStream(b)));
+    try (BufferedReader ra = new BufferedReader(
+        new InputStreamReader(new FileInputStream(a)));
+         BufferedReader rb = new BufferedReader(
+             new InputStreamReader(new FileInputStream(b)))) {
       while (true) {
         String la = ra.readLine();
         String lb = rb.readLine();
@@ -798,9 +817,6 @@ public abstract class GenericTestUtils {
           bld.append(" + ").append(lb).append("\n");
         }
       }
-    } finally {
-      IOUtils.closeQuietly(ra);
-      IOUtils.closeQuietly(rb);
     }
     return bld.toString();
   }
@@ -868,5 +884,132 @@ public abstract class GenericTestUtils {
     }
     return threadCount;
   }
+  /**
+   * Write the text to a file asynchronously. Logs the operation duration.
+   * @param fs filesystem
+   * @param path path
+   * @return future to the patch created.
+   */
+  private static CompletableFuture<Path> put(FileSystem fs,
+      Path path, String text) {
+    return submit(EXECUTOR, () -> {
+      try (DurationInfo ignore =
+          new DurationInfo(LOG, false, "Creating %s", path)) {
+        createFile(fs, path, true, text.getBytes(StandardCharsets.UTF_8));
+        return path;
+      }
+    });
+  }
 
+  /**
+   * Build a set of files in a directory tree.
+   * @param fs filesystem
+   * @param destDir destination
+   * @param depth file depth
+   * @param fileCount number of files to create.
+   * @param dirCount number of dirs to create at each level
+   * @return the list of files created.
+   */
+  public static List<Path> createFiles(final FileSystem fs,
+      final Path destDir,
+      final int depth,
+      final int fileCount,
+      final int dirCount) throws IOException {
+    return createDirsAndFiles(fs, destDir, depth, fileCount, dirCount,
+        new ArrayList<>(fileCount),
+        new ArrayList<>(dirCount));
+  }
+
+  /**
+   * Build a set of files in a directory tree.
+   * @param fs filesystem
+   * @param destDir destination
+   * @param depth file depth
+   * @param fileCount number of files to create.
+   * @param dirCount number of dirs to create at each level
+   * @param paths [out] list of file paths created
+   * @param dirs [out] list of directory paths created.
+   * @return the list of files created.
+   */
+  public static List<Path> createDirsAndFiles(final FileSystem fs,
+      final Path destDir,
+      final int depth,
+      final int fileCount,
+      final int dirCount,
+      final List<Path> paths,
+      final List<Path> dirs) throws IOException {
+    buildPaths(paths, dirs, destDir, depth, fileCount, dirCount);
+    List<CompletableFuture<Path>> futures = new ArrayList<>(paths.size()
+        + dirs.size());
+
+    // create directories. With dir marker retention, that adds more entries
+    // to cause deletion issues
+    try (DurationInfo ignore =
+        new DurationInfo(LOG, "Creating %d directories", dirs.size())) {
+      for (Path path : dirs) {
+        futures.add(submit(EXECUTOR, () ->{
+          fs.mkdirs(path);
+          return path;
+        }));
+      }
+      waitForCompletion(futures);
+    }
+
+    try (DurationInfo ignore =
+        new DurationInfo(LOG, "Creating %d files", paths.size())) {
+      for (Path path : paths) {
+        futures.add(put(fs, path, path.getName()));
+      }
+      waitForCompletion(futures);
+      return paths;
+    }
+  }
+
+  /**
+   * Recursive method to build up lists of files and directories.
+   * @param filePaths list of file paths to add entries to.
+   * @param dirPaths  list of directory paths to add entries to.
+   * @param destDir   destination directory.
+   * @param depth     depth of directories
+   * @param fileCount number of files.
+   * @param dirCount  number of directories.
+   */
+  public static void buildPaths(final List<Path> filePaths,
+      final List<Path> dirPaths, final Path destDir, final int depth,
+      final int fileCount, final int dirCount) {
+    if (depth <= 0) {
+      return;
+    }
+    // create the file paths
+    for (int i = 0; i < fileCount; i++) {
+      String name = filenameOfIndex(i);
+      Path p = new Path(destDir, name);
+      filePaths.add(p);
+    }
+    for (int i = 0; i < dirCount; i++) {
+      String name = String.format("dir-%03d", i);
+      Path p = new Path(destDir, name);
+      dirPaths.add(p);
+      buildPaths(filePaths, dirPaths, p, depth - 1, fileCount, dirCount);
+    }
+  }
+
+  /**
+   * Given an index, return a string to use as the filename.
+   * @param i index
+   * @return name
+   */
+  public static String filenameOfIndex(final int i) {
+    return String.format("%s%03d", PREFIX, i);
+  }
+
+  /**
+   * For submitting work.
+   */
+  private static final BlockingThreadPoolExecutorService EXECUTOR =
+      BlockingThreadPoolExecutorService.newInstance(
+          EXECUTOR_THREAD_COUNT,
+          EXECUTOR_THREAD_COUNT * 2,
+          30, TimeUnit.SECONDS,
+          "test-operations");
 }

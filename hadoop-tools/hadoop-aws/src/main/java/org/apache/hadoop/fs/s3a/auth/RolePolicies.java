@@ -18,16 +18,76 @@
 
 package org.apache.hadoop.fs.s3a.auth;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
+import org.apache.hadoop.util.Lists;
+
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+
 import static org.apache.hadoop.fs.s3a.auth.RoleModel.*;
 
 /**
  * Operations, statements and policies covering the operations
- * needed to work with S3 and S3Guard.
+ * needed to work with S3.
  */
+@InterfaceAudience.LimitedPrivate("Tests")
+@InterfaceStability.Unstable
 public final class RolePolicies {
 
   private RolePolicies() {
   }
+
+  /** All KMS operations: {@value}.*/
+  public static final String KMS_ALL_OPERATIONS = "kms:*";
+
+  /** KMS encryption. This is <i>Not</i> used by SSE-KMS: {@value}. */
+  public static final String KMS_ENCRYPT = "kms:Encrypt";
+
+  /**
+   * Decrypt data encrypted with SSE-KMS: {@value}.
+   */
+  public static final String KMS_DECRYPT = "kms:Decrypt";
+
+  /**
+   * Arn for all KMS keys: {@value}.
+   */
+  public static final String KMS_ALL_KEYS = "*";
+
+  /**
+   * This is used by S3 to generate a per-object encryption key and
+   * the encrypted value of this, the latter being what it tags
+   * the object with for later decryption: {@value}.
+   */
+  public static final String KMS_GENERATE_DATA_KEY = "kms:GenerateDataKey";
+
+  /**
+   * Actions needed to read and write SSE-KMS data.
+   */
+  private static final String[] KMS_KEY_RW =
+      new String[]{KMS_DECRYPT, KMS_GENERATE_DATA_KEY, KMS_ENCRYPT};
+
+  /**
+   * Actions needed to read SSE-KMS data.
+   */
+  private static final String[] KMS_KEY_READ =
+      new String[] {KMS_DECRYPT};
+
+  /**
+   * Statement to allow KMS R/W access access, so full use of
+   * SSE-KMS.
+   */
+  public static final Statement STATEMENT_ALLOW_KMS_RW =
+      statement(true, KMS_ALL_KEYS, KMS_ALL_OPERATIONS);
+
+  /**
+   * Statement to allow read access to KMS keys, so the ability
+   * to read SSE-KMS data,, but not decrypt it.
+   */
+  public static final Statement STATEMENT_ALLOW_SSE_KMS_READ =
+      statement(true, KMS_ALL_KEYS, KMS_KEY_READ);
 
   /**
    * All S3 operations: {@value}.
@@ -39,28 +99,36 @@ public final class RolePolicies {
    */
   public static final String S3_ALL_BUCKETS = "arn:aws:s3:::*";
 
+  /**
+   * All bucket list operations, including
+   * {@link #S3_BUCKET_LIST_BUCKET} and
+   * {@link #S3_BUCKET_LIST_MULTIPART_UPLOADS}.
+   */
+  public static final String S3_BUCKET_ALL_LIST = "s3:ListBucket*";
 
-  public static final String S3_ALL_LIST_OPERATIONS = "s3:List*";
-
-  public static final String S3_ALL_LIST_BUCKET = "s3:ListBucket*";
-
-  public static final String S3_LIST_BUCKET = "s3:ListBucket";
+  /**
+   * List the contents of a bucket.
+   * It applies to a bucket, not to a path in a bucket.
+   */
+  public static final String S3_BUCKET_LIST_BUCKET = "s3:ListBucket";
 
   /**
    * This is used by the abort operation in S3A commit work.
+   * It applies to a bucket, not to a path in a bucket.
    */
-  public static final String S3_LIST_BUCKET_MULTPART_UPLOADS =
+  public static final String S3_BUCKET_LIST_MULTIPART_UPLOADS =
       "s3:ListBucketMultipartUploads";
-
 
   /**
    * List multipart upload is needed for the S3A Commit protocols.
+   * It applies to a path in a bucket.
    */
   public static final String S3_LIST_MULTIPART_UPLOAD_PARTS
       = "s3:ListMultipartUploadParts";
 
   /**
-   * abort multipart upload is needed for the S3A Commit protocols.
+   * Abort multipart upload is needed for the S3A Commit protocols.
+   * It applies to a path in a bucket.
    */
   public static final String S3_ABORT_MULTIPART_UPLOAD
       = "s3:AbortMultipartUpload";
@@ -97,6 +165,8 @@ public final class RolePolicies {
 
   public static final String S3_GET_OBJECT_VERSION = "s3:GetObjectVersion";
 
+  public static final String S3_GET_BUCKET_LOCATION = "s3:GetBucketLocation";
+
   public static final String S3_GET_OBJECT_VERSION_ACL
       = "s3:GetObjectVersionAcl";
 
@@ -128,101 +198,183 @@ public final class RolePolicies {
   public static final String S3_RESTORE_OBJECT = "s3:RestoreObject";
 
   /**
-   * Actions needed to read data from S3 through S3A.
+   * Everything: {@value}.
    */
-  public static final String[] S3_PATH_READ_OPERATIONS =
+  public static final String EVERYTHING_ARN = "*";
+
+  /**
+   * All S3Express buckets: {@value}.
+   * S3Express adds another "domain" for permissions: S3 express ARNs and S3 Express operations,
+   * of which createSession is one key operation.
+   * See https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-security.html
+   * Note: this wildcard patten came from AWS Q; if it is wrong blame GenerativeAI.
+   */
+  public static final String S3EXPRESS_ALL_BUCKETS = "arn:aws:s3express:*:*:bucket/*--*--x-s3";
+
+  /**
+   * S3Express session permission; required unless sessions are disabled: {@value}.
+   * See https://docs.aws.amazon.com/AmazonS3/latest/API/API_CreateSession.html
+   */
+  public static final String S3EXPRESS_CREATE_SESSION_POLICY = "s3express:CreateSession";
+
+  /**
+   * S3 Express All operations: {@value}.
+   */
+  public static final String S3EXPRESS_ALL_OPERATIONS = "s3express:*";
+
+  /**
+   * Actions needed to read a file in S3 through S3A, excluding
+   * SSE-KMS.
+   */
+  private static final String[] S3_PATH_READ_OPERATIONS =
       new String[]{
           S3_GET_OBJECT,
       };
 
   /**
-   * Actions needed to read data from S3 through S3A.
+   * Base actions needed to read data from S3 through S3A,
+   * excluding:
+   * <ol>
+   *   <li>bucket-level operations</li>
+   *   <li>SSE-KMS key operations</li>
+   * </ol>
+   * As this excludes the bucket list operations, it is not sufficient
+   * to read from a bucket on its own.
    */
-  public static final String[] S3_ROOT_READ_OPERATIONS =
+  private static final String[] S3_ROOT_READ_OPERATIONS =
       new String[]{
-          S3_LIST_BUCKET,
-          S3_LIST_BUCKET_MULTPART_UPLOADS,
-          S3_GET_OBJECT,
+          S3_ALL_GET,
+      };
+
+  public static final List<String> S3_ROOT_READ_OPERATIONS_LIST =
+      Collections.unmodifiableList(Arrays.asList(S3_ALL_GET));
+
+  /**
+   * Policies which can be applied to bucket resources for read operations.
+   * <ol>
+   *   <li>SSE-KMS key operations</li>
+   * </ol>
+   */
+  public static final String[] S3_BUCKET_READ_OPERATIONS =
+      new String[]{
+          S3_ALL_GET,
+          S3_BUCKET_ALL_LIST,
       };
 
   /**
    * Actions needed to write data to an S3A Path.
-   * This includes the appropriate read operations.
+   * This includes the appropriate read operations, but
+   * not SSE-KMS support.
    */
-  public static final String[] S3_PATH_RW_OPERATIONS =
-      new String[]{
+  public static final List<String> S3_PATH_RW_OPERATIONS =
+      Collections.unmodifiableList(Arrays.asList(new String[]{
           S3_ALL_GET,
           S3_PUT_OBJECT,
+          S3_PUT_OBJECT_ACL,
           S3_DELETE_OBJECT,
-          S3_ABORT_MULTIPART_UPLOAD,
-          S3_LIST_MULTIPART_UPLOAD_PARTS,
-      };
+          S3_ABORT_MULTIPART_UPLOAD
+      }));
 
   /**
    * Actions needed to write data to an S3A Path.
    * This is purely the extra operations needed for writing atop
    * of the read operation set.
    * Deny these and a path is still readable, but not writeable.
+   * Excludes: bucket-ARN and SSE-KMS permissions.
    */
-  public static final String[] S3_PATH_WRITE_OPERATIONS =
-      new String[]{
+  public static final List<String> S3_PATH_WRITE_OPERATIONS =
+      Collections.unmodifiableList(Arrays.asList(new String[]{
           S3_PUT_OBJECT,
+          S3_PUT_OBJECT_ACL,
           S3_DELETE_OBJECT,
           S3_ABORT_MULTIPART_UPLOAD
-      };
+      }));
 
   /**
    * Actions needed for R/W IO from the root of a bucket.
+   * Excludes: bucket-ARN and SSE-KMS permissions.
    */
-  public static final String[] S3_ROOT_RW_OPERATIONS =
-      new String[]{
-          S3_LIST_BUCKET,
+  public static final List<String> S3_ROOT_RW_OPERATIONS =
+      Collections.unmodifiableList(Arrays.asList(new String[]{
           S3_ALL_GET,
           S3_PUT_OBJECT,
+          S3_PUT_OBJECT_ACL,
           S3_DELETE_OBJECT,
           S3_ABORT_MULTIPART_UPLOAD,
-          S3_LIST_MULTIPART_UPLOAD_PARTS,
-          S3_ALL_LIST_BUCKET,
-      };
-
-  /**
-   * All DynamoDB operations: {@value}.
-   */
-  public static final String DDB_ALL_OPERATIONS = "dynamodb:*";
-
-  public static final String DDB_ADMIN = "dynamodb:*";
-
-
-  public static final String DDB_BATCH_WRITE = "dynamodb:BatchWriteItem";
-
-  /**
-   * All DynamoDB tables: {@value}.
-   */
-  public static final String ALL_DDB_TABLES = "arn:aws:dynamodb:::*";
-
-
-
-  public static final String WILDCARD = "*";
+      }));
 
   /**
    * Allow all S3 Operations.
+   * This does not cover S3-KMS
    */
   public static final Statement STATEMENT_ALL_S3 = statement(true,
       S3_ALL_BUCKETS,
       S3_ALL_OPERATIONS);
 
   /**
-   * Statement to allow all DDB access.
+   * S3 Express operations required for operation.
    */
-  public static final Statement STATEMENT_ALL_DDB = statement(true,
-      ALL_DDB_TABLES, DDB_ALL_OPERATIONS);
+  public static final Statement STATEMENT_S3EXPRESS = statement(true,
+      S3EXPRESS_ALL_BUCKETS,
+      S3EXPRESS_ALL_OPERATIONS);
 
   /**
-   * Allow all S3 and S3Guard operations.
+   * The s3:GetBucketLocation permission is for all buckets, not for
+   * any named bucket, which complicates permissions.
    */
-  public static final Policy ALLOW_S3_AND_SGUARD = policy(
-      STATEMENT_ALL_S3,
-      STATEMENT_ALL_DDB
-  );
+  public static final Statement STATEMENT_ALL_S3_GET_BUCKET_LOCATION =
+      statement(true,
+          S3_ALL_BUCKETS,
+          S3_GET_BUCKET_LOCATION);
+
+  /**
+   * From an S3 bucket name, build an ARN to refer to it.
+   * @param bucket bucket name.
+   * @param write are write permissions required
+   * @return return statement granting access.
+   */
+  public static List<Statement> allowS3Operations(String bucket,
+      boolean write) {
+    // add the bucket operations for the specific bucket ARN
+    List<Statement> statements =
+        Lists.newArrayList(
+            STATEMENT_S3EXPRESS,
+            statement(true,
+                bucketToArn(bucket),
+                S3_GET_BUCKET_LOCATION, S3_BUCKET_ALL_LIST));
+    // then add the statements for objects in the buckets
+    if (write) {
+      statements.add(
+          statement(true,
+              bucketObjectsToArn(bucket),
+              S3_ROOT_RW_OPERATIONS));
+    } else {
+      statements.add(
+          statement(true,
+              bucketObjectsToArn(bucket),
+              S3_ROOT_READ_OPERATIONS_LIST));
+    }
+    return statements;
+  }
+
+  /**
+   * From an S3 bucket name, build an ARN to refer to all objects in
+   * it.
+   * @param bucket bucket name.
+   * @return return the ARN to use in statements.
+   */
+  public static String bucketObjectsToArn(String bucket) {
+    return String.format("arn:aws:s3:::%s/*", bucket);
+  }
+
+
+  /**
+   * From an S3 bucket name, build an ARN to refer to it.
+   * @param bucket bucket name.
+   * @return return the ARN to use in statements.
+   */
+  public static String bucketToArn(String bucket) {
+    return String.format("arn:aws:s3:::%s", bucket);
+  }
 
 }

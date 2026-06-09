@@ -26,16 +26,15 @@ import org.apache.hadoop.metrics2.impl.MetricsSystemImpl;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 public class TestContainerMetrics {
@@ -51,30 +50,30 @@ public class TestContainerMetrics {
 
     metrics.recordMemoryUsage(1024);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 0, collector.getRecords().size());
+    assertEquals(0, collector.getRecords().size(), ERR);
 
     Thread.sleep(110);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
-    collector.clear();
-
-    Thread.sleep(110);
-    metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
-    collector.clear();
-
-    metrics.finished();
-    metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
-    collector.clear();
-
-    metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
     collector.clear();
 
     Thread.sleep(110);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
+    collector.clear();
+
+    metrics.finished(false);
+    metrics.getMetrics(collector, true);
+    assertEquals(1, collector.getRecords().size(), ERR);
+    collector.clear();
+
+    metrics.getMetrics(collector, true);
+    assertEquals(1, collector.getRecords().size(), ERR);
+    collector.clear();
+
+    Thread.sleep(110);
+    metrics.getMetrics(collector, true);
+    assertEquals(1, collector.getRecords().size(), ERR);
   }
 
   @Test
@@ -100,7 +99,7 @@ public class TestContainerMetrics {
 
     Thread.sleep(110);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
     MetricsRecord record = collector.getRecords().get(0);
 
     MetricsRecords.assertTag(record, ContainerMetrics.PROCESSID_INFO.name(),
@@ -137,8 +136,8 @@ public class TestContainerMetrics {
     ContainerId containerId3 = ContainerId.newContainerId(appAttemptId, 3);
     ContainerMetrics metrics3 = ContainerMetrics.forContainer(system,
         containerId3, 1, 0);
-    metrics1.finished();
-    metrics2.finished();
+    metrics1.finished(false);
+    metrics2.finished(false);
     system.sampleMetrics();
     system.sampleMetrics();
     Thread.sleep(100);
@@ -197,13 +196,29 @@ public class TestContainerMetrics {
         String metricName = metric.name();
         if (expectedValues.containsKey(metricName)) {
           Long expectedValue = expectedValues.get(metricName);
-          Assert.assertEquals(
-              "Metric " + metricName + " doesn't have expected value",
-              expectedValue, metric.value());
+          assertEquals(expectedValue, metric.value(),
+              "Metric " + metricName + " doesn't have expected value");
           testResults.add(metricName);
         }
       }
     }
-    Assert.assertEquals(expectedValues.keySet(), testResults);
+    assertEquals(expectedValues.keySet(), testResults);
+  }
+
+  @Test
+  public void testContainerMetricsUpdateContainerPid() {
+    ContainerId containerId = mock(ContainerId.class);
+    ContainerMetrics metrics = ContainerMetrics.forContainer(containerId,
+        100, 1);
+
+    String origPid = "1234";
+    metrics.recordProcessId(origPid);
+    assertEquals(origPid, metrics.registry.getTag(
+        ContainerMetrics.PROCESSID_INFO.name()).value());
+
+    String newPid = "4321";
+    metrics.recordProcessId(newPid);
+    assertEquals(newPid, metrics.registry.getTag(
+        ContainerMetrics.PROCESSID_INFO.name()).value());
   }
 }

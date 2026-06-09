@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.Sets;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -33,6 +34,8 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmissionData;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
 import org.apache.hadoop.yarn.server.resourcemanager.TestRMRestart;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
@@ -44,13 +47,15 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnSched
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestWorkPreservingRMRestartForNodeLabel {
   private Configuration conf;
@@ -58,7 +63,7 @@ public class TestWorkPreservingRMRestartForNodeLabel {
   
   RMNodeLabelsManager mgr;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new YarnConfiguration();
     conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class,
@@ -80,8 +85,8 @@ public class TestWorkPreservingRMRestartForNodeLabel {
       MockRM rm, String labelExpression) {
     RMContainer container =
         rm.getRMContext().getScheduler().getRMContainer(containerId);
-    Assert.assertNotNull("Cannot find RMContainer=" + containerId, container);
-    Assert.assertEquals(labelExpression,
+    assertNotNull(container, "Cannot find RMContainer=" + containerId);
+    assertEquals(labelExpression,
         container.getNodeLabelExpression());
   }
   
@@ -111,14 +116,14 @@ public class TestWorkPreservingRMRestartForNodeLabel {
     CapacityScheduler cs = (CapacityScheduler) rm.getResourceScheduler();
     FiCaSchedulerApp app =
         cs.getSchedulerApplications().get(appId).getCurrentAppAttempt();
-    Assert.assertEquals(expectedMemUsage, app.getAppAttemptResourceUsage()
+    assertEquals(expectedMemUsage, app.getAppAttemptResourceUsage()
         .getUsed(partition).getMemorySize());
   }
   
   private void checkQueueResourceUsage(String partition, String queueName, MockRM rm, int expectedMemUsage) {
     CapacityScheduler cs = (CapacityScheduler) rm.getResourceScheduler();
     CSQueue queue = cs.getQueue(queueName);
-    Assert.assertEquals(expectedMemUsage, queue.getQueueResourceUsage()
+    assertEquals(expectedMemUsage, queue.getQueueResourceUsage()
         .getUsed(partition).getMemorySize());
   }
 
@@ -154,14 +159,22 @@ public class TestWorkPreservingRMRestartForNodeLabel {
 
     // launch an app to queue a1 (label = x), and check all container will
     // be allocated in h1
-    RMApp app1 = rm1.submitApp(200, "app", "user", null, "a1");
+    MockRMAppSubmissionData data2 =
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a1")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data2);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     // request a container.
     am1.allocate("*", 1024, 1, new ArrayList<ContainerId>());
     containerId =
         ContainerId.newContainerId(am1.getApplicationAttemptId(), 2);
-    Assert.assertTrue(rm1.waitForState(nm1, containerId,
+    assertTrue(rm1.waitForState(nm1, containerId,
         RMContainerState.ALLOCATED));
     checkRMContainerLabelExpression(ContainerId.newContainerId(
         am1.getApplicationAttemptId(), 1), rm1, "x");
@@ -170,13 +183,21 @@ public class TestWorkPreservingRMRestartForNodeLabel {
 
     // launch an app to queue b1 (label = y), and check all container will
     // be allocated in h2
-    RMApp app2 = rm1.submitApp(200, "app", "user", null, "b1");
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("b1")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app2 = MockRMAppSubmitter.submit(rm1, data1);
     MockAM am2 = MockRM.launchAndRegisterAM(app2, rm1, nm2);
 
     // request a container.
     am2.allocate("*", 1024, 1, new ArrayList<ContainerId>());
     containerId = ContainerId.newContainerId(am2.getApplicationAttemptId(), 2);
-    Assert.assertTrue(rm1.waitForState(nm2, containerId,
+    assertTrue(rm1.waitForState(nm2, containerId,
         RMContainerState.ALLOCATED));
     checkRMContainerLabelExpression(ContainerId.newContainerId(
         am2.getApplicationAttemptId(), 1), rm1, "y");
@@ -185,13 +206,21 @@ public class TestWorkPreservingRMRestartForNodeLabel {
     
     // launch an app to queue c1 (label = ""), and check all container will
     // be allocated in h3
-    RMApp app3 = rm1.submitApp(200, "app", "user", null, "c1");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("c1")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app3 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am3 = MockRM.launchAndRegisterAM(app3, rm1, nm3);
 
     // request a container.
     am3.allocate("*", 1024, 1, new ArrayList<ContainerId>());
     containerId = ContainerId.newContainerId(am3.getApplicationAttemptId(), 2);
-    Assert.assertTrue(rm1.waitForState(nm3, containerId,
+    assertTrue(rm1.waitForState(nm3, containerId,
         RMContainerState.ALLOCATED));
     checkRMContainerLabelExpression(ContainerId.newContainerId(
         am3.getApplicationAttemptId(), 1), rm1, "");

@@ -18,11 +18,12 @@
 
 package org.apache.hadoop.fs.contract;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.junit.Assert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,13 +71,21 @@ public abstract class AbstractFSContract extends Configured {
   }
 
   /**
+   * Any teardown logic can go here.
+   * @throws IOException IO problems
+   */
+  public void teardown() throws IOException {
+
+  }
+
+  /**
    * Add a configuration resource to this instance's configuration
    * @param resource resource reference
    * @throws AssertionError if the resource was not found.
    */
   protected void addConfResource(String resource) {
     boolean found = maybeAddConfResource(resource);
-    Assert.assertTrue("Resource not found " + resource, found);
+    assertTrue(found, "Resource not found " + resource);
   }
 
   /**
@@ -113,7 +122,7 @@ public abstract class AbstractFSContract extends Configured {
   public abstract FileSystem getTestFileSystem() throws IOException;
 
   /**
-   * Get the scheme of this FS
+   * Get the scheme of this FS.
    * @return the scheme this FS supports
    */
   public abstract String getScheme();
@@ -148,7 +157,6 @@ public abstract class AbstractFSContract extends Configured {
    * @param feature feature to query
    * @param defval default value
    * @return true if the feature is supported
-   * @throws IOException IO problems
    */
   public boolean isSupported(String feature, boolean defval) {
     return getConf().getBoolean(getConfKey(feature), defval);
@@ -160,7 +168,6 @@ public abstract class AbstractFSContract extends Configured {
    * @param feature feature to query
    * @param defval default value
    * @return true if the feature is supported
-   * @throws IOException IO problems
    */
   public int getLimit(String feature, int defval) {
     return getConf().getInt(getConfKey(feature), defval);

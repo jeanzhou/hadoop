@@ -19,18 +19,19 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 
 import java.util.concurrent.TimeUnit;
 
 @InterfaceAudience.Private
 public class CheckpointConf {
-  private static final Log LOG = LogFactory.getLog(CheckpointConf.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(CheckpointConf.class);
   
   /** How often to checkpoint regardless of number of txns */
   private final long checkpointPeriod;    // in seconds
@@ -53,6 +54,12 @@ public class CheckpointConf {
   */
   private double quietMultiplier;
 
+  /**
+   * Whether enable the standby namenode to upload fsiamge to multiple other namenodes in
+   * parallel, in the cluster with observer namenodes.
+   */
+  private final boolean parallelUploadEnabled;
+
   public CheckpointConf(Configuration conf) {
     checkpointCheckPeriod = conf.getTimeDuration(
         DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_KEY,
@@ -67,6 +74,9 @@ public class CheckpointConf {
     legacyOivImageDir = conf.get(DFS_NAMENODE_LEGACY_OIV_IMAGE_DIR_KEY);
     quietMultiplier = conf.getDouble(DFS_NAMENODE_CHECKPOINT_QUIET_MULTIPLIER_KEY,
       DFS_NAMENODE_CHECKPOINT_QUIET_MULTIPLIER_DEFAULT);
+    parallelUploadEnabled = conf.getBoolean(
+        DFS_NAMENODE_CHECKPOINT_PARALLEL_UPLOAD_ENABLED_KEY,
+        DFS_NAMENODE_CHECKPOINT_PARALLEL_UPLOAD_ENABLED_DEFAULT);
     warnForDeprecatedConfigs(conf);
   }
   
@@ -104,5 +114,9 @@ public class CheckpointConf {
 
   public double getQuietPeriod() {
     return this.checkpointPeriod * this.quietMultiplier;
+  }
+
+  public boolean isParallelUploadEnabled() {
+    return parallelUploadEnabled;
   }
 }

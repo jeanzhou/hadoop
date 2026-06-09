@@ -22,13 +22,13 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ProvidedStorageLocation;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.IOException;
@@ -46,7 +46,7 @@ public class ITestInMemoryAliasMap {
   private File tempDirectory;
   private static String bpid = "bpid-0";
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     Configuration conf = new Configuration();
     File temp = Files.createTempDirectory("seagull").toFile();
@@ -57,7 +57,7 @@ public class ITestInMemoryAliasMap {
     aliasMap = InMemoryAliasMap.init(conf, bpid);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     aliasMap.close();
     FileUtils.deleteDirectory(tempDirectory);
@@ -124,6 +124,36 @@ public class ITestInMemoryAliasMap {
     assertEquals(3, list.getFileRegions().size());
     // no more results expected
     assertFalse(list.getNextBlock().isPresent());
+  }
+
+  @Test
+  public void testSnapshot() throws Exception {
+    Block block1 = new Block(100);
+    Block block2 = new Block(200);
+    Path path = new Path("users", "alice");
+    ProvidedStorageLocation remoteLocation =
+        new ProvidedStorageLocation(path, 0, 1000, new byte[0]);
+    // write the first block
+    aliasMap.write(block1, remoteLocation);
+    // create snapshot
+    File snapshotFile = InMemoryAliasMap.createSnapshot(aliasMap);
+    // write the 2nd block after the snapshot
+    aliasMap.write(block2, remoteLocation);
+    // creata a new aliasmap object from the snapshot
+    InMemoryAliasMap snapshotAliasMap = null;
+    Configuration newConf = new Configuration();
+    newConf.set(DFSConfigKeys.DFS_PROVIDED_ALIASMAP_INMEMORY_LEVELDB_DIR,
+        snapshotFile.getAbsolutePath());
+    try {
+      snapshotAliasMap = InMemoryAliasMap.init(newConf, bpid);
+      // now the snapshot should have the first block but not the second one.
+      assertTrue(snapshotAliasMap.read(block1).isPresent());
+      assertFalse(snapshotAliasMap.read(block2).isPresent());
+    } finally {
+      if (snapshotAliasMap != null) {
+        snapshotAliasMap.close();
+      }
+    }
   }
 }
 

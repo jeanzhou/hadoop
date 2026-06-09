@@ -80,7 +80,7 @@ By default, YARN will automatically detect and config GPUs when above config is 
   device number of GPUs is using `nvidia-smi -q` and search `Minor Number`
   output.
 
-  When minor numbers are specified manually, admin needs to include indice of GPUs
+  When minor numbers are specified manually, admin needs to include indices of GPUs
   as well, format is `index:minor_number[,index:minor_number...]`. An example
   of manual specification is `0:0,1:1,2:2,3:4"`to allow YARN NodeManager to
   manage GPU devices with indices `0/1/2/3` and minor number `0/1/2/4`.
@@ -107,7 +107,7 @@ Following configs can be customized when user needs to run GPU applications insi
 | --- | --- |
 | yarn.nodemanager.resource-plugins.gpu.docker-plugin | nvidia-docker-v1 |
 
-Specify docker command plugin for GPU. By default uses Nvidia docker V1.0.
+Specify docker command plugin for GPU. By default uses Nvidia docker V1.0, `nvidia-docker-v2` is available for V2.x.
 
 | Property | Default value |
 | --- | --- |
@@ -168,6 +168,13 @@ docker.allowed.volume-drivers
 [docker]
 ...
 docker.allowed.ro-mounts=nvidia_driver_375.66
+```
+**4) If use `nvidia-docker-v2` as gpu docker plugin, add `nvidia` to runtimes whitelist.**
+
+```
+[docker]
+...
+docker.allowed.runtimes=nvidia
 ```
 
 # Use it

@@ -22,10 +22,12 @@ import static org.apache.hadoop.yarn.util.StringHelper.pajoin;
 
 import java.net.InetSocketAddress;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.jsonprovider.JsonProviderFeature;
 import org.apache.hadoop.yarn.util.RMHAUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
@@ -33,32 +35,56 @@ import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
 import org.apache.hadoop.yarn.webapp.WebApp;
 import org.apache.hadoop.yarn.webapp.YarnWebParams;
 
-import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
+import javax.servlet.Filter;
+import org.glassfish.jersey.internal.inject.AbstractBinder;
+import org.glassfish.jersey.server.ResourceConfig;
 
 /**
  * The RM webapp
  */
 public class RMWebApp extends WebApp implements YarnWebParams {
 
-  private static final Log LOG =
-      LogFactory.getLog(RMWebApp.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(RMWebApp.class.getName());
   private final ResourceManager rm;
   private boolean standby = false;
+  private Configuration conf;
 
   public RMWebApp(ResourceManager rm) {
     this.rm = rm;
   }
 
+  public ResourceConfig resourceConfig(Configuration config) {
+    ResourceConfig resourceConfig = new ResourceConfig();
+    resourceConfig.register(new JerseyBinder());
+
+    Class webService = config.getClass(YarnConfiguration.YARN_WEBAPP_CUSTOM_WEBSERVICE_CLASS,
+        RMWebServices.class);
+    resourceConfig.register(webService);
+    LOG.debug("Registered webservice class is {}", webService.getName());
+
+    resourceConfig.register(GenericExceptionHandler.class);
+    resourceConfig.register(JsonProviderFeature.class);
+    resourceConfig.register(JAXBContextResolver.class);
+    return resourceConfig;
+  }
+
+  private class JerseyBinder extends AbstractBinder {
+    @Override
+    protected void configure() {
+      bind(rm).to(ResourceManager.class).named("rm");
+      bind(rm.getConfig()).to(Configuration.class).named("conf");
+    }
+  }
+
   @Override
   public void setup() {
-    bind(JAXBContextResolver.class);
-    bind(RMWebServices.class);
-    bind(GenericExceptionHandler.class);
-    bind(RMWebApp.class).toInstance(this);
+    conf = rm.getConfig();
 
-    if (rm != null) {
-      bind(ResourceManager.class).toInstance(rm);
-    }
+    bind(RMWebApp.class).toInstance(this);
+    bindExternalClasses();
+    bind(ResourceManager.class).toInstance(rm);
+
     route("/", RmController.class);
     route(pajoin("/nodes", NODE_STATE), RmController.class, "nodes");
     route(pajoin("/apps", APP_STATE), RmController.class);
@@ -77,7 +103,7 @@ public class RMWebApp extends WebApp implements YarnWebParams {
   }
 
   @Override
-  protected Class<? extends GuiceContainer> getWebAppFilterClass() {
+  protected Class<? extends Filter> getWebAppFilterClass() {
     return RMWebAppFilter.class;
   }
 
@@ -97,10 +123,19 @@ public class RMWebApp extends WebApp implements YarnWebParams {
       return super.getRedirectPath();
   }
 
+  private void bindExternalClasses() {
+    Class<?>[] externalClasses = conf
+        .getClasses(YarnConfiguration.YARN_HTTP_WEBAPP_EXTERNAL_CLASSES);
+    for (Class<?> c : externalClasses) {
+      bind(c);
+    }
+  }
+
+
   private String buildRedirectPath() {
     // make a copy of the original configuration so not to mutate it. Also use
     // an YarnConfiguration to force loading of yarn-site.xml.
-    YarnConfiguration yarnConf = new YarnConfiguration(rm.getConfig());
+    YarnConfiguration yarnConf = new YarnConfiguration(conf);
     String activeRMHAId = RMHAUtils.findActiveRMHAId(yarnConf);
     String path = "";
     if (activeRMHAId != null) {
@@ -114,7 +149,7 @@ public class RMWebApp extends WebApp implements YarnWebParams {
               YarnConfiguration.DEFAULT_RM_WEBAPP_ADDRESS,
               YarnConfiguration.DEFAULT_RM_WEBAPP_PORT);
 
-      path = sock.getHostName() + ":" + Integer.toString(sock.getPort());
+      path = sock.getHostName() + ":" + sock.getPort();
       path = YarnConfiguration.useHttps(yarnConf)
           ? "https://" + path
           : "http://" + path;

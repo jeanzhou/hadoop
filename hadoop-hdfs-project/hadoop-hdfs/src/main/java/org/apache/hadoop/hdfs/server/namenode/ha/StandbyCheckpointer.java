@@ -22,15 +22,14 @@ import static org.apache.hadoop.util.Time.monotonicNow;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URL;
-import java.security.PrivilegedAction;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.ha.ServiceFailedException;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.HAUtil;
 import org.apache.hadoop.hdfs.server.namenode.CheckpointConf;
@@ -45,10 +44,13 @@ import org.apache.hadoop.hdfs.util.Canceler;
 import org.apache.hadoop.io.MultipleIOException;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.Lists;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,7 +58,7 @@ import org.slf4j.LoggerFactory;
  * Thread which runs inside the NN when it's in Standby state,
  * periodically waking up to take a checkpoint of the namespace.
  * When it takes a checkpoint, it saves it to its local
- * storage and then uploads it to the remote NameNode.
+ * storage and then uploads it to remote NameNodes.
  */
 @InterfaceAudience.Private
 public class StandbyCheckpointer {
@@ -67,19 +69,20 @@ public class StandbyCheckpointer {
   private final Configuration conf;
   private final FSNamesystem namesystem;
   private long lastCheckpointTime;
-  private long lastUploadTime;
   private final CheckpointerThread thread;
   private final ThreadFactory uploadThreadFactory;
-  private List<URL> activeNNAddresses;
+  private List<URL> remoteNNAddresses;
   private URL myNNAddress;
 
   private final Object cancelLock = new Object();
   private Canceler canceler;
-  private boolean isPrimaryCheckPointer = true;
 
   // Keep track of how many checkpoints were canceled.
   // This is for use in tests.
   private static int canceledCount = 0;
+
+  // A map from NN url to the most recent image upload time.
+  private final HashMap<String, CheckpointReceiverEntry> checkpointReceivers;
   
   public StandbyCheckpointer(Configuration conf, FSNamesystem ns)
       throws IOException {
@@ -89,12 +92,42 @@ public class StandbyCheckpointer {
     this.thread = new CheckpointerThread();
     this.uploadThreadFactory = new ThreadFactoryBuilder().setDaemon(true)
         .setNameFormat("TransferFsImageUpload-%d").build();
-
     setNameNodeAddresses(conf);
+    this.checkpointReceivers = new HashMap<>();
+    for (URL address : remoteNNAddresses) {
+      this.checkpointReceivers.put(address.toString(),
+          new CheckpointReceiverEntry());
+    }
+  }
+
+  private static final class CheckpointReceiverEntry {
+    private long lastUploadTime;
+    private boolean isPrimary;
+
+    CheckpointReceiverEntry() {
+      this.lastUploadTime = 0L;
+      this.isPrimary = true;
+    }
+
+    void setLastUploadTime(long lastUploadTime) {
+      this.lastUploadTime = lastUploadTime;
+    }
+
+    void setIsPrimary(boolean isPrimaryFor) {
+      this.isPrimary = isPrimaryFor;
+    }
+
+    long getLastUploadTime() {
+      return lastUploadTime;
+    }
+
+    boolean isPrimary() {
+      return isPrimary;
+    }
   }
 
   /**
-   * Determine the address of the NN we are checkpointing
+   * Determine the addresses of the NNs we are checkpointing
    * as well as our own HTTP address from the configuration.
    * @throws IOException 
    */
@@ -102,17 +135,17 @@ public class StandbyCheckpointer {
     // Look up our own address.
     myNNAddress = getHttpAddress(conf);
 
-    // Look up the active node's address
-    List<Configuration> confForActive = HAUtil.getConfForOtherNodes(conf);
-    activeNNAddresses = new ArrayList<URL>(confForActive.size());
-    for (Configuration activeConf : confForActive) {
-      URL activeNNAddress = getHttpAddress(activeConf);
+    // Look up the other nodes' addresses
+    List<Configuration> confForOtherNodes = HAUtil.getConfForOtherNodes(conf);
+    remoteNNAddresses = new ArrayList<>(confForOtherNodes.size());
+    for (Configuration remoteConf : confForOtherNodes) {
+      URL remoteNNAddress = getHttpAddress(remoteConf);
 
-      // sanity check each possible active NN
-      Preconditions.checkArgument(checkAddress(activeNNAddress),
-          "Bad address for active NN: %s", activeNNAddress);
+      // sanity check each possible remote NN
+      Preconditions.checkArgument(checkAddress(remoteNNAddress),
+          "Bad address for remote NN: %s", remoteNNAddress);
 
-      activeNNAddresses.add(activeNNAddress);
+      remoteNNAddresses.add(remoteNNAddress);
     }
 
     // Sanity-check.
@@ -137,8 +170,8 @@ public class StandbyCheckpointer {
 
   public void start() {
     LOG.info("Starting standby checkpoint thread...\n" +
-        "Checkpointing active NN to possible NNs: {}\n" +
-        "Serving checkpoints at {}", activeNNAddresses, myNNAddress);
+        "Uploading checkpoints to remote NNs: {}\n" +
+        "Serving checkpoints at {}", remoteNNAddresses, myNNAddress);
     thread.start();
   }
   
@@ -149,7 +182,7 @@ public class StandbyCheckpointer {
     try {
       thread.join();
     } catch (InterruptedException e) {
-      LOG.warn("Edit log tailer thread exited with an exception");
+      LOG.warn("Checkpointer thread exited with an exception");
       throw new IOException(e);
     }
   }
@@ -158,7 +191,7 @@ public class StandbyCheckpointer {
     thread.interrupt();
   }
 
-  private void doCheckpoint(boolean sendCheckpoint) throws InterruptedException, IOException {
+  private void doCheckpoint() throws InterruptedException, IOException {
     assert canceler != null;
     final long txid;
     final NameNodeFile imageType;
@@ -210,70 +243,85 @@ public class StandbyCheckpointer {
       namesystem.cpUnlock();
     }
 
-    //early exit if we shouldn't actually send the checkpoint to the ANN
-    if(!sendCheckpoint){
-      return;
-    }
-
-    // Upload the saved checkpoint back to the active
+    // Upload the saved checkpoint back to remote NNs
     // Do this in a separate thread to avoid blocking transition to active, but don't allow more
     // than the expected number of tasks to run or queue up
     // See HDFS-4816
-    ExecutorService executor = new ThreadPoolExecutor(0, activeNNAddresses.size(), 100,
-        TimeUnit.MILLISECONDS, new LinkedBlockingQueue<Runnable>(activeNNAddresses.size()),
-        uploadThreadFactory);
+    int poolSize = checkpointConf.isParallelUploadEnabled() ? remoteNNAddresses.size() : 0;
+    ExecutorService executor =
+        new ThreadPoolExecutor(poolSize, remoteNNAddresses.size(), 100, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(remoteNNAddresses.size()), uploadThreadFactory);
     // for right now, just match the upload to the nn address by convention. There is no need to
     // directly tie them together by adding a pair class.
-    List<Future<TransferFsImage.TransferResult>> uploads =
-        new ArrayList<Future<TransferFsImage.TransferResult>>();
-    for (final URL activeNNAddress : activeNNAddresses) {
-      Future<TransferFsImage.TransferResult> upload =
-          executor.submit(new Callable<TransferFsImage.TransferResult>() {
-            @Override
-            public TransferFsImage.TransferResult call()
-                throws IOException, InterruptedException {
+    HashMap<String, Future<TransferFsImage.TransferResult>> uploads =
+        new HashMap<>();
+    for (final URL remoteNNAddress : remoteNNAddresses) {
+      // Upload image if at least 1 of 2 following conditions met:
+      // 1. has been quiet for long enough, try to contact the node.
+      // 2. this standby IS the primary checkpointer of target NN.
+      String addressString = remoteNNAddress.toString();
+      assert checkpointReceivers.containsKey(addressString);
+      CheckpointReceiverEntry receiverEntry =
+          checkpointReceivers.get(addressString);
+      long secsSinceLastUpload =
+          TimeUnit.MILLISECONDS.toSeconds(
+              monotonicNow() - receiverEntry.getLastUploadTime());
+      boolean shouldUpload = receiverEntry.isPrimary() ||
+          secsSinceLastUpload >= checkpointConf.getQuietPeriod();
+      if (shouldUpload) {
+        Future<TransferFsImage.TransferResult> upload =
+            executor.submit(() -> {
               CheckpointFaultInjector.getInstance().duringUploadInProgess();
-              return TransferFsImage.uploadImageFromStorage(activeNNAddress, conf, namesystem
-                  .getFSImage().getStorage(), imageType, txid, canceler);
-            }
-          });
-      uploads.add(upload);
+              return TransferFsImage.uploadImageFromStorage(remoteNNAddress, conf,
+                  namesystem.getFSImage().getStorage(), imageType, txid, canceler);
+            });
+        uploads.put(addressString, upload);
+      }
     }
     InterruptedException ie = null;
-    IOException ioe= null;
-    int i = 0;
-    boolean success = false;
-    for (; i < uploads.size(); i++) {
-      Future<TransferFsImage.TransferResult> upload = uploads.get(i);
+    List<IOException> ioes = Lists.newArrayList();
+    for (Map.Entry<String, Future<TransferFsImage.TransferResult>> entry :
+        uploads.entrySet()) {
+      String url = entry.getKey();
+      Future<TransferFsImage.TransferResult> upload = entry.getValue();
       try {
-        // TODO should there be some smarts here about retries nodes that are not the active NN?
-        if (upload.get() == TransferFsImage.TransferResult.SUCCESS) {
-          success = true;
-          //avoid getting the rest of the results - we don't care since we had a successful upload
-          break;
+        // TODO should there be some smarts here about retries nodes that
+        //  are not the active NN?
+        CheckpointReceiverEntry receiverEntry = checkpointReceivers.get(url);
+        TransferFsImage.TransferResult uploadResult = upload.get();
+        if (uploadResult == TransferFsImage.TransferResult.SUCCESS) {
+          receiverEntry.setLastUploadTime(monotonicNow());
+          receiverEntry.setIsPrimary(true);
+        } else {
+          // Getting here means image upload is explicitly rejected
+          // by the other node. This could happen if:
+          // 1. the other is also a standby, or
+          // 2. the other is active, but already accepted another
+          // newer image, or
+          // 3. the other is active but has a recent enough image.
+          // All these are valid cases, just log for information.
+          LOG.info("Image upload rejected by the other NameNode: {}",
+              uploadResult);
+          receiverEntry.setIsPrimary(false);
         }
-
       } catch (ExecutionException e) {
-        ioe = new IOException("Exception during image upload", e);
-        break;
+        // Even if exception happens, still proceeds to next NN url.
+        // so that fail to upload to previous NN does not cause the
+        // remaining NN not getting the fsImage.
+        ioes.add(new IOException("Exception during image upload", e));
       } catch (InterruptedException e) {
         ie = e;
         break;
       }
     }
-    if (ie == null && ioe == null) {
-      //Update only when response from remote about success or
-      lastUploadTime = monotonicNow();
-      // we are primary if we successfully updated the ANN
-      this.isPrimaryCheckPointer = success;
-    }
     // cleaner than copying code for multiple catch statements and better than catching all
     // exceptions, so we just handle the ones we expect.
-    if (ie != null || ioe != null) {
+    if (ie != null) {
 
       // cancel the rest of the tasks, and close the pool
-      for (; i < uploads.size(); i++) {
-        Future<TransferFsImage.TransferResult> upload = uploads.get(i);
+      for (Map.Entry<String, Future<TransferFsImage.TransferResult>> entry :
+          uploads.entrySet()) {
+        Future<TransferFsImage.TransferResult> upload = entry.getValue();
         // The background thread may be blocked waiting in the throttler, so
         // interrupt it.
         upload.cancel(true);
@@ -286,11 +334,11 @@ public class StandbyCheckpointer {
       executor.awaitTermination(500, TimeUnit.MILLISECONDS);
 
       // re-throw the exception we got, since one of these two must be non-null
-      if (ie != null) {
-        throw ie;
-      } else if (ioe != null) {
-        throw ioe;
-      }
+      throw ie;
+    }
+
+    if (ioes.size() > remoteNNAddresses.size() / 2) {
+      throw MultipleIOException.createIOException(ioes);
     }
   }
   
@@ -299,7 +347,7 @@ public class StandbyCheckpointer {
    * and prevent any new checkpoints from starting for the next
    * minute or so.
    */
-  public void cancelAndPreventCheckpoints(String msg) throws ServiceFailedException {
+  public void cancelAndPreventCheckpoints(String msg) {
     synchronized (cancelLock) {
       // The checkpointer thread takes this lock and checks if checkpointing is
       // postponed. 
@@ -322,13 +370,18 @@ public class StandbyCheckpointer {
     return canceledCount;
   }
 
+  @VisibleForTesting
+  public long getLastCheckpointTime() {
+    return lastCheckpointTime;
+  }
+
   private long countUncheckpointedTxns() {
     FSImage img = namesystem.getFSImage();
     return img.getCorrectLastAppliedOrWrittenTxId() -
       img.getStorage().getMostRecentCheckpointTxId();
   }
 
-  private class CheckpointerThread extends Thread {
+  private class CheckpointerThread extends SubjectInheritingThread {
     private volatile boolean shouldRun = true;
     private volatile long preventCheckpointsUntil = 0;
 
@@ -341,17 +394,13 @@ public class StandbyCheckpointer {
     }
 
     @Override
-    public void run() {
+    public void work() {
       // We have to make sure we're logged in as far as JAAS
       // is concerned, in order to use kerberized SSL properly.
-      SecurityUtil.doAsLoginUserOrFatal(
-          new PrivilegedAction<Object>() {
-          @Override
-          public Object run() {
-            doWork();
-            return null;
-          }
-        });
+      SecurityUtil.doAsLoginUserOrFatal(() -> {
+        doWork();
+        return null;
+      });
     }
 
     /**
@@ -373,13 +422,12 @@ public class StandbyCheckpointer {
       // Reset checkpoint time so that we don't always checkpoint
       // on startup.
       lastCheckpointTime = monotonicNow();
-      lastUploadTime = monotonicNow();
       while (shouldRun) {
         boolean needRollbackCheckpoint = namesystem.isNeedRollbackFsImage();
         if (!needRollbackCheckpoint) {
           try {
             Thread.sleep(checkPeriod);
-          } catch (InterruptedException ie) {
+          } catch (InterruptedException ignored) {
           }
           if (!shouldRun) {
             break;
@@ -409,7 +457,8 @@ public class StandbyCheckpointer {
           } else if (secsSinceLast >= checkpointConf.getPeriod()) {
             LOG.info("Triggering checkpoint because it has been {} seconds " +
                 "since the last checkpoint, which exceeds the configured " +
-                "interval {}", secsSinceLast, checkpointConf.getPeriod());
+                "interval {}, And now is {}, lastCheckpointTime is {}.",
+                secsSinceLast, checkpointConf.getPeriod(), now, lastCheckpointTime);
             needCheckpoint = true;
           }
 
@@ -426,10 +475,7 @@ public class StandbyCheckpointer {
 
             // on all nodes, we build the checkpoint. However, we only ship the checkpoint if have a
             // rollback request, are the checkpointer, are outside the quiet period.
-            final long secsSinceLastUpload = (now - lastUploadTime) / 1000;
-            boolean sendRequest = isPrimaryCheckPointer
-                || secsSinceLastUpload >= checkpointConf.getQuietPeriod();
-            doCheckpoint(sendRequest);
+            doCheckpoint();
 
             // reset needRollbackCheckpoint to false only when we finish a ckpt
             // for rollback image
@@ -438,8 +484,9 @@ public class StandbyCheckpointer {
               namesystem.setCreatedRollbackImages(true);
               namesystem.setNeedRollbackFsImage(false);
             }
-            lastCheckpointTime = now;
-            LOG.info("Checkpoint finished successfully.");
+            lastCheckpointTime = monotonicNow();
+            LOG.info("Checkpoint finished successfully, the lastCheckpointTime is:{}.",
+                lastCheckpointTime);
           }
         } catch (SaveNamespaceCancelledException ce) {
           LOG.info("Checkpoint was cancelled: {}", ce.getMessage());
@@ -460,7 +507,7 @@ public class StandbyCheckpointer {
   }
 
   @VisibleForTesting
-  List<URL> getActiveNNAddresses() {
-    return activeNNAddresses;
+  List<URL> getRemoteNNAddresses() {
+    return remoteNNAddresses;
   }
 }

@@ -15,6 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+/**
+ * Implementation of compression/decompression based on the Zstandard
+ * compression algorithm.
+ *
+ * @see <a href="https://github.com/facebook/zstd">Zstandard</a>
+ */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 package org.apache.hadoop.io.compress.zstd;

@@ -18,9 +18,11 @@
 
 package org.apache.hadoop.mapreduce.v2.app;
 
-import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyBoolean;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -60,9 +62,9 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 
 /**
@@ -77,7 +79,7 @@ import org.junit.Test;
    private final static RecordFactory recordFactory = RecordFactoryProvider.
        getRecordFactory(null);
 
-   @After
+   @AfterEach
    public void tearDown() {
      conf.setBoolean(MRJobConfig.PRESERVE_FAILED_TASK_FILES, false);
    }
@@ -111,10 +113,10 @@ import org.junit.Test;
      appMaster.shutDownJob();
      ((RunningAppContext) appMaster.getContext()).resetIsLastAMRetry();
      if (shouldHaveDeleted) {
-       Assert.assertEquals(new Boolean(true), appMaster.isLastAMRetry());
+       assertTrue(appMaster.isLastAMRetry());
        verify(fs).delete(stagingJobPath, true);
      } else {
-       Assert.assertEquals(new Boolean(false), appMaster.isLastAMRetry());
+       assertFalse(appMaster.isLastAMRetry());
        verify(fs, never()).delete(stagingJobPath, true);
      }
    }
@@ -134,18 +136,19 @@ import org.junit.Test;
      JobId jobid = recordFactory.newRecordInstance(JobId.class);
      jobid.setAppId(appId);
      ContainerAllocator mockAlloc = mock(ContainerAllocator.class);
-     Assert.assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
+     assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
      MRAppMaster appMaster = new TestMRApp(attemptId, mockAlloc,
          JobStateInternal.RUNNING, MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS);
      appMaster.init(conf);
      appMaster.start();
      appMaster.shutDownJob();
      //test whether notifyIsLastAMRetry called
-     Assert.assertEquals(true, ((TestMRApp)appMaster).getTestIsLastAMRetry());
+     assertTrue(((TestMRApp)appMaster).getTestIsLastAMRetry());
      verify(fs).delete(stagingJobPath, true);
    }
 
-   @Test (timeout = 30000)
+   @Test
+   @Timeout(value = 30)
    public void testNoDeletionofStagingOnReboot() throws IOException {
      conf.set(MRJobConfig.MAPREDUCE_JOB_DIR, stagingJobDir);
      fs = mock(FileSystem.class);
@@ -157,7 +160,7 @@ import org.junit.Test;
          0);
      ApplicationAttemptId attemptId = ApplicationAttemptId.newInstance(appId, 1);
      ContainerAllocator mockAlloc = mock(ContainerAllocator.class);
-     Assert.assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
+     assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
      MRAppMaster appMaster = new TestMRApp(attemptId, mockAlloc,
          JobStateInternal.REBOOT, MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS);
      appMaster.init(conf);
@@ -165,7 +168,7 @@ import org.junit.Test;
      //shutdown the job, not the lastRetry
      appMaster.shutDownJob();
      //test whether notifyIsLastAMRetry called
-     Assert.assertEquals(false, ((TestMRApp)appMaster).getTestIsLastAMRetry());
+     assertFalse(((TestMRApp)appMaster).getTestIsLastAMRetry());
      verify(fs, times(0)).delete(stagingJobPath, true);
    }
 
@@ -192,11 +195,12 @@ import org.junit.Test;
      //shutdown the job, is lastRetry
      appMaster.shutDownJob();
      //test whether notifyIsLastAMRetry called
-     Assert.assertEquals(true, ((TestMRApp)appMaster).getTestIsLastAMRetry());
+     assertTrue(((TestMRApp)appMaster).getTestIsLastAMRetry());
      verify(fs).delete(stagingJobPath, true);
    }
    
-   @Test (timeout = 30000)
+   @Test
+   @Timeout(value = 30)
    public void testDeletionofStagingOnKill() throws IOException {
      conf.set(MRJobConfig.MAPREDUCE_JOB_DIR, stagingJobDir);
      fs = mock(FileSystem.class);
@@ -241,13 +245,13 @@ import org.junit.Test;
      ContainerAllocator mockAlloc = mock(ContainerAllocator.class);
      MRAppMaster appMaster = new TestMRApp(attemptId, mockAlloc); //no retry
      appMaster.init(conf);
-     assertTrue("appMaster.isLastAMRetry() is false", appMaster.isLastAMRetry());
+     assertTrue(appMaster.isLastAMRetry(), "appMaster.isLastAMRetry() is false");
      //simulate the process being killed
      MRAppMaster.MRAppMasterShutdownHook hook = 
        new MRAppMaster.MRAppMasterShutdownHook(appMaster);
      hook.run();
-     assertTrue("MRAppMaster isn't stopped",
-                appMaster.isInState(Service.STATE.STOPPED));
+     assertTrue(appMaster.isInState(Service.STATE.STOPPED),
+         "MRAppMaster isn't stopped");
      verify(fs).delete(stagingJobPath, true);
    }
 
@@ -269,14 +273,14 @@ import org.junit.Test;
      JobId jobid = recordFactory.newRecordInstance(JobId.class);
      jobid.setAppId(appId);
      ContainerAllocator mockAlloc = mock(ContainerAllocator.class);
-     Assert.assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
+     assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
      MRAppMaster appMaster = new TestMRApp(attemptId, mockAlloc,
              JobStateInternal.FAILED, MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS);
      appMaster.init(conf);
      appMaster.start();
      appMaster.shutDownJob();
      //test whether notifyIsLastAMRetry called
-     Assert.assertEquals(true, ((TestMRApp) appMaster).getTestIsLastAMRetry());
+     assertTrue(((TestMRApp) appMaster).getTestIsLastAMRetry());
      verify(fs, times(0)).delete(stagingJobPath, true);
    }
 
@@ -297,14 +301,14 @@ import org.junit.Test;
      JobId jobid = recordFactory.newRecordInstance(JobId.class);
      jobid.setAppId(appId);
      ContainerAllocator mockAlloc = mock(ContainerAllocator.class);
-     Assert.assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
+     assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
      MRAppMaster appMaster = new TestMRApp(attemptId, mockAlloc,
              JobStateInternal.RUNNING, MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS);
      appMaster.init(conf);
      appMaster.start();
      appMaster.shutDownJob();
      //test whether notifyIsLastAMRetry called
-     Assert.assertEquals(true, ((TestMRApp) appMaster).getTestIsLastAMRetry());
+     assertTrue(((TestMRApp) appMaster).getTestIsLastAMRetry());
      verify(fs, times(0)).delete(stagingJobPath, true);
    }
 
@@ -323,14 +327,14 @@ import org.junit.Test;
     JobId jobid = recordFactory.newRecordInstance(JobId.class);
     jobid.setAppId(appId);
     ContainerAllocator mockAlloc = mock(ContainerAllocator.class);
-    Assert.assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
+    assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
     MRAppMaster appMaster = new TestMRApp(attemptId, mockAlloc,
             JobStateInternal.RUNNING, MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS);
     appMaster.init(conf);
     appMaster.start();
     appMaster.shutDownJob();
     //test whether notifyIsLastAMRetry called
-    Assert.assertEquals(true, ((TestMRApp) appMaster).getTestIsLastAMRetry());
+    assertTrue(((TestMRApp) appMaster).getTestIsLastAMRetry());
     //Staging dir should be deleted because it is not matched with
     //PRESERVE_FILES_PATTERN
     verify(fs, times(1)).delete(stagingJobPath, true);
@@ -354,14 +358,14 @@ import org.junit.Test;
     JobId jobid = recordFactory.newRecordInstance(JobId.class);
     jobid.setAppId(appId);
     ContainerAllocator mockAlloc = mock(ContainerAllocator.class);
-    Assert.assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
+    assertTrue(MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS > 1);
     MRAppMaster appMaster = new TestMRApp(attemptId, mockAlloc,
             JobStateInternal.RUNNING, MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS);
     appMaster.init(conf);
     appMaster.start();
     appMaster.shutDownJob();
     //test whether notifyIsLastAMRetry called
-    Assert.assertEquals(true, ((TestMRApp) appMaster).getTestIsLastAMRetry());
+    assertTrue(((TestMRApp) appMaster).getTestIsLastAMRetry());
     verify(fs, times(0)).delete(stagingJobPath, true);
   }
 
@@ -582,7 +586,8 @@ import org.junit.Test;
     };
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testStagingCleanupOrder() throws Exception {
     MRAppTestCleanup app = new MRAppTestCleanup(1, 1, true,
         this.getClass().getName(), true);
@@ -597,7 +602,7 @@ import org.junit.Test;
     }
 
     // assert ContainerAllocatorStopped and then tagingDirCleanedup
-    Assert.assertEquals(1, app.ContainerAllocatorStopped);
-    Assert.assertEquals(2, app.stagingDirCleanedup);
+    assertEquals(1, app.ContainerAllocatorStopped);
+    assertEquals(2, app.stagingDirCleanedup);
   }
  }

@@ -20,28 +20,26 @@ package org.apache.hadoop.fs.s3a.auth;
 
 import java.io.IOException;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
-import org.apache.hadoop.fs.s3a.S3AUtils;
 import org.apache.hadoop.fs.s3a.commit.ITestCommitOperations;
 
 import static org.apache.hadoop.fs.s3a.Constants.ASSUMED_ROLE_ARN;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.assume;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.disableCreateSession;
 import static org.apache.hadoop.fs.s3a.auth.RoleModel.*;
 import static org.apache.hadoop.fs.s3a.auth.RolePolicies.*;
 import static org.apache.hadoop.fs.s3a.auth.RoleTestUtils.*;
+import static org.apache.hadoop.io.IOUtils.cleanupWithLogger;
 
 /**
  * Verify that the commit operations work with a restricted set of operations.
- * The superclass, {@link ITestCommitOperations} turns on an inconsistent client
- * to see how things work in the presence of inconsistency.
- * These tests disable it, to remove that as a factor in these tests, which are
- * verifying that the policy settings to enabled MPU list/commit/abort are all
- * enabled properly.
  */
 public class ITestAssumedRoleCommitOperations extends ITestCommitOperations {
 
@@ -59,10 +57,11 @@ public class ITestAssumedRoleCommitOperations extends ITestCommitOperations {
   private S3AFileSystem roleFS;
 
   @Override
-  public boolean useInconsistentClient() {
-    return false;
+  protected Configuration createConfiguration() {
+    return disableCreateSession(super.createConfiguration());
   }
 
+  @BeforeEach
   @Override
   public void setup() throws Exception {
     super.setup();
@@ -72,8 +71,9 @@ public class ITestAssumedRoleCommitOperations extends ITestCommitOperations {
     Configuration conf = newAssumedRoleConfig(getConfiguration(),
         getAssumedRoleARN());
     bindRolePolicyStatements(conf,
-        STATEMENT_ALL_DDB,
-        statement(true, S3_ALL_BUCKETS, S3_ROOT_READ_OPERATIONS),
+        STATEMENT_ALLOW_KMS_RW,
+        STATEMENT_S3EXPRESS,
+        statement(true, S3_ALL_BUCKETS, S3_BUCKET_READ_OPERATIONS),
         new RoleModel.Statement(RoleModel.Effects.Allow)
             .addActions(S3_PATH_RW_OPERATIONS)
             .addResources(directory(restrictedDir))
@@ -81,10 +81,10 @@ public class ITestAssumedRoleCommitOperations extends ITestCommitOperations {
     roleFS = (S3AFileSystem) restrictedDir.getFileSystem(conf);
   }
 
-
+  @AfterEach
   @Override
   public void teardown() throws Exception {
-    S3AUtils.closeAll(LOG, roleFS);
+    cleanupWithLogger(LOG, roleFS);
     // switches getFileSystem() back to the full FS.
     roleFS = null;
     super.teardown();
@@ -114,14 +114,13 @@ public class ITestAssumedRoleCommitOperations extends ITestCommitOperations {
   }
 
   /**
-   * switch to an inconsistent path if in inconsistent mode.
+   * switch to an restricted path.
    * {@inheritDoc}
    */
   @Override
   protected Path path(String filepath) throws IOException {
     return new Path(restrictedDir, filepath);
   }
-
 
   private String getAssumedRoleARN() {
     return getContract().getConf().getTrimmed(ASSUMED_ROLE_ARN, "");
